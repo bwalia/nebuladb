@@ -1,0 +1,21 @@
+[package]
+name = "nebula-embed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nebula-core = { path = "../nebula-core" }
+
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true }
+reqwest.workspace = true
+tracing.workspace = true
+ahash.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

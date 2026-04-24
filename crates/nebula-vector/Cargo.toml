@@ -1,0 +1,27 @@
+[package]
+name = "nebula-vector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nebula-core = { path = "../nebula-core" }
+
+thiserror.workspace = true
+serde.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+rayon.workspace = true
+ahash.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
+rand.workspace = true
+
+[[bench]]
+name = "hnsw_bench"
+harness = false

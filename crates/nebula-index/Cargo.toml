@@ -1,0 +1,24 @@
+[package]
+name = "nebula-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nebula-core = { path = "../nebula-core" }
+nebula-vector = { path = "../nebula-vector" }
+nebula-embed = { path = "../nebula-embed" }
+nebula-chunk = { path = "../nebula-chunk" }
+
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+ahash.workspace = true
+tracing.workspace = true
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

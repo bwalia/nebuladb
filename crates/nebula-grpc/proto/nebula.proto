@@ -1,0 +1,126 @@
+// NebulaDB gRPC surface.
+//
+// The service mirrors the REST API so clients can mix transports
+// without re-learning the domain model. Names and semantics are
+// identical — only the wire format changes.
+//
+// Streaming is used where the REST side offers SSE (`AIService.Rag`).
+// Single-shot RPCs elsewhere keep the surface simple; bidirectional
+// streaming for ingest is a future enhancement.
+
+syntax = "proto3";
+
+package nebula.v1;
+
+service DocumentService {
+  // Upsert a whole document. Chunks it server-side using the server's
+  // configured chunker, same as `POST /api/v1/bucket/:b/document`.
+  rpc UpsertDocument(UpsertDocumentRequest) returns (UpsertDocumentResponse);
+
+  // Delete every chunk for a document id.
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+}
+
+service SearchService {
+  // Semantic search by natural-language text. Mirrors /api/v1/ai/search.
+  rpc SemanticSearch(SemanticSearchRequest) returns (SearchResponse);
+
+  // Raw-vector search. Mirrors /api/v1/vector/search.
+  rpc VectorSearch(VectorSearchRequest) returns (SearchResponse);
+}
+
+service AIService {
+  // Retrieval-augmented generation. Server streams:
+  //   1. zero or more `context` chunks (the retrieved snippets),
+  //   2. zero or more `answer_delta` chunks (LLM tokens),
+  //   3. a final `done` marker.
+  //
+  // Each `RagChunk` contains exactly one of these variants via the
+  // `kind` oneof. Clients should stop reading on `Done`.
+  rpc Rag(RagRequest) returns (stream RagChunk);
+}
+
+// ---- DocumentService ----
+
+message UpsertDocumentRequest {
+  string bucket = 1;
+  string doc_id = 2;
+  string text = 3;
+  // Optional caller-supplied metadata, serialized as JSON text. We use
+  // a string rather than google.protobuf.Struct because callers often
+  // already have JSON on hand and Struct's number-only semantics
+  // silently clobber large integers.
+  string metadata_json = 4;
+}
+
+message UpsertDocumentResponse {
+  string bucket = 1;
+  string doc_id = 2;
+  uint32 chunks = 3;
+}
+
+message DeleteDocumentRequest {
+  string bucket = 1;
+  string doc_id = 2;
+}
+
+message DeleteDocumentResponse {
+  string bucket = 1;
+  string doc_id = 2;
+  uint32 chunks_removed = 3;
+}
+
+// ---- SearchService ----
+
+message SemanticSearchRequest {
+  string query = 1;
+  uint32 top_k = 2;
+  // Empty = search all buckets.
+  string bucket = 3;
+  // Optional HNSW beam width override; 0 means "use server default".
+  uint32 ef = 4;
+}
+
+message VectorSearchRequest {
+  repeated float vector = 1;
+  uint32 top_k = 2;
+  string bucket = 3;
+  uint32 ef = 4;
+}
+
+message Hit {
+  string bucket = 1;
+  string id = 2;
+  string text = 3;
+  // Distance under the index's metric (smaller = closer).
+  float score = 4;
+  string metadata_json = 5;
+}
+
+message SearchResponse {
+  repeated Hit hits = 1;
+  uint64 took_ms = 2;
+}
+
+// ---- AIService ----
+
+message RagRequest {
+  string query = 1;
+  uint32 top_k = 2;
+  string bucket = 3;
+}
+
+message RagChunk {
+  oneof kind {
+    Hit context = 1;
+    string answer_delta = 2;
+    // Terminal marker. When received, the client should stop reading
+    // even if the stream is technically still open.
+    Done done = 3;
+    // Mid-stream error from the LLM provider. A compliant client
+    // logs it and returns whatever text it has accumulated so far.
+    string error = 4;
+  }
+}
+
+message Done {}

@@ -1,0 +1,746 @@
+//! End-to-end router tests.
+//!
+//! Uses `tower::ServiceExt::oneshot` to drive the router without
+//! binding a TCP socket — faster, deterministic, and lets us assert
+//! the exact HTTP response shape. A real deployment would add a
+//! second layer of tests against a bound `axum::serve` to catch
+//! listener/TLS regressions.
+
+use std::sync::Arc;
+
+use ahash::AHashSet;
+use axum::body::{to_bytes, Body};
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+
+use nebula_embed::{Embedder, MockEmbedder};
+use nebula_index::TextIndex;
+use nebula_server::{
+    build_router, AppConfig, AppState, JwtConfig, RateLimitConfig, RateLimiter,
+};
+use nebula_vector::{HnswConfig, Metric};
+
+fn app_state(keys: &[&str]) -> AppState {
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(
+        TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
+    );
+    let cfg = AppConfig {
+        api_keys: keys.iter().map(|s| s.to_string()).collect::<AHashSet<_>>(),
+        ..AppConfig::default()
+    };
+    AppState::new(index, cfg)
+}
+
+async fn body_string(body: Body) -> String {
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn healthz_is_public() {
+    let app = build_router(app_state(&["secret"]));
+    let res = app
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"status\":\"ok\""));
+}
+
+#[tokio::test]
+async fn api_requires_auth_when_keys_configured() {
+    let app = build_router(app_state(&["secret"]));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"x","top_k":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn api_accepts_valid_token() {
+    let app = build_router(app_state(&["secret"]));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("authorization", "Bearer secret")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"id":"1","text":"zero trust dns failover"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn upsert_get_search_delete_roundtrip() {
+    let state = app_state(&[]);
+    let app = build_router(state.clone());
+
+    // Insert three docs
+    for (i, text) in [
+        "zero trust networking",
+        "dns failover strategies",
+        "kubernetes gitops",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/bucket/docs/doc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"id":"{i}","text":"{text}"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "insert {i} failed");
+    }
+
+    // Get one
+    let res = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/bucket/docs/doc/0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("zero trust"));
+
+    // Semantic search
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"query":"zero trust networking","top_k":3}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"hits\""));
+
+    // Delete
+    let res = app
+        .clone()
+        .oneshot(
+            Request::delete("/api/v1/bucket/docs/doc/0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    // Get after delete = 404
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/bucket/docs/doc/0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn rag_non_stream_returns_json() {
+    let app = build_router(app_state(&[]));
+
+    // Seed
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"1","text":"dns failover uses health checks"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/rag")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"dns failover","top_k":3}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"answer\""));
+    assert!(body.contains("\"context\""));
+}
+
+#[tokio::test]
+async fn rag_stream_emits_sse_events() {
+    let app = build_router(app_state(&[]));
+
+    // Seed
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"1","text":"alpha beta gamma"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/rag")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"query":"alpha","top_k":1,"stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let ct = res.headers().get("content-type").unwrap().to_str().unwrap();
+    assert!(ct.starts_with("text/event-stream"), "unexpected CT: {ct}");
+
+    // Collect the full SSE payload.
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&body);
+    assert!(text.contains("event: context"));
+    assert!(text.contains("event: answer_delta"));
+    assert!(text.contains("event: done"));
+}
+
+#[tokio::test]
+async fn metrics_exposes_counters() {
+    let app = build_router(app_state(&[]));
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"1","text":"x"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("nebula_docs_inserted 1"));
+    assert!(body.contains("nebula_requests_total"));
+}
+
+#[tokio::test]
+async fn bad_top_k_returns_400() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"x","top_k":0}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn upsert_document_creates_multiple_chunks() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/document")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    // 60-char body → with default 500/50 chunker = 1 chunk.
+                    // Use the explicit API path anyway so the endpoint is exercised.
+                    r#"{"doc_id":"d1","text":"zero trust architecture describes a security model where nothing is trusted by default and every request is verified"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"chunks\""));
+    assert!(body.contains("\"doc_id\":\"d1\""));
+
+    // Semantic search finds it.
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"zero trust","top_k":3}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("d1#0"));
+}
+
+#[tokio::test]
+async fn delete_document_removes_all_chunks() {
+    // Use a tiny chunker so one payload produces multiple chunks.
+    use std::sync::Arc;
+    let mut state = app_state(&[]);
+    state = state.with_chunker(Arc::new(
+        nebula_chunk::FixedSizeChunker::new(10, 0).unwrap(),
+    ));
+    let app = build_router(state);
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/document")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"doc_id":"d1","text":"aaaaabbbbbcccccddddd"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::delete("/api/v1/bucket/docs/document/d1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"chunks_removed\":2"));
+}
+
+#[tokio::test]
+async fn rag_stream_forwards_llm_deltas() {
+    // MockLlm produces "Answer: <echoed user prompt>" split on spaces.
+    // We assert that multiple answer_delta events arrive and that the
+    // concatenation contains the echo — end-to-end streaming proof.
+    let app = build_router(app_state(&[]));
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"1","text":"widgets fly"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/rag")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"query":"widgets","top_k":1,"stream":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&body);
+
+    // At least one context event.
+    assert!(text.contains("event: context"), "no context event:\n{text}");
+    // Multiple answer_delta events (mock LLM tokenizes on whitespace).
+    let delta_count = text.matches("event: answer_delta").count();
+    assert!(delta_count >= 2, "expected multiple deltas, got {delta_count}");
+    // Terminal done event.
+    assert!(text.contains("event: done"));
+}
+
+#[tokio::test]
+async fn metrics_exposes_cache_counters_when_wired() {
+    use std::sync::Arc;
+
+    // Build the same kind of state the binary does: wrap the mock
+    // embedder in a cache, feed stats into AppState, verify /metrics
+    // surfaces them.
+    let raw: Arc<dyn nebula_embed::Embedder> =
+        Arc::new(nebula_embed::MockEmbedder::new(32));
+    let cache = Arc::new(nebula_cache::CachingEmbedder::new(raw, 64));
+    let stats = cache.stats();
+    let index = Arc::new(
+        nebula_index::TextIndex::new(cache, Metric::Cosine, HnswConfig::default()).unwrap(),
+    );
+    let state = AppState::new(index, AppConfig::default()).with_cache_stats(stats);
+    let app = build_router(state);
+
+    // Two inserts with the same text → first miss, second hit.
+    for i in 0..2 {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/bucket/docs/doc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"id":"{i}","text":"same text every time"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let res = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("nebula_embed_cache_hits 1"), "body:\n{body}");
+    assert!(body.contains("nebula_embed_cache_misses 1"));
+    assert!(body.contains("nebula_embed_cache_inserts 1"));
+}
+
+#[tokio::test]
+async fn metrics_omits_cache_lines_when_not_wired() {
+    // Default `AppState::new` doesn't register cache stats. The
+    // metrics endpoint must NOT render zeroed cache counters — that
+    // would be actively misleading (implies a cache exists when it
+    // doesn't).
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(!body.contains("nebula_embed_cache_hits"));
+}
+
+#[tokio::test]
+async fn rate_limiter_returns_429_after_burst() {
+    // Capacity 3, refill 0.1/s → we burn the burst then get rejected.
+    // Refill is slow enough that the fourth request lands while the
+    // bucket is still empty.
+    let state = AppState::new(
+        Arc::new(
+            TextIndex::new(
+                Arc::new(MockEmbedder::new(16)) as Arc<dyn Embedder>,
+                Metric::Cosine,
+                HnswConfig::default(),
+            )
+            .unwrap(),
+        ),
+        AppConfig {
+            rate_limit: RateLimitConfig {
+                capacity: 3.0,
+                refill_per_sec: 0.1,
+            },
+            ..AppConfig::default()
+        },
+    )
+    .with_rate_limiter(RateLimiter::new());
+    let app = build_router(state);
+
+    // Use a specific Authorization header so every request maps to the
+    // same rate-limit principal — otherwise ConnectInfo fallback lumps
+    // us into the "anon" bucket, which also works but let's be explicit.
+    let make = |i: usize| {
+        Request::post("/api/v1/ai/search")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer same-key")
+            .body(Body::from(format!(r#"{{"query":"q{i}","top_k":1}}"#)))
+            .unwrap()
+    };
+
+    for i in 0..3 {
+        let res = app.clone().oneshot(make(i)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "request {i} should pass");
+    }
+    let res = app.oneshot(make(99)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry = res
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(!retry.is_empty(), "missing retry-after header");
+}
+
+#[tokio::test]
+async fn jwt_accepts_valid_and_rejects_invalid() {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let secret = b"test-jwt-secret-at-least-32-bytes!";
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as usize;
+
+    #[derive(serde::Serialize)]
+    struct Claims<'a> {
+        sub: &'a str,
+        exp: usize,
+    }
+    let good = encode(
+        &Header::new(Algorithm::HS256),
+        &Claims {
+            sub: "svc-ingest",
+            exp: now + 600,
+        },
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let expired = encode(
+        &Header::new(Algorithm::HS256),
+        &Claims {
+            sub: "svc-ingest",
+            exp: now - 600,
+        },
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+
+    let state = AppState::new(
+        Arc::new(
+            TextIndex::new(
+                Arc::new(MockEmbedder::new(16)) as Arc<dyn Embedder>,
+                Metric::Cosine,
+                HnswConfig::default(),
+            )
+            .unwrap(),
+        ),
+        AppConfig {
+            jwt: Some(JwtConfig::hs256(secret.to_vec())),
+            ..AppConfig::default()
+        },
+    );
+    let app = build_router(state);
+
+    // Valid JWT accepted.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {good}"))
+                .body(Body::from(r#"{"query":"x","top_k":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Expired JWT rejected.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {expired}"))
+                .body(Body::from(r#"{"query":"x","top_k":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // Missing token rejected.
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"x","top_k":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn allowlist_and_jwt_coexist() {
+    // Both auth schemes enabled. Either should succeed.
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let secret = b"coexist-secret-xxxxxxxxxxxxxxxxx!";
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as usize;
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        sub: &'a str,
+        exp: usize,
+    }
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &C {
+            sub: "a",
+            exp: now + 600,
+        },
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+
+    let state = AppState::new(
+        Arc::new(
+            TextIndex::new(
+                Arc::new(MockEmbedder::new(16)) as Arc<dyn Embedder>,
+                Metric::Cosine,
+                HnswConfig::default(),
+            )
+            .unwrap(),
+        ),
+        AppConfig {
+            api_keys: ["static-key".to_string()].into_iter().collect(),
+            jwt: Some(JwtConfig::hs256(secret.to_vec())),
+            ..AppConfig::default()
+        },
+    );
+    let app = build_router(state);
+
+    for auth in ["Bearer static-key".to_string(), format!("Bearer {token}")] {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/ai/search")
+                    .header("content-type", "application/json")
+                    .header("authorization", auth.clone())
+                    .body(Body::from(r#"{"query":"x","top_k":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "failed for {auth}");
+    }
+}
+
+#[tokio::test]
+async fn sql_query_runs_semantic_match() {
+    let state = app_state(&[]);
+    let app = build_router(state);
+
+    // Seed a couple of docs with metadata so both semantic and residual
+    // filters get exercised.
+    for (i, text, region) in [
+        (1, "zero trust networking", "eu"),
+        (2, "dns failover strategies", "us"),
+        (3, "zero trust architecture", "eu"),
+    ] {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/bucket/docs/doc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"id":"{i}","text":"{text}","metadata":{{"region":"{region}"}}}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/query")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"sql":"SELECT id, region FROM docs WHERE semantic_match(content, 'zero trust') AND region = 'eu' LIMIT 5"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    // Both eu docs should be returned; the us doc must not appear.
+    assert!(body.contains("\"region\":\"eu\""));
+    assert!(!body.contains("\"region\":\"us\""));
+}
+
+#[tokio::test]
+async fn sql_parse_error_returns_400() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/query")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"sql":"NOT VALID SQL"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("sql_parse"));
+}
+
+#[tokio::test]
+async fn sql_missing_semantic_clause_returns_400() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/query")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"sql":"SELECT * FROM docs WHERE region = 'eu'"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("sql_invalid"));
+}
+
+#[tokio::test]
+async fn vector_dim_mismatch_returns_400() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/vector/search")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"vector":[0.1,0.2],"top_k":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}

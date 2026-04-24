@@ -1,0 +1,30 @@
+[package]
+name = "nebula-grpc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nebula-core = { path = "../nebula-core" }
+nebula-chunk = { path = "../nebula-chunk" }
+nebula-llm = { path = "../nebula-llm" }
+nebula-index = { path = "../nebula-index" }
+
+tonic.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+tokio-stream.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+nebula-embed = { path = "../nebula-embed" }
+nebula-vector = { path = "../nebula-vector" }

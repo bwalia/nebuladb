@@ -1,0 +1,377 @@
+openapi: 3.0.3
+info:
+  title: NebulaDB REST API
+  version: 0.1.0
+  description: |
+    AI-native hybrid database exposing document, vector, and RAG endpoints.
+
+    Auth: `Authorization: Bearer <token>` when `NEBULA_API_KEYS` is set.
+    Ops endpoints (`/healthz`, `/metrics`) are unauthenticated.
+servers:
+  - url: http://localhost:8080
+    description: Local dev
+
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness + index stats
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /metrics:
+    get:
+      summary: Prometheus text-format metrics
+      security: []
+      responses:
+        "200":
+          description: Counter snapshot
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/v1/bucket/{bucket}/doc:
+    post:
+      summary: Upsert a document
+      parameters:
+        - { in: path, name: bucket, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpsertDoc" }
+      responses:
+        "200":
+          description: Upserted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpsertResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/bucket/{bucket}/doc/{id}:
+    get:
+      summary: Fetch a document
+      parameters:
+        - { in: path, name: bucket, required: true, schema: { type: string } }
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Document
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Document" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      summary: Delete a document
+      parameters:
+        - { in: path, name: bucket, required: true, schema: { type: string } }
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/bucket/{bucket}/document:
+    post:
+      summary: Upsert a chunked document
+      description: |
+        Chunks `text` per the server's configured chunker, embeds in one
+        batched call, and indexes each chunk under `{doc_id}#{i}`.
+        Replaces any previously-indexed chunks for the same `doc_id`.
+      parameters:
+        - { in: path, name: bucket, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpsertDocument" }
+      responses:
+        "200":
+          description: Upserted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpsertDocumentResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/bucket/{bucket}/document/{doc_id}:
+    delete:
+      summary: Delete every chunk for a document
+      parameters:
+        - { in: path, name: bucket, required: true, schema: { type: string } }
+        - { in: path, name: doc_id, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Removed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteDocumentResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/vector/search:
+    post:
+      summary: Search by raw vector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VectorSearchRequest" }
+      responses:
+        "200":
+          description: Hits
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/ai/search:
+    post:
+      summary: Semantic search by text
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AiSearchRequest" }
+      responses:
+        "200":
+          description: Hits
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "502": { $ref: "#/components/responses/Upstream" }
+
+  /api/v1/query:
+    post:
+      summary: Execute a SQL query with NebulaDB AI extensions
+      description: |
+        Parses and runs a single SELECT against a NebulaDB bucket.
+        Supports:
+          - `semantic_match(column, 'query text')` — embed-and-retrieve.
+          - `vector_distance(column, '[0.1,0.2,...]')` — raw-vector retrieve.
+          - residual `WHERE ... AND col = 'v'` / `col IN (...)` filters.
+          - `GROUP BY col [, ...]` with `COUNT(*)`, `COUNT(col)`,
+            `SUM`, `AVG`, `MIN`, `MAX`.
+          - INNER `JOIN ... ON left.col = right.col` (both sides must
+            carry their own `semantic_match` / `vector_distance`).
+          - `ORDER BY score|metadata_col|aggregate_alias` and `LIMIT n`.
+
+        One retrieval function is required per table scan. JOIN + GROUP BY
+        combined, OR in WHERE, OUTER joins, subqueries, CTEs, and HAVING
+        are rejected with `sql_unsupported` or `sql_invalid`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SqlQueryRequest" }
+      responses:
+        "200":
+          description: Result rows
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SqlQueryResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/ai/rag:
+    post:
+      summary: Retrieval-augmented generation
+      description: |
+        Returns JSON by default. Pass `stream: true` in the body (or `?stream=true`
+        query parameter) to receive a `text/event-stream` with `context`,
+        `answer_delta`, and `done` events.
+      parameters:
+        - { in: query, name: stream, required: false, schema: { type: boolean } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RagRequest" }
+      responses:
+        "200":
+          description: JSON or SSE stream
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RagResponse" }
+            text/event-stream:
+              schema: { type: string, description: "SSE stream" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  responses:
+    BadRequest:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Upstream:
+      description: Upstream provider error (e.g. embedding API)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Health:
+      type: object
+      required: [status, docs, dim, model]
+      properties:
+        status: { type: string, example: ok }
+        docs:   { type: integer, example: 42 }
+        dim:    { type: integer, example: 384 }
+        model:  { type: string,  example: "mock-384" }
+
+    UpsertDoc:
+      type: object
+      required: [id, text]
+      properties:
+        id:       { type: string }
+        text:     { type: string }
+        metadata: { type: object, additionalProperties: true }
+
+    UpsertDocument:
+      type: object
+      required: [doc_id, text]
+      properties:
+        doc_id:   { type: string }
+        text:     { type: string }
+        metadata: { type: object, additionalProperties: true }
+
+    UpsertDocumentResponse:
+      type: object
+      required: [bucket, doc_id, chunks]
+      properties:
+        bucket: { type: string }
+        doc_id: { type: string }
+        chunks: { type: integer, description: "chunks indexed" }
+
+    DeleteDocumentResponse:
+      type: object
+      required: [bucket, doc_id, chunks_removed]
+      properties:
+        bucket:         { type: string }
+        doc_id:         { type: string }
+        chunks_removed: { type: integer }
+
+    UpsertResponse:
+      type: object
+      required: [bucket, id, dim]
+      properties:
+        bucket: { type: string }
+        id:     { type: string }
+        dim:    { type: integer }
+
+    Document:
+      type: object
+      required: [bucket, id, text, metadata]
+      properties:
+        bucket:   { type: string }
+        id:       { type: string }
+        text:     { type: string }
+        metadata: { type: object, additionalProperties: true }
+
+    VectorSearchRequest:
+      type: object
+      required: [vector]
+      properties:
+        vector: { type: array, items: { type: number, format: float } }
+        top_k:  { type: integer, default: 10, minimum: 1 }
+        bucket: { type: string }
+        ef:     { type: integer, minimum: 1 }
+
+    AiSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:  { type: string }
+        top_k:  { type: integer, default: 10, minimum: 1 }
+        bucket: { type: string }
+        ef:     { type: integer, minimum: 1 }
+
+    RagRequest:
+      type: object
+      required: [query]
+      properties:
+        query:  { type: string }
+        top_k:  { type: integer, default: 5 }
+        bucket: { type: string }
+        stream: { type: boolean, default: false }
+
+    Hit:
+      type: object
+      required: [bucket, id, text, score, metadata]
+      properties:
+        bucket:   { type: string }
+        id:       { type: string }
+        text:     { type: string }
+        score:    { type: number, format: float, description: "distance under the index metric (smaller = closer)" }
+        metadata: { type: object, additionalProperties: true }
+
+    SearchResponse:
+      type: object
+      required: [hits, took_ms]
+      properties:
+        hits:    { type: array, items: { $ref: "#/components/schemas/Hit" } }
+        took_ms: { type: integer }
+
+    SqlQueryRequest:
+      type: object
+      required: [sql]
+      properties:
+        sql: { type: string, example: "SELECT id FROM docs WHERE semantic_match(content, 'zero trust') LIMIT 5" }
+
+    SqlRow:
+      type: object
+      required: [id, bucket, score, fields]
+      properties:
+        id:     { type: string }
+        bucket: { type: string }
+        score:  { type: number, format: float }
+        fields: { type: object, additionalProperties: true }
+
+    SqlQueryResponse:
+      type: object
+      required: [took_ms, rows]
+      properties:
+        took_ms: { type: integer }
+        rows:
+          type: array
+          items: { $ref: "#/components/schemas/SqlRow" }
+
+    RagResponse:
+      type: object
+      required: [query, context, answer]
+      properties:
+        query:   { type: string }
+        context: { type: array, items: { $ref: "#/components/schemas/Hit" } }
+        answer:  { type: string }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:    { type: string, example: bad_request }
+            message: { type: string }

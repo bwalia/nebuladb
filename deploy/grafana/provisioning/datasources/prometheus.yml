@@ -1,0 +1,14 @@
+apiVersion: 1
+
+# Auto-wire Prometheus as the default datasource so the dashboard can
+# load without a human clicking through Grafana's setup UI. The URL
+# uses the service name from docker-compose.
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    orgId: 1
+    url: http://prometheus:9090
+    isDefault: true
+    version: 1
+    editable: false

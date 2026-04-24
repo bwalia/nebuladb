@@ -1,0 +1,24 @@
+# Minimal scrape config for the NebulaDB demo stack.
+# `nebula-server` exposes a plain Prometheus text endpoint at /metrics
+# (no TLS, no auth — intentional for ops tooling, see router.rs).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  # Label every metric with the cluster identity so a later multi-node
+  # setup remains queryable without rewriting dashboards.
+  external_labels:
+    cluster: nebuladb-dev
+
+scrape_configs:
+  - job_name: nebula-server
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["nebula-server:8080"]
+        labels:
+          service: nebula-server
+
+  # Prometheus scraping itself is the cheapest way to spot a broken
+  # scrape config (missing targets show up as `up == 0`).
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,50 @@
+[package]
+name = "nebula-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nebula-server"
+path = "src/main.rs"
+
+[dependencies]
+nebula-core = { path = "../nebula-core" }
+nebula-vector = { path = "../nebula-vector" }
+nebula-embed = { path = "../nebula-embed" }
+nebula-chunk = { path = "../nebula-chunk" }
+nebula-llm = { path = "../nebula-llm" }
+nebula-cache = { path = "../nebula-cache" }
+nebula-redis-cache = { path = "../nebula-redis-cache" }
+nebula-index = { path = "../nebula-index" }
+nebula-sql = { path = "../nebula-sql" }
+nebula-grpc = { path = "../nebula-grpc" }
+nebula-pgwire = { path = "../nebula-pgwire" }
+
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+hyper.workspace = true
+http.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net"] }
+async-trait.workspace = true
+futures.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+ahash.workspace = true
+dashmap.workspace = true
+jsonwebtoken.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util.workspace = true
+nebula-chunk = { path = "../nebula-chunk" }
+nebula-cache = { path = "../nebula-cache" }
+nebula-embed = { path = "../nebula-embed" }
+jsonwebtoken.workspace = true

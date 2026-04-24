@@ -1,0 +1,228 @@
+# Nightly validation for NebulaDB.
+#
+# Jobs, in order:
+#   1. `unit`: cargo test + clippy on the workspace. Fast, cacheable,
+#      and catches the bulk of regressions before we burn compose
+#      runtime. If this fails, `e2e` is skipped — no point spinning
+#      up a stack built from broken code.
+#   2. `e2e`: builds the server image, boots the full docker-compose
+#      stack (Ollama + Redis + Prometheus + Grafana + nebula-server),
+#      and runs scripts/*.sh against it. Covers every transport we
+#      ship (REST, SQL-over-REST, pgwire, RAG-SSE) plus /metrics and a
+#      concurrent-traffic smoke load.
+#   3. `notify`: runs on failure only; posts to Slack if a webhook is
+#      configured, no-ops otherwise.
+#
+# Trigger: nightly 02:00 UTC + manual dispatch. On PRs we only run the
+# `unit` job by leveraging `if:` — the Docker build is too heavy for
+# every commit.
+
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      ollama_chat_model:
+        description: "Ollama chat model to pull for RAG (tinyllama = fast CI; llama3 = realistic)"
+        required: false
+        default: "tinyllama"
+      ollama_embed_model:
+        description: "Ollama embedding model"
+        required: false
+        default: "nomic-embed-text"
+  # Also run on pushes to main so we spot breakage early; compose test
+  # only runs on schedule + dispatch to save runner minutes.
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  # Cancel in-progress runs when a newer commit lands on the same
+  # branch; nightlies are mutually exclusive to avoid double-load.
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Unit: cargo test + clippy. Runs on every trigger.
+  # --------------------------------------------------------------------------
+  unit:
+    name: unit + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc (tonic-build needs it)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # Cache the cargo registry + target so subsequent runs on the
+      # same branch/lockfile finish in minutes, not 20+.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+        continue-on-error: true # formatting failures shouldn't block the whole pipeline
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+  # --------------------------------------------------------------------------
+  # End-to-end: docker-compose stack + scripts/*.sh. Only on schedule,
+  # dispatch, or main-branch pushes; PRs skip this (too slow per-commit).
+  # --------------------------------------------------------------------------
+  e2e:
+    name: docker-compose e2e
+    runs-on: ubuntu-latest
+    needs: unit
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 60
+    env:
+      OLLAMA_CHAT_MODEL: ${{ github.event.inputs.ollama_chat_model || 'tinyllama' }}
+      OLLAMA_EMBED_MODEL: ${{ github.event.inputs.ollama_embed_model || 'nomic-embed-text' }}
+      # Every test script reads these and they match the ports exposed
+      # in docker-compose.yml.
+      BASE_URL: http://localhost:8080
+      PG_HOST: localhost
+      PG_PORT: "5433"
+      PROM_URL: http://localhost:9090
+      OLLAMA_URL: http://localhost:11434
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host test deps
+        # `postgresql-client` ships psql; `jq` for JSON parsing in
+        # scripts. Docker + compose plugin already on GitHub runners.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client jq
+
+      - name: Build + start stack
+        # `--wait` blocks until container-level healthchecks are
+        # green, which handles the "service up but not ready" gap.
+        run: |
+          # The compose file reads these via ${VAR:-default}.
+          echo "OLLAMA_CHAT_MODEL=${OLLAMA_CHAT_MODEL}" >>"$GITHUB_ENV"
+          echo "OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL}" >>"$GITHUB_ENV"
+          docker compose up -d --build --wait --wait-timeout 900
+
+      - name: Wait for nebula-server /healthz
+        # Belt + braces: docker healthchecks fire from inside the
+        # container; this confirms the host-forwarded port is live.
+        run: ./scripts/wait_for.sh "$BASE_URL/healthz" 120 '"status":"ok"'
+
+      - name: Wait for Ollama model pull
+        # The `ollama-init` service exits 0 when both models are
+        # pulled. `--wait` above handles service_completed_successfully,
+        # but we also confirm the models are listed before running
+        # tests that depend on them.
+        run: ./scripts/wait_for.sh "$OLLAMA_URL/api/tags" 600 "$OLLAMA_CHAT_MODEL"
+
+      # Tests run in dependency order: Ollama first (if Ollama is
+      # broken, the RAG test would fail in a less useful way), then
+      # data-plane, then SQL/pgwire, then metrics, then load.
+      - name: Ollama integration
+        run: ./scripts/test_ollama.sh
+
+      - name: REST API
+        run: ./scripts/test_rest.sh
+
+      - name: Postgres wire protocol
+        run: ./scripts/test_pgwire.sh
+
+      - name: RAG end-to-end
+        run: ./scripts/test_rag.sh
+
+      - name: Metrics + Prometheus scrape
+        run: ./scripts/test_metrics.sh
+
+      - name: Smoke load (p95 latency)
+        run: ./scripts/smoke_load.sh
+
+      # --- Always-run diagnostics: capture even on success so we
+      # have evidence of the passing run's behavior. -------------
+      - name: Snapshot /metrics
+        if: always()
+        run: curl -sS "$BASE_URL/metrics" >metrics.txt || true
+
+      - name: Snapshot container logs
+        if: always()
+        run: |
+          mkdir -p logs
+          for svc in nebula-server ollama ollama-init redis prometheus grafana; do
+            # 2>&1 catches stderr from stopped containers; tail keeps
+            # artifacts under GitHub's 10GB/job cap.
+            docker compose logs --no-color --tail=2000 "$svc" >"logs/${svc}.log" 2>&1 || true
+          done
+
+      - name: On failure — dump last 200 lines of each service
+        if: failure()
+        run: |
+          for f in logs/*.log; do
+            echo "============ $f (tail 200) ============"
+            tail -n 200 "$f"
+          done
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nebuladb-e2e-${{ github.run_id }}
+          path: |
+            metrics.txt
+            logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  # --------------------------------------------------------------------------
+  # Slack notification — opt-in. Skips silently if the webhook secret
+  # isn't set, so forks of this repo get a green notify step instead
+  # of a confusing red one.
+  # --------------------------------------------------------------------------
+  notify:
+    name: notify on failure
+    runs-on: ubuntu-latest
+    needs: [unit, e2e]
+    if: failure() && github.event_name == 'schedule'
+    steps:
+      - name: Post to Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -sS -X POST -H 'content-type: application/json' \
+            --data "{\"text\":\"🚨 NebulaDB nightly failed — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
+            "$SLACK_WEBHOOK_URL"
+
+      - name: No webhook configured
+        if: env.SLACK_WEBHOOK_URL == ''
+        run: echo "SLACK_WEBHOOK_URL not set — skipping notification"

@@ -1,0 +1,82 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nebula-core",
+    "crates/nebula-vector",
+    "crates/nebula-embed",
+    "crates/nebula-cache",
+    "crates/nebula-redis-cache",
+    "crates/nebula-chunk",
+    "crates/nebula-llm",
+    "crates/nebula-index",
+    "crates/nebula-sql",
+    "crates/nebula-grpc",
+    "crates/nebula-pgwire",
+    "crates/nebula-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/example/nebuladb"
+
+[workspace.dependencies]
+# Core
+thiserror = "1.0"
+anyhow = "1.0"
+bytes = "1.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "sync", "time"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
+hyper = "1"
+http = "1"
+http-body-util = "0.1"
+
+# Concurrency / indexing
+parking_lot = "0.12"
+rand = "0.8"
+rand_chacha = "0.3"
+rayon = "1.10"
+ahash = "0.8"
+sha2 = "0.10"
+lru = "0.12"
+dashmap = "6"
+jsonwebtoken = "9"
+tonic = "0.12"
+tonic-build = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+tokio-stream = { version = "0.1", features = ["net"] }
+sqlparser = "0.52"
+pgwire = "0.25"
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "aio"] }
+
+# Observability
+tracing = "0.1"
+
+# Test / bench
+proptest = "1.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = 1
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

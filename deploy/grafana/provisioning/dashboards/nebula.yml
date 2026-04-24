@@ -1,0 +1,14 @@
+apiVersion: 1
+
+# Grafana auto-loads every dashboard JSON under `path` on startup.
+# This file only tells it where to look; the dashboards themselves
+# live in deploy/grafana/dashboards/*.json.
+providers:
+  - name: NebulaDB
+    orgId: 1
+    folder: NebulaDB
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

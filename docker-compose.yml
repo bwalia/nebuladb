@@ -1,0 +1,281 @@
+# NebulaDB demo stack: server + local Ollama + Redis + Prometheus + Grafana.
+#
+# Usage:
+#   docker compose up --build
+#
+# Services (host-visible ports):
+#   nebula-server  -> http://localhost:8080  (REST + SSE RAG)
+#                     localhost:50051        (gRPC)
+#                     localhost:5433         (Postgres wire, user=any db=any)
+#   ollama         -> http://localhost:11434 (local LLM + embeddings)
+#   redis          -> localhost:6379         (embedding cache)
+#   prometheus     -> http://localhost:9090  (scrape + query)
+#   grafana        -> http://localhost:3000  (admin / admin)
+#
+# First run pulls two Ollama models into the `ollama-models` volume:
+# `llama3` (chat) and `nomic-embed-text` (embeddings). Slow the first
+# time, fast thereafter. Override via a local `.env`:
+#
+#   OLLAMA_CHAT_MODEL=phi3
+#   OLLAMA_EMBED_MODEL=nomic-embed-text
+#   NEBULA_API_KEYS=secret1,secret2
+
+name: nebuladb
+
+# -----------------------------------------------------------------------------
+# Reusable fragments. YAML anchors avoid copy-paste drift across services.
+# -----------------------------------------------------------------------------
+x-restart: &default-restart
+  # unless-stopped survives Docker daemon restarts but respects an
+  # operator's explicit `docker compose stop`.
+  restart: unless-stopped
+
+x-logging: &default-logging
+  # Cap per-container log volume. Without this, a chatty service on
+  # a long-lived host eats disk. Values are conservative — dev hosts
+  # rarely need more than 30 MB of rolling logs per container.
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Ollama: local LLM + embeddings. Holds the heaviest state (model weights)
+  # so the volume is worth keeping between runs.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: nebula-ollama
+    <<: [*default-restart, *default-logging]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      # Keeps memory predictable on dev laptops; raise on a beefy server.
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    # `/api/tags` lists installed models; a 200 means the daemon is up
+    # even if no model is pulled yet.
+    # The ollama image ships only the `ollama` binary (no wget/curl).
+    # `ollama list` connects to the local daemon and exits 0 when it's
+    # ready — effectively an in-process health probe.
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          # Ollama is the only service with a real reason to want GPU /
+          # lots of RAM. These caps are dev-machine defaults; remove or
+          # raise in prod-like deployments.
+          cpus: "4.0"
+          memory: 8g
+
+  # ---------------------------------------------------------------------------
+  # One-shot: pull both Ollama models and exit. Keeps the main server
+  # entrypoint simple (no bash wrapper, no retry loop).
+  # ---------------------------------------------------------------------------
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: nebula-ollama-init
+    <<: *default-logging
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: "http://ollama:11434"
+      CHAT_MODEL: "${OLLAMA_CHAT_MODEL:-llama3}"
+      EMBED_MODEL: "${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+    # `$$` escapes compose variable interpolation so the shell — not
+    # docker compose — expands the vars at runtime. Without this the
+    # container saw blank models and exited silently.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        echo "pulling chat model: $${CHAT_MODEL}"
+        ollama pull "$${CHAT_MODEL}"
+        echo "pulling embed model: $${EMBED_MODEL}"
+        ollama pull "$${EMBED_MODEL}"
+        echo "done"
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Redis: second-tier embedding cache. Optional — the server runs fine
+  # without it — but on a multi-replica deployment it means every node
+  # benefits from every other node's upstream calls.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: nebula-redis
+    <<: [*default-restart, *default-logging]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    # `allkeys-lru` so memory pressure silently evicts the oldest
+    # embeddings rather than OOM-killing. 256mb is a sane dev cap;
+    # a 1536-dim f32 vector is 6 KB, so that's ~40k entries.
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "256mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+      - "--appendonly"
+      - "no"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 320m
+
+  # ---------------------------------------------------------------------------
+  # The main Rust binary. One image, three ports (REST / gRPC / pgwire).
+  # ---------------------------------------------------------------------------
+  nebula-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nebuladb/server:dev
+    container_name: nebula-server
+    <<: [*default-restart, *default-logging]
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    ports:
+      # Host-side ports are env-overridable so a local dev with 8080
+      # already taken can set e.g. NEBULA_REST_HOST_PORT=18080 without
+      # editing the file. Container-side stays fixed.
+      - "${NEBULA_REST_HOST_PORT:-8080}:8080"
+      - "${NEBULA_GRPC_HOST_PORT:-50051}:50051"
+      # pgwire on 5433 host-side to avoid clashing with a real Postgres
+      # that might be running on 5432.
+      - "${NEBULA_PG_HOST_PORT:-5433}:5432"
+    environment:
+      NEBULA_BIND: "0.0.0.0:8080"
+      NEBULA_GRPC_BIND: "0.0.0.0:50051"
+      NEBULA_PG_BIND: "0.0.0.0:5432"
+
+      # LLM: point at the Ollama sidecar.
+      NEBULA_LLM_OLLAMA_URL: "http://ollama:11434"
+      NEBULA_LLM_MODEL: "${OLLAMA_CHAT_MODEL:-llama3}"
+
+      # Embeddings: default to MockEmbedder so the demo runs offline.
+      # To use Ollama's embedding model instead, uncomment these:
+      #   NEBULA_OPENAI_API_KEY: "dummy"
+      #   NEBULA_OPENAI_BASE_URL: "http://ollama:11434/v1"
+      #   NEBULA_OPENAI_MODEL: "${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+      #   NEBULA_EMBED_DIM: "768"
+      NEBULA_EMBED_DIM: "384"
+      NEBULA_EMBED_CACHE_SIZE: "20000"
+
+      # Second-tier (shared) cache. Remove NEBULA_REDIS_URL to disable.
+      NEBULA_REDIS_URL: "redis://redis:6379"
+      NEBULA_REDIS_PREFIX: "nebula:embed:"
+      NEBULA_REDIS_TTL_SECS: "0"
+      NEBULA_REDIS_TIMEOUT_MS: "150"
+
+      NEBULA_CHUNK_CHARS: "500"
+      NEBULA_CHUNK_OVERLAP: "50"
+      # Empty => auth disabled. Set NEBULA_API_KEYS=secret1,secret2 in
+      # `.env` to require bearer auth.
+      NEBULA_API_KEYS: "${NEBULA_API_KEYS:-}"
+
+      RUST_LOG: "info,nebula_server=debug"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      # Give the build + initial boot a generous window before health
+      # checks start failing the container.
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1g
+
+  # ---------------------------------------------------------------------------
+  # Observability
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: nebula-prometheus
+    <<: [*default-restart, *default-logging]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    depends_on:
+      nebula-server:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9090/-/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: nebula-grafana
+    <<: [*default-restart, *default-logging]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Anonymous Viewer role lets the demo show panels without login
+      # while still keeping edits gated behind admin.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+
+volumes:
+  ollama-models:
+  redis-data:
+  prometheus-data:
+  grafana-data:
