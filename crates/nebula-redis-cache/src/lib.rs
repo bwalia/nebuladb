@@ -320,7 +320,10 @@ impl Embedder for RedisEmbedCache {
             });
 
             // Fill the `results` slots with the freshly fetched vectors.
-            for (idx, vec) in miss_positions.into_iter().zip(fresh.into_iter()) {
+            // `zip` takes any IntoIterator; Rust 1.95's clippy flags
+            // the explicit `.into_iter()` as useless. Pass `fresh`
+            // directly — same semantics, no allocation.
+            for (idx, vec) in miss_positions.into_iter().zip(fresh) {
                 results[idx] = Some(vec);
             }
         }

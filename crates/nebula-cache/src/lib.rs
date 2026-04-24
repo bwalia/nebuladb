@@ -187,7 +187,7 @@ impl Embedder for CachingEmbedder {
             // the returned key against the key we just inserted.
             {
                 let mut cache = self.cache.lock();
-                for (pos, vec) in missed_positions.iter().zip(fresh.into_iter()) {
+                for (pos, vec) in missed_positions.iter().zip(fresh) {
                     let arc = Arc::new(vec);
                     let key = keys[*pos];
                     if let Some((old_key, _)) = cache.push(key, Arc::clone(&arc)) {
