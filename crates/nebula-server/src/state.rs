@@ -13,6 +13,7 @@ use nebula_index::TextIndex;
 use nebula_llm::{LlmClient, MockLlm};
 use nebula_sql::SqlEngine;
 
+use crate::audit::AuditLog;
 use crate::jwt::JwtConfig;
 use crate::metrics::Metrics;
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
@@ -68,6 +69,9 @@ pub struct AppState {
     /// vector / AI search routes — the SQL layer is a parser +
     /// planner on top, not a separate data store.
     pub sql: Arc<SqlEngine>,
+    /// Audit ring buffer. Populated by the audit middleware on every
+    /// mutating request; surfaced via `GET /api/v1/admin/audit`.
+    pub audit: Arc<AuditLog>,
     pub config: Arc<AppConfig>,
 }
 
@@ -88,8 +92,14 @@ impl AppState {
             cache_stats: None,
             rate_limiter: None,
             sql,
+            audit: AuditLog::new(1024),
             config: Arc::new(config),
         }
+    }
+
+    pub fn with_audit(mut self, audit: Arc<AuditLog>) -> Self {
+        self.audit = audit;
+        self
     }
 
     pub fn with_sql(mut self, sql: Arc<SqlEngine>) -> Self {

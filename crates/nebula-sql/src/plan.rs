@@ -11,7 +11,8 @@ use serde::Serialize;
 /// semantic and vector retrieval would require a merge strategy
 /// (reciprocal rank fusion, weighted sum, etc.) that we punt on until
 /// there's a real use case driving the choice.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SemanticClause {
     /// `semantic_match(column, 'query text')`.
     /// The column isn't used by the executor yet — every column of a
@@ -33,7 +34,8 @@ pub enum SemanticClause {
 /// hit's `metadata` JSON. Intentionally tiny: equality and IN, no
 /// boolean tree. Complex predicates can be added without changing
 /// the planner shape — only this enum and the filter evaluator grow.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
 pub enum Filter {
     /// `metadata_path = literal`. `path` uses `.`-separated JSON
     /// pointer notation; a one-segment path is just a top-level key.
@@ -44,7 +46,12 @@ pub enum Filter {
 
 /// Column projection. `*` and specific fields; we don't do renames,
 /// arithmetic, or function calls. Use the raw metadata/text verbatim.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+// `tag="kind"` breaks here because Projection::Columns wraps a
+// sequence — serde's internally-tagged representation requires a
+// struct or map. Adjacent tagging (`{"kind":"columns","cols":[...]}`)
+// is the compromise that survives the Vec variant.
+#[serde(tag = "kind", content = "cols", rename_all = "snake_case")]
 pub enum Projection {
     /// `SELECT *` — return full hits.
     All,
@@ -56,19 +63,21 @@ pub enum Projection {
 /// Ordering key. `score` targets the ANN distance returned by the
 /// index (ascending = most similar first — distance semantics). Other
 /// keys resolve against metadata.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "path", rename_all = "snake_case")]
 pub enum OrderKey {
     Score,
     Metadata(Vec<String>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OrderDir {
     Asc,
     Desc,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OrderBy {
     pub key: OrderKey,
     pub dir: OrderDir,
@@ -82,7 +91,7 @@ pub struct PlanSerializable {
 
 /// The whole query plan. One retrieval clause + zero or more filters
 /// + projection + optional ORDER BY + optional LIMIT.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Plan {
     /// FROM target — maps to a NebulaDB bucket.
     pub bucket: String,

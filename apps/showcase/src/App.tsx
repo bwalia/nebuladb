@@ -6,8 +6,9 @@ import { SqlTab } from "./tabs/SqlTab";
 import { SearchTab } from "./tabs/SearchTab";
 import { RagTab } from "./tabs/RagTab";
 import { HybridTab } from "./tabs/HybridTab";
+import { AdminTab } from "./tabs/AdminTab";
 
-type TabId = "documents" | "sql" | "search" | "rag" | "hybrid";
+type TabId = "documents" | "sql" | "search" | "rag" | "hybrid" | "admin";
 
 const TABS: Array<{ id: TabId; label: string; hint: string }> = [
   { id: "documents", label: "Documents", hint: "Ingest + chunk + embed" },
@@ -15,6 +16,7 @@ const TABS: Array<{ id: TabId; label: string; hint: string }> = [
   { id: "search", label: "Semantic search", hint: "Vector retrieval" },
   { id: "rag", label: "RAG chat", hint: "Streaming answers" },
   { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query" },
+  { id: "admin", label: "Admin", hint: "Buckets, EXPLAIN, history, audit" },
 ];
 
 export function App() {
@@ -77,6 +79,7 @@ export function App() {
         {tab === "search" && <SearchTab />}
         {tab === "rag" && <RagTab />}
         {tab === "hybrid" && <HybridTab />}
+        {tab === "admin" && <AdminTab />}
       </main>
 
       <footer className="border-t border-gray-200 dark:border-gray-800 py-3 text-center text-xs text-gray-500 dark:text-gray-400">

@@ -13,6 +13,7 @@
 //! Middleware: request tracing, bearer-token auth, per-route metrics.
 //! All handlers return structured JSON errors with stable `code` strings.
 
+pub mod audit;
 pub mod error;
 pub mod jwt;
 pub mod metrics;
@@ -21,6 +22,7 @@ pub mod ratelimit;
 pub mod router;
 pub mod state;
 
+pub use audit::AuditLog;
 pub use jwt::JwtConfig;
 pub use ratelimit::{RateLimitConfig, RateLimiter};
 pub use router::build_router;

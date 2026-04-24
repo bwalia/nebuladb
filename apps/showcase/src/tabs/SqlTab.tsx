@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, ApiError, type SqlRow } from "../api";
 import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
+import { downloadBlob, recordHistory, rowsToCsv } from "../utils";
 
 const EXAMPLES: Array<{ label: string; sql: string }> = [
   {
@@ -37,13 +38,32 @@ export function SqlTab() {
       setRows(r.rows);
       setTook(r.took_ms);
       setSelected(null);
+      // Persist the success so the Admin tab can show a queryable
+      // history across page reloads.
+      recordHistory({ ts: Date.now(), sql, ok: true, took_ms: r.took_ms, rows: r.rows.length });
     } catch (e) {
-      if (e instanceof ApiError) setErr(`${e.code}: ${e.body}`);
-      else setErr((e as Error).message);
+      const msg = e instanceof ApiError ? `${e.code}: ${e.body}` : (e as Error).message;
+      setErr(msg);
       setRows(null);
+      recordHistory({ ts: Date.now(), sql, ok: false, error: msg });
     } finally {
       setBusy(false);
     }
+  };
+
+  const exportCsv = () => {
+    if (!rows || rows.length === 0) return;
+    downloadBlob(
+      `nebula-export-${Date.now()}.csv`,
+      new Blob([rowsToCsv(rows)], { type: "text/csv;charset=utf-8" })
+    );
+  };
+  const exportJson = () => {
+    if (!rows || rows.length === 0) return;
+    downloadBlob(
+      `nebula-export-${Date.now()}.json`,
+      new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" })
+    );
   };
 
   const columns = computeColumns(rows);
@@ -95,7 +115,20 @@ export function SqlTab() {
       </Panel>
 
       {rows && rows.length > 0 && (
-        <Panel title="Results" subtitle="Click a row to inspect raw JSON">
+        <Panel
+          title="Results"
+          subtitle="Click a row to inspect raw JSON"
+          action={
+            <div className="flex gap-2">
+              <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={exportCsv}>
+                Export CSV
+              </button>
+              <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={exportJson}>
+                Export JSON
+              </button>
+            </div>
+          }
+        >
           <div className="overflow-x-auto">
             <table className="min-w-full text-xs">
               <thead className="bg-gray-100 dark:bg-gray-950 text-gray-600 dark:text-gray-400">

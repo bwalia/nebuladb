@@ -51,6 +51,28 @@ export interface ApiErrorBody {
   error: { code: string; message: string };
 }
 
+export interface BucketStats {
+  bucket: string;
+  docs: number;
+  parent_docs: number;
+  metadata_keys: Array<[string, number]>;
+}
+
+export interface AuditEntry {
+  ts_ms: number;
+  principal: string;
+  method: string;
+  path: string;
+  status: number;
+}
+
+/**
+ * The server returns a tagged plan tree; we leave the shape `unknown`
+ * to avoid mirroring every QueryPlan variant in TypeScript. The
+ * Admin tab renders it as pretty-printed JSON anyway.
+ */
+export type QueryPlan = unknown;
+
 /**
  * Thrown on non-2xx responses. Carries the decoded body so the UI
  * can show the server's stable `code` string (e.g. `sql_parse`)
@@ -148,4 +170,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ query, top_k, bucket, stream: false }),
     }),
+
+  explain: (sql: string) =>
+    request<QueryPlan>("/api/v1/query/explain", {
+      method: "POST",
+      body: JSON.stringify({ sql }),
+    }),
+
+  buckets: () =>
+    request<BucketStats[]>("/api/v1/admin/buckets"),
+
+  audit: (limit = 200) =>
+    request<AuditEntry[]>(`/api/v1/admin/audit?limit=${limit}`),
 };

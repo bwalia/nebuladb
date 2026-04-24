@@ -1,4 +1,5 @@
-//! Auth middleware: bearer-token allowlist and/or JWT verification.
+//! Auth + audit middleware.
+//!
 //!
 //! Auth is layered:
 //!
@@ -102,4 +103,54 @@ pub async fn require_auth(
         r#"{"error":{"code":"unauthorized","message":"missing or invalid credentials"}}"#,
     )
         .into_response())
+}
+
+/// Write-path audit middleware.
+///
+/// Records method + path + principal + response status after the
+/// handler runs. GET requests are skipped — they're high-volume and
+/// reads already show up in counters. 5xx responses are still
+/// recorded because an audit log of "what was attempted" matters
+/// more than "what succeeded".
+///
+/// Runs *outside* the auth layer so unauthenticated attempts are
+/// recorded too (useful for spotting credential-stuffing).
+pub async fn audit_writes(
+    axum::extract::State(state): axum::extract::State<crate::state::AppState>,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+    req: Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let is_write = !matches!(method, axum::http::Method::GET | axum::http::Method::HEAD);
+
+    // Only keep what we need; don't hold the request alive across
+    // the `next.run` call.
+    let principal = if is_write {
+        let auth = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        Some(crate::audit::principal_fingerprint(
+            auth.as_deref(),
+            connect_info.map(|c| c.0),
+        ))
+    } else {
+        None
+    };
+
+    let resp = next.run(req).await;
+
+    if let Some(p) = principal {
+        state.audit.record(crate::audit::AuditEntry {
+            ts_ms: crate::audit::now_ms(),
+            principal: p,
+            method: method.to_string(),
+            path,
+            status: resp.status().as_u16(),
+        });
+    }
+    resp
 }

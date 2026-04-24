@@ -1,0 +1,317 @@
+import { useCallback, useEffect, useState } from "react";
+import { api, ApiError, type AuditEntry, type BucketStats, type QueryPlan } from "../api";
+import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
+import { clearHistory, loadHistory, type HistoryEntry } from "../utils";
+
+/**
+ * Admin / observability tab. Four sub-panels:
+ *
+ * - Buckets — live per-bucket stats from `/api/v1/admin/buckets`.
+ * - Query history — replay + EXPLAIN a previous SQL statement.
+ * - EXPLAIN — paste arbitrary SQL, see the typed plan tree.
+ * - Audit log — most-recent-first view of mutating requests.
+ *
+ * The whole tab polls in the background (10 s interval) so leaving
+ * it open while you run tests elsewhere shows live activity.
+ */
+export function AdminTab() {
+  return (
+    <div className="grid gap-4">
+      <BucketsPanel />
+      <ExplainPanel />
+      <HistoryPanel />
+      <AuditPanel />
+    </div>
+  );
+}
+
+// ---------- Buckets ----------
+
+function BucketsPanel() {
+  const [data, setData] = useState<BucketStats[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setData(await api.buckets());
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const id = setInterval(refresh, 10_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return (
+    <Panel
+      title="Buckets"
+      subtitle="Live doc counts and metadata-key frequency — refreshes every 10s"
+      action={
+        <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={refresh} disabled={busy}>
+          {busy ? "…" : "Refresh"}
+        </button>
+      }
+    >
+      <ErrorBanner err={err} />
+      {data === null && !err && <Spinner />}
+      {data && data.length === 0 && (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          No documents indexed yet. Try the Documents tab or run <code>./scripts/seed.sh</code>.
+        </p>
+      )}
+      {data && data.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-xs">
+            <thead className="bg-gray-100 dark:bg-gray-950 text-gray-600 dark:text-gray-400">
+              <tr>
+                <th className="text-left px-2 py-1 font-medium">bucket</th>
+                <th className="text-left px-2 py-1 font-medium">docs</th>
+                <th className="text-left px-2 py-1 font-medium">parent docs</th>
+                <th className="text-left px-2 py-1 font-medium">top metadata keys</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((b) => (
+                <tr key={b.bucket} className="border-t border-gray-200 dark:border-gray-800">
+                  <td className="px-2 py-1 font-mono">{b.bucket}</td>
+                  <td className="px-2 py-1 font-mono">{b.docs}</td>
+                  <td className="px-2 py-1 font-mono">{b.parent_docs}</td>
+                  <td className="px-2 py-1">
+                    <div className="flex flex-wrap gap-1">
+                      {b.metadata_keys.length === 0 && (
+                        <span className="text-gray-400">—</span>
+                      )}
+                      {b.metadata_keys.map(([k, n]) => (
+                        <span
+                          key={k}
+                          className="rounded bg-brand-50 text-brand-700 dark:bg-brand-600/20 dark:text-brand-500 px-1.5 py-0.5"
+                        >
+                          {k} · {n}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ---------- Explain ----------
+
+function ExplainPanel() {
+  const [sql, setSql] = useState(
+    "SELECT region, COUNT(*) AS n FROM docs WHERE semantic_match(content, 'zero trust') GROUP BY region"
+  );
+  const [plan, setPlan] = useState<QueryPlan | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const explain = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      setPlan(await api.explain(sql));
+    } catch (e) {
+      setPlan(null);
+      if (e instanceof ApiError) setErr(`${e.code}: ${e.body}`);
+      else setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Panel
+      title="EXPLAIN"
+      subtitle="Parse + plan without running the query. See which semantic clause is picked, how WHERE splits, and what top_k the retrieval will ask for."
+    >
+      <textarea
+        className="input font-mono text-xs min-h-[6rem] resize-y"
+        value={sql}
+        onChange={(e) => setSql(e.target.value)}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") void explain();
+        }}
+        spellCheck={false}
+      />
+      <button className="btn" onClick={explain} disabled={busy}>
+        {busy ? <Spinner label="planning…" /> : "Explain"}
+      </button>
+      <ErrorBanner err={err} />
+      {plan !== null && <JsonView value={plan} />}
+    </Panel>
+  );
+}
+
+// ---------- History ----------
+
+function HistoryPanel() {
+  const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
+
+  const reload = () => setHistory(loadHistory());
+  const wipe = () => {
+    clearHistory();
+    setHistory([]);
+  };
+
+  return (
+    <Panel
+      title="Query history"
+      subtitle={`${history.length} entries, stored locally in your browser`}
+      action={
+        <div className="flex gap-2">
+          <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={reload}>
+            Reload
+          </button>
+          <button
+            className="btn-secondary !py-1 !px-2 !text-xs"
+            onClick={wipe}
+            disabled={history.length === 0}
+          >
+            Clear
+          </button>
+        </div>
+      }
+    >
+      {history.length === 0 && (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          Run a query in the SQL tab — it lands here with timing and row counts.
+        </p>
+      )}
+      {history.length > 0 && (
+        <ul className="space-y-2">
+          {history.map((h, i) => (
+            <li
+              key={i}
+              className="border border-gray-200 dark:border-gray-800 rounded-md p-2 text-xs"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={`font-mono px-1.5 py-0.5 rounded ${
+                    h.ok
+                      ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300"
+                      : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300"
+                  }`}
+                >
+                  {h.ok ? "ok" : "err"}
+                </span>
+                <span className="flex items-center gap-3 text-gray-500 dark:text-gray-400">
+                  {h.ok && typeof h.took_ms === "number" && (
+                    <Stat label="took" value={`${h.took_ms}ms`} />
+                  )}
+                  {h.ok && typeof h.rows === "number" && <Stat label="rows" value={h.rows} />}
+                  <span>{new Date(h.ts).toLocaleTimeString()}</span>
+                </span>
+              </div>
+              <pre className="mt-1 whitespace-pre-wrap break-words font-mono">{h.sql}</pre>
+              {!h.ok && h.error && (
+                <div className="text-red-700 dark:text-red-300 mt-1">{h.error}</div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
+// ---------- Audit ----------
+
+function AuditPanel() {
+  const [entries, setEntries] = useState<AuditEntry[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setEntries(await api.audit(100));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const id = setInterval(refresh, 5_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return (
+    <Panel
+      title="Audit log"
+      subtitle="Mutating requests only. Newest first, capped at 1024 entries in memory."
+      action={
+        <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={refresh} disabled={busy}>
+          {busy ? "…" : "Refresh"}
+        </button>
+      }
+    >
+      <ErrorBanner err={err} />
+      {entries === null && !err && <Spinner />}
+      {entries && entries.length === 0 && (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          No writes recorded yet.
+        </p>
+      )}
+      {entries && entries.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-xs">
+            <thead className="bg-gray-100 dark:bg-gray-950 text-gray-600 dark:text-gray-400">
+              <tr>
+                <th className="text-left px-2 py-1 font-medium">time</th>
+                <th className="text-left px-2 py-1 font-medium">status</th>
+                <th className="text-left px-2 py-1 font-medium">method</th>
+                <th className="text-left px-2 py-1 font-medium">path</th>
+                <th className="text-left px-2 py-1 font-medium">principal</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((e, i) => (
+                <tr key={i} className="border-t border-gray-200 dark:border-gray-800">
+                  <td className="px-2 py-1 font-mono text-gray-500">
+                    {new Date(e.ts_ms).toLocaleTimeString()}
+                  </td>
+                  <td className="px-2 py-1 font-mono">
+                    <span
+                      className={
+                        e.status >= 500
+                          ? "text-red-600 dark:text-red-400"
+                          : e.status >= 400
+                          ? "text-orange-600 dark:text-orange-400"
+                          : "text-green-700 dark:text-green-400"
+                      }
+                    >
+                      {e.status}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 font-mono">{e.method}</td>
+                  <td className="px-2 py-1 font-mono">{e.path}</td>
+                  <td className="px-2 py-1 font-mono text-gray-500 dark:text-gray-400">
+                    {e.principal}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}

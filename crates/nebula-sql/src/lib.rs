@@ -108,4 +108,16 @@ impl SqlEngine {
         }
         Ok(out)
     }
+
+    /// Parse + plan a statement without running it. Returns the typed
+    /// plan tree so operators can inspect the shape the executor
+    /// would see — which semantic clause is picked, how WHERE splits
+    /// across a join, whether overfetch kicks in, etc. Consciously
+    /// does NOT consult or update the result cache: EXPLAIN is a
+    /// debugging tool and mustn't warm caches for queries that never
+    /// run.
+    pub fn explain(&self, sql: &str) -> Result<QueryPlan> {
+        let stmt = parser::parse(sql)?;
+        plan_tree::build(stmt)
+    }
 }

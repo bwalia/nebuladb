@@ -70,6 +70,18 @@ pub struct Hit {
     pub metadata: serde_json::Value,
 }
 
+/// One bucket's summary for the admin UI. `metadata_keys` counts how
+/// often each top-level metadata key appears — a cheap "which fields
+/// are worth filtering on?" signal that doesn't require a proper
+/// schema inference pass.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BucketStats {
+    pub bucket: String,
+    pub docs: usize,
+    pub parent_docs: usize,
+    pub metadata_keys: Vec<(String, usize)>,
+}
+
 struct Inner {
     /// External `(bucket, id)` → internal numeric id the HNSW speaks.
     by_key: AHashMap<(String, String), Id>,
@@ -365,6 +377,62 @@ impl TextIndex {
         Ok(n)
     }
 
+    /// One full-scan pass over the corpus. Cheap at demo scale
+    /// (thousands of docs); at production scale we'd maintain these
+    /// counters incrementally on the write path. Fine trade-off for
+    /// the admin UI today — rebuilds happen on demand, not per
+    /// request.
+    pub fn bucket_stats(&self, top_metadata_keys: usize) -> Vec<BucketStats> {
+        let g = self.inner.read();
+        // Per-bucket accumulator. A struct is clearer than a 3-tuple
+        // and silences clippy::type_complexity.
+        struct Acc {
+            docs: usize,
+            parents: AHashSet<String>,
+            keys: AHashMap<String, usize>,
+        }
+        let mut per_bucket: AHashMap<String, Acc> = AHashMap::new();
+        for doc in g.docs.values() {
+            let entry = per_bucket.entry(doc.bucket.clone()).or_insert_with(|| Acc {
+                docs: 0,
+                parents: AHashSet::new(),
+                keys: AHashMap::new(),
+            });
+            entry.docs += 1;
+            if let Some(parent) = &doc.parent_doc_id {
+                entry.parents.insert(parent.clone());
+            }
+            // Count top-level metadata keys only. Nested JSON would
+            // require a recursive walk; metadata is conventionally
+            // flat, and a deep walk would skew the "popular key"
+            // signal we're actually trying to expose.
+            if let serde_json::Value::Object(map) = &doc.metadata {
+                for k in map.keys() {
+                    *entry.keys.entry(k.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut out: Vec<BucketStats> = per_bucket
+            .into_iter()
+            .map(|(bucket, acc)| {
+                let mut kv: Vec<(String, usize)> = acc.keys.into_iter().collect();
+                // Sort by frequency desc, then key name for stable
+                // output in the UI (no "columns jumping around").
+                kv.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                kv.truncate(top_metadata_keys);
+                BucketStats {
+                    bucket,
+                    docs: acc.docs,
+                    parent_docs: acc.parents.len(),
+                    metadata_keys: kv,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.bucket.cmp(&b.bucket));
+        out
+    }
+
     /// Search by raw vector. `bucket` filters results *after* ANN, which
     /// is simpler than filtered-ANN but means you may need a larger
     /// `ef` to hit `k` hits when one bucket dominates the corpus. For
@@ -533,5 +601,44 @@ mod tests {
     async fn delete_document_unknown_errors() {
         let idx = make_index();
         assert!(idx.delete_document("docs", "nope").is_err());
+    }
+
+    #[tokio::test]
+    async fn bucket_stats_reports_counts_and_top_keys() {
+        let idx = make_index();
+        // Two buckets with different metadata shapes; parent_doc_id on
+        // some docs so `parent_docs` differs from `docs`.
+        idx.upsert_text("a", "1", "x", serde_json::json!({"region": "eu", "lang": "en"}))
+            .await
+            .unwrap();
+        idx.upsert_text("a", "2", "x", serde_json::json!({"region": "us"}))
+            .await
+            .unwrap();
+        idx.upsert_text("b", "1", "x", serde_json::json!({"team": "platform"}))
+            .await
+            .unwrap();
+        let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
+        idx.upsert_document("a", "doc1", "aaaaabbbbbccccc", &chunker, serde_json::json!({}))
+            .await
+            .unwrap();
+
+        let stats = idx.bucket_stats(10);
+        assert_eq!(stats.len(), 2, "two buckets");
+        let a = stats.iter().find(|s| s.bucket == "a").unwrap();
+        assert_eq!(a.docs, 2 + 3, "2 plain + 3 chunks");
+        assert_eq!(a.parent_docs, 1, "doc1 is the one parent");
+        // `region` appears in both plain docs, `lang` in only one.
+        let keys: Vec<&str> = a.metadata_keys.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"region"));
+
+        let b = stats.iter().find(|s| s.bucket == "b").unwrap();
+        assert_eq!(b.docs, 1);
+        assert_eq!(b.parent_docs, 0);
+    }
+
+    #[tokio::test]
+    async fn bucket_stats_empty_index_is_empty() {
+        let idx = make_index();
+        assert!(idx.bucket_stats(10).is_empty());
     }
 }

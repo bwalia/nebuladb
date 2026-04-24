@@ -25,6 +25,7 @@
 //! - Aggregates supported: `COUNT(*)`, `COUNT(col)`, `SUM(col)`,
 //!   `AVG(col)`, `MIN(col)`, `MAX(col)`. No HAVING this pass.
 
+use serde::Serialize;
 use sqlparser::ast;
 
 use crate::plan::{
@@ -32,7 +33,8 @@ use crate::plan::{
 };
 use crate::{Result, SqlError};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "fn", rename_all = "snake_case")]
 pub enum AggregateFn {
     CountStar,
     Count(String),
@@ -42,13 +44,13 @@ pub enum AggregateFn {
     Max(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AggregateSpec {
     pub alias: String,
     pub func: AggregateFn,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AggregatePlan {
     /// The scan that produces rows to aggregate. The scan's own
     /// projection is ignored — we project after grouping.
@@ -61,13 +63,13 @@ pub struct AggregatePlan {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AggOrderBy {
     pub key: String,
     pub dir: crate::plan::OrderDir,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct JoinPlan {
     pub left: Plan,
     pub right: Plan,
@@ -82,13 +84,14 @@ pub struct JoinPlan {
     pub right_alias: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct JoinPredicate {
     pub left_column: String,
     pub right_column: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "node", rename_all = "snake_case")]
 pub enum QueryPlan {
     // `Aggregate` and `Join` are much larger than `Scan` (they each
     // carry at least one full `Plan` plus extra bookkeeping). Boxing

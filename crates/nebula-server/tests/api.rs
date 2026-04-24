@@ -651,6 +651,100 @@ async fn allowlist_and_jwt_coexist() {
 }
 
 #[tokio::test]
+async fn admin_buckets_reports_per_bucket_stats() {
+    let app = build_router(app_state(&[]));
+    for (bucket, id, region) in [("a", "1", "eu"), ("a", "2", "us"), ("b", "1", "eu")] {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/bucket/{bucket}/doc"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"id":"{id}","text":"x","metadata":{{"region":"{region}"}}}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let res = app
+        .oneshot(Request::get("/api/v1/admin/buckets").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"bucket\":\"a\""));
+    assert!(body.contains("\"bucket\":\"b\""));
+    assert!(body.contains("\"docs\":2"));
+    assert!(body.contains("\"region\""));
+}
+
+#[tokio::test]
+async fn sql_explain_returns_typed_plan() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/query/explain")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"sql":"SELECT id FROM docs WHERE semantic_match(content, 'x') LIMIT 5"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"node\":\"scan\""), "missing node tag: {body}");
+    assert!(body.contains("\"semantic\""));
+    assert!(body.contains("\"limit\":5"));
+}
+
+#[tokio::test]
+async fn admin_audit_records_writes_not_reads() {
+    let app = build_router(app_state(&[]));
+    // One write and one read.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"aud-1","text":"x"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/bucket/docs/doc/aud-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/audit?limit=50")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    // Paths recorded by the middleware are the nested form (the
+    // middleware is attached inside the /api/v1 subtree). Audit on
+    // the audit endpoint is itself a GET and must not appear. The
+    // POST to the bucket/doc collection URL should.
+    assert!(body.contains("\"path\":\"/bucket/docs/doc\""));
+    assert!(!body.contains("/admin/audit"));
+    assert!(body.contains("\"method\":\"POST\""));
+    assert!(body.contains("\"status\":200"));
+}
+
+#[tokio::test]
 async fn sql_query_runs_semantic_match() {
     let state = app_state(&[]);
     let app = build_router(state);

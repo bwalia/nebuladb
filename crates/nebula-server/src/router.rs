@@ -49,9 +49,20 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ai/search", post(ai_search))
         .route("/ai/rag", post(ai_rag))
         .route("/query", post(sql_query))
+        .route("/query/explain", post(sql_explain))
+        .route("/admin/buckets", get(admin_buckets))
+        .route("/admin/audit", get(admin_audit))
+        // Layer order (innermost last; request flows top-to-bottom,
+        // response bottom-to-top):
+        //   rate_limit → audit → auth → handler
+        // Audit wraps auth so we record 401s too.
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::require_auth,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::audit_writes,
         ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -502,4 +513,57 @@ async fn sql_query(
         took_ms: out.took_ms,
         rows: out.rows,
     }))
+}
+
+// ---------- admin ----------
+
+/// EXPLAIN: parse + plan only, never execute. Returns the typed
+/// `QueryPlan` tree so operators can see which retrieval clause was
+/// picked, how WHERE split across a join, which filters became
+/// residual, etc. Does not touch the result cache.
+async fn sql_explain(
+    State(s): State<AppState>,
+    Json(req): Json<SqlQueryRequest>,
+) -> Result<Json<nebula_sql::QueryPlan>, ApiError> {
+    if req.sql.trim().is_empty() {
+        return Err(ApiError::BadRequest("sql must be non-empty".into()));
+    }
+    Ok(Json(s.sql.explain(&req.sql)?))
+}
+
+#[derive(Deserialize)]
+struct BucketsQuery {
+    /// Max metadata keys per bucket to return. The UI caps the
+    /// display at ~10 anyway, but we let callers override for
+    /// introspection.
+    #[serde(default = "default_top_keys")]
+    top_keys: usize,
+}
+
+fn default_top_keys() -> usize {
+    20
+}
+
+async fn admin_buckets(
+    State(s): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<BucketsQuery>,
+) -> Result<Json<Vec<nebula_index::BucketStats>>, ApiError> {
+    Ok(Json(s.index.bucket_stats(q.top_keys)))
+}
+
+#[derive(Deserialize)]
+struct AuditQuery {
+    #[serde(default = "default_audit_limit")]
+    limit: usize,
+}
+
+fn default_audit_limit() -> usize {
+    200
+}
+
+async fn admin_audit(
+    State(s): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<AuditQuery>,
+) -> Json<Vec<crate::audit::AuditEntry>> {
+    Json(s.audit.recent(q.limit))
 }
