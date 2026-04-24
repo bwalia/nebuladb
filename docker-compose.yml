@@ -242,6 +242,37 @@ services:
           cpus: "1.0"
           memory: 512m
 
+  # ---------------------------------------------------------------------------
+  # Optional demo UI. Static React bundle behind nginx, with nginx
+  # proxying `/api`, `/healthz`, and `/metrics` to the server so the
+  # browser never needs CORS and SSE streams cleanly.
+  # Commented out by default; uncomment to include in `docker compose up`.
+  # ---------------------------------------------------------------------------
+  showcase:
+    build:
+      context: ./apps/showcase
+      dockerfile: Dockerfile
+    image: nebuladb/showcase:dev
+    container_name: nebula-showcase
+    <<: [*default-restart, *default-logging]
+    depends_on:
+      nebula-server:
+        condition: service_healthy
+    ports:
+      - "${NEBULA_SHOWCASE_PORT:-5173}:80"
+    environment:
+      NEBULA_SERVER: "http://nebula-server:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64m
+
   grafana:
     image: grafana/grafana:latest
     container_name: nebula-grafana

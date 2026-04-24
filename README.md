@@ -78,6 +78,27 @@ curl -s -X POST http://localhost:8080/api/v1/query \
   -d '{"sql": "SELECT id, text FROM docs WHERE semantic_match(content, '\''dns failover'\'') LIMIT 3"}'
 ```
 
+## Knowledge Ops showcase app
+
+A React UI that demos every NebulaDB capability end-to-end lives at
+`apps/showcase`. Build and run it with the rest of the stack:
+
+```bash
+docker compose up --build      # brings up showcase at http://localhost:5173
+./scripts/seed.sh              # populates a small knowledge corpus
+```
+
+Or dev-mode, proxying to a local nebula-server at :8080:
+
+```bash
+cd apps/showcase
+npm install
+npm run dev                    # http://localhost:5173
+```
+
+Tabs: Documents (ingest), SQL (console with presets), Semantic search,
+RAG chat (streaming), Hybrid (SQL + retrieval side-by-side).
+
 ## SQL dialect — examples
 
 ```sql
