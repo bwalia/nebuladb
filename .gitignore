@@ -3,4 +3,5 @@
 .DS_Store
 node_modules/
 dist/
+.nebula.env
 # package-lock.json is committed so Docker builds reproducibly.

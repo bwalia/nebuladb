@@ -15,6 +15,15 @@
 source "$(dirname "$0")/lib.sh"
 trap finish EXIT
 
+# Fail fast if we're pointed at something that isn't NebulaDB. A
+# healthz probe that doesn't return our expected shape means a 404
+# storm is coming — catch it now with a useful message.
+preflight=$(curl -sS -m 3 "$BASE_URL/healthz" 2>/dev/null || true)
+if [[ "$preflight" != *'"model"'* || "$preflight" != *'"dim"'* ]]; then
+  fail "BASE_URL=$BASE_URL does not look like NebulaDB (/healthz returned: ${preflight:0:160})"
+  exit 1
+fi
+
 upsert_doc() {
   local id="$1" text="$2" region="$3" owner="$4"
   local body
@@ -75,7 +84,7 @@ upsert_doc "subscription-limits" \
   "Free-tier subscriptions are capped at 10 requests per second burst and 1 QPS sustained. Pro subscribers get 500 RPS burst, 100 QPS sustained. Enterprise limits are negotiated per contract." \
   "us" "developer-experience"
 
-log "seeded 10 docs"
+log "seeded 10 docs at $BASE_URL"
 log "try:"
-log "  curl -sS -X POST $BASE_URL/api/v1/ai/search -H 'content-type: application/json' -d '{\"query\":\"dns failover\",\"top_k\":3}' | jq"
+log "  curl -sS -X POST '$BASE_URL/api/v1/ai/search' -H 'content-type: application/json' -d '{\"query\":\"dns failover\",\"top_k\":3}' | jq"
 log "  or open the showcase UI and visit the Hybrid tab."
