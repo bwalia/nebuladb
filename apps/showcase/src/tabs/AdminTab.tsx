@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type AuditEntry, type BucketStats, type QueryPlan } from "../api";
 import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
 import { clearHistory, loadHistory, type HistoryEntry } from "../utils";
+import { FreshnessPill, useFreshness } from "../freshness";
 
 /**
  * Admin / observability tab. Four sub-panels:
@@ -32,32 +33,39 @@ function BucketsPanel() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const { bump, pill } = useFreshness(6000);
   const refresh = useCallback(async () => {
     setBusy(true);
     setErr(null);
     try {
       setData(await api.buckets());
+      bump();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [bump]);
 
   useEffect(() => {
     void refresh();
-    const id = setInterval(refresh, 10_000);
+    // 3s poll — fast enough to feel alive under bulk load, slow
+    // enough that a bucket-scan every tick doesn't matter.
+    const id = setInterval(refresh, 3_000);
     return () => clearInterval(id);
   }, [refresh]);
 
   return (
     <Panel
       title="Buckets"
-      subtitle="Live doc counts and metadata-key frequency — refreshes every 10s"
+      subtitle="Live doc counts and metadata-key frequency — refreshes every 3s"
       action={
-        <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={refresh} disabled={busy}>
-          {busy ? "…" : "Refresh"}
-        </button>
+        <div className="flex items-center gap-2">
+          <FreshnessPill {...pill} />
+          <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={refresh} disabled={busy}>
+            {busy ? "…" : "Refresh"}
+          </button>
+        </div>
       }
     >
       <ErrorBanner err={err} />
@@ -260,22 +268,26 @@ function AuditPanel() {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { bump, pill } = useFreshness(4000);
 
   const refresh = useCallback(async () => {
     setBusy(true);
     setErr(null);
     try {
       setEntries(await api.audit(100));
+      bump();
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [bump]);
 
   useEffect(() => {
     void refresh();
-    const id = setInterval(refresh, 5_000);
+    // 2s poll — under bulk load the user wants to see writes land
+    // as they happen; 5s felt sluggish.
+    const id = setInterval(refresh, 2_000);
     return () => clearInterval(id);
   }, [refresh]);
 
@@ -284,9 +296,12 @@ function AuditPanel() {
       title="Audit log"
       subtitle="Mutating requests only. Newest first, capped at 1024 entries in memory."
       action={
-        <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={refresh} disabled={busy}>
-          {busy ? "…" : "Refresh"}
-        </button>
+        <div className="flex items-center gap-2">
+          <FreshnessPill {...pill} />
+          <button className="btn-secondary !py-1 !px-2 !text-xs" onClick={refresh} disabled={busy}>
+            {busy ? "…" : "Refresh"}
+          </button>
+        </div>
       }
     >
       <ErrorBanner err={err} />

@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type AuditEntry, type BucketStats, type StatsSnapshot } from "../api";
 import { Panel, Stat } from "../components";
+import { FreshnessPill, useFreshness } from "../freshness";
 
 /**
- * Overview / cluster home. Polls the admin endpoints every 2s and
+ * Overview / cluster home. Polls the admin endpoints every 1s and
  * keeps a rolling 60-sample ring for the sparklines — one full minute
- * of history at 2s/tick. All charts are inline SVG so we pay zero
+ * of history at 1s/tick. All charts are inline SVG so we pay zero
  * chart-library bytes for a demo dashboard.
+ *
+ * A `FreshnessPill` in the header makes stalled polls visible at a
+ * glance: green "Xs ago" on fresh data, amber when more than 3s
+ * since the last successful tick.
  */
 
 interface TickSample {
@@ -26,9 +31,13 @@ export function OverviewTab({ onNavigate }: { onNavigate: (id: string) => void }
   // chart's latest tick to flow in via `historyRef.current`.
   const historyRef = useRef<TickSample[]>([]);
   const [historyRev, setHistoryRev] = useState(0);
+  const { bump, pill } = useFreshness(3000);
 
   useEffect(() => {
     let cancelled = false;
+    // 1s cadence so the sparkline actually feels live when bulk
+    // loads are running. The three admin endpoints served from
+    // in-memory state are < 1ms each; they're not the bottleneck.
     const tick = async () => {
       try {
         // Fetch everything in parallel; stats is the dominant
@@ -43,6 +52,7 @@ export function OverviewTab({ onNavigate }: { onNavigate: (id: string) => void }
         setBuckets(b);
         setAudit(a);
         setErr(null);
+        bump();
         const ring = historyRef.current;
         ring.push({ ts: Date.now(), stats: s });
         if (ring.length > RING_SIZE) ring.shift();
@@ -52,7 +62,7 @@ export function OverviewTab({ onNavigate }: { onNavigate: (id: string) => void }
       }
     };
     tick();
-    const id = setInterval(tick, 2000);
+    const id = setInterval(tick, 1000);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -65,10 +75,13 @@ export function OverviewTab({ onNavigate }: { onNavigate: (id: string) => void }
 
   return (
     <div className="space-y-4">
-      <PageHeader
-        title="Cluster overview"
-        subtitle="Single-pane summary — refreshes every 2s"
-      />
+      <div className="flex items-start justify-between gap-3">
+        <PageHeader
+          title="Cluster overview"
+          subtitle="Single-pane summary — refreshes every 1s"
+        />
+        <FreshnessPill {...pill} />
+      </div>
 
       {err && (
         <div className="rounded-md border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 text-red-800 dark:text-red-300 px-3 py-2 text-sm">

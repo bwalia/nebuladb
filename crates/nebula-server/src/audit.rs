@@ -15,6 +15,7 @@
 //! the counter + structured `tracing` output. This buffer is a
 //! cockpit, not a compliance system.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -47,18 +48,20 @@ pub struct AuditLog {
 }
 
 struct Inner {
-    /// Back-to-back Vec; once we hit capacity we overwrite the
-    /// oldest. A true circular buffer (with a start-pointer) would
-    /// save one `remove(0)` but `remove(0)` on a small Vec at
-    /// capacity 1024 is a nanosecond — not worth the complexity.
-    entries: Vec<AuditEntry>,
+    /// `VecDeque` over `Vec` because a full-capacity ring buffer
+    /// eats one `remove(0)` per record — O(n) memmove on every
+    /// mutating request, which shows up as contention once the log
+    /// is full and ingestion is running at 1000+ rps (a realistic
+    /// bulk-load rate). `VecDeque::pop_front` is O(1) and the total
+    /// allocation is the same.
+    entries: VecDeque<AuditEntry>,
 }
 
 impl AuditLog {
     pub fn new(capacity: usize) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
-                entries: Vec::with_capacity(capacity.max(1)),
+                entries: VecDeque::with_capacity(capacity.max(1)),
             }),
             capacity: capacity.max(1),
         })
@@ -67,20 +70,19 @@ impl AuditLog {
     pub fn record(&self, entry: AuditEntry) {
         let mut g = self.inner.lock();
         if g.entries.len() >= self.capacity {
-            g.entries.remove(0);
+            g.entries.pop_front();
         }
-        g.entries.push(entry);
+        g.entries.push_back(entry);
     }
 
     /// Most-recent-first snapshot, optionally capped. Snapshot is a
     /// `Vec` clone so callers can render without holding the lock.
     pub fn recent(&self, limit: usize) -> Vec<AuditEntry> {
         let g = self.inner.lock();
-        let mut out: Vec<AuditEntry> = g.entries.iter().rev().take(limit).cloned().collect();
-        // `rev().take()` gives us newest-first; keep it that way for
-        // direct UI rendering.
-        out.truncate(limit);
-        out
+        // `iter().rev().take()` on a VecDeque is O(min(n, limit)),
+        // same cost as on a Vec — the important win is on `record`,
+        // not here.
+        g.entries.iter().rev().take(limit).cloned().collect()
     }
 
     pub fn len(&self) -> usize {

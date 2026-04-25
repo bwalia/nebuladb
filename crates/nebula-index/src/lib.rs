@@ -159,49 +159,52 @@ impl TextIndex {
 
         let key = (bucket.to_string(), external_id.to_string());
 
-        // Step 1: claim an internal id and snapshot the doc under the
-        // lock. Holding the lock across the HNSW insert is fine because
-        // HNSW has its own internal lock — we are not nesting on the
-        // same mutex.
-        let new_internal_id = {
-            let mut g = self.inner.write();
+        // Hold the inner write lock across the HNSW mutation so a
+        // concurrent reader never observes a half-committed write:
+        // either the doc is fully findable, or it isn't there at
+        // all. An earlier revision released the lock between the map
+        // insert and the HNSW insert, which produced a read-after-
+        // write race under load — the sort of bug that's invisible
+        // until 100k-doc bulk-load with dashboard polling on top.
+        //
+        // Lock order across the whole crate is *always*
+        // `inner` → `hnsw`. `search_vector` takes `inner.read()`
+        // before touching `hnsw.search`. Keeping that order
+        // everywhere means we never deadlock.
+        let mut g = self.inner.write();
 
-            if let Some(&old_id) = g.by_key.get(&key) {
-                // Replace: tombstone old, drop from maps. The HNSW node
-                // for `old_id` stays for connectivity but is filtered
-                // from results.
-                let _ = self.hnsw.delete(old_id);
-                g.docs.remove(&old_id);
-                g.by_key.remove(&key);
-            }
-
-            let id = Id(g.next_id);
-            g.next_id += 1;
-            g.by_key.insert(key.clone(), id);
-            g.docs.insert(
-                id,
-                Document {
-                    bucket: bucket.to_string(),
-                    external_id: external_id.to_string(),
-                    text: text.to_string(),
-                    vector: vector.clone(),
-                    metadata,
-                    parent_doc_id: None,
-                    chunk_index: None,
-                },
-            );
-            id
-        };
-
-        // Step 2: push into HNSW. If this fails we roll back the maps
-        // so the index stays consistent; otherwise a failed insert
-        // would leave a `docs` entry the graph can never return.
-        if let Err(e) = self.hnsw.insert(new_internal_id, &vector) {
-            let mut g = self.inner.write();
-            g.docs.remove(&new_internal_id);
+        // Replace semantics: tombstone the old node under the SAME
+        // write lock so the transition old-doc → new-doc is atomic
+        // from a reader's POV.
+        if let Some(&old_id) = g.by_key.get(&key) {
+            let _ = self.hnsw.delete(old_id);
+            g.docs.remove(&old_id);
             g.by_key.remove(&key);
+        }
+
+        let new_internal_id = Id(g.next_id);
+        g.next_id += 1;
+
+        // Try the HNSW insert first — if it fails we don't want a
+        // dangling `by_key`/`docs` entry. On success the map writes
+        // below commit the rest of the visible state.
+        if let Err(e) = self.hnsw.insert(new_internal_id, &vector) {
             return Err(e.into());
         }
+
+        g.by_key.insert(key, new_internal_id);
+        g.docs.insert(
+            new_internal_id,
+            Document {
+                bucket: bucket.to_string(),
+                external_id: external_id.to_string(),
+                text: text.to_string(),
+                vector,
+                metadata,
+                parent_doc_id: None,
+                chunk_index: None,
+            },
+        );
         Ok(())
     }
 
@@ -254,50 +257,45 @@ impl TextIndex {
             }
         }
 
-        // Register everything under one write lock, then hand to HNSW
-        // (which has its own lock). Matches the single-insert path's
-        // ordering so a concurrent searcher sees either old or new
-        // state, never a mixed map.
+        // Same atomic-per-item discipline as the single-item path:
+        // hold the inner write lock across each item's HNSW mutation
+        // so readers never see a half-committed insert. Under bulk
+        // load this also prevents two batches interleaving their
+        // next_id allocations.
+        //
+        // Per-item failure handling: we keep going on HNSW failures
+        // because a single bad vector shouldn't kill an ingest of
+        // thousands. The lock is released at the end of the batch —
+        // readers back up briefly at scale but never see torn state.
         let mut inserted = 0usize;
-        let prepared: Vec<(Id, (String, String))> = {
-            let mut g = self.inner.write();
-            let mut out = Vec::with_capacity(items.len());
-            for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
-                let key = (bucket.to_string(), id.clone());
-                if let Some(&old_id) = g.by_key.get(&key) {
-                    let _ = self.hnsw.delete(old_id);
-                    g.docs.remove(&old_id);
-                    g.by_key.remove(&key);
-                }
-                let new_id = Id(g.next_id);
-                g.next_id += 1;
-                g.by_key.insert(key.clone(), new_id);
-                g.docs.insert(
-                    new_id,
-                    Document {
-                        bucket: bucket.to_string(),
-                        external_id: id.clone(),
-                        text: text.clone(),
-                        vector: vec.clone(),
-                        metadata: meta.clone(),
-                        parent_doc_id: None,
-                        chunk_index: None,
-                    },
-                );
-                out.push((new_id, key));
+        let mut g = self.inner.write();
+        for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
+            let key = (bucket.to_string(), id.clone());
+            if let Some(&old_id) = g.by_key.get(&key) {
+                let _ = self.hnsw.delete(old_id);
+                g.docs.remove(&old_id);
+                g.by_key.remove(&key);
             }
-            out
-        };
-
-        // Push each into HNSW outside the write lock. Per-item
-        // failure rolls back *that* item only.
-        for ((id, key), vec) in prepared.iter().zip(vectors.iter()) {
-            if let Err(_e) = self.hnsw.insert(*id, vec) {
-                let mut g = self.inner.write();
-                g.docs.remove(id);
-                g.by_key.remove(key);
+            let new_id = Id(g.next_id);
+            g.next_id += 1;
+            if self.hnsw.insert(new_id, vec).is_err() {
+                // Roll back the id allocation we already bumped. No
+                // map writes to undo — we haven't done them yet.
                 continue;
             }
+            g.by_key.insert(key, new_id);
+            g.docs.insert(
+                new_id,
+                Document {
+                    bucket: bucket.to_string(),
+                    external_id: id.clone(),
+                    text: text.clone(),
+                    vector: vec.clone(),
+                    metadata: meta.clone(),
+                    parent_doc_id: None,
+                    chunk_index: None,
+                },
+            );
             inserted += 1;
         }
         Ok(inserted)
@@ -327,7 +325,9 @@ impl TextIndex {
                 }
             }
         }
-        drop(g);
+        // Hold the inner lock across the HNSW delete so a concurrent
+        // reader can't observe the window where `by_key` says "gone"
+        // but HNSW still returns the id as a live hit.
         let _ = self.hnsw.delete(id);
         Ok(())
     }
@@ -382,9 +382,12 @@ impl TextIndex {
             }
         }
 
-        // Replace semantics: drop any existing chunks for this doc.
-        // Done under one lock so we never have a half-old, half-new
-        // state visible to a concurrent searcher.
+        // Replace semantics: drop any existing chunks for this doc,
+        // insert the new ones, tombstone any that fail at HNSW — all
+        // under a single write-lock acquisition so a concurrent
+        // reader never sees a mixed old/new chunk set for this
+        // `doc_id`. We pay the lock-hold cost (O(chunks) HNSW
+        // inserts) in exchange for atomicity from the reader side.
         let chunk_count = chunks.len();
         {
             let mut g = self.inner.write();
@@ -394,20 +397,35 @@ impl TextIndex {
                     let key = (bucket.to_string(), external_id.clone());
                     if let Some(id) = g.by_key.remove(&key) {
                         g.docs.remove(&id);
-                        // HNSW has its own lock; safe to call here.
                         let _ = self.hnsw.delete(id);
                     }
                 }
             }
 
-            // Register every new chunk before touching HNSW so a
-            // partial failure rolls back both maps together.
-            let mut registered: Vec<(Id, String)> = Vec::with_capacity(chunks.len());
             let mut parent_set: AHashSet<String> = AHashSet::with_capacity(chunks.len());
             for (chunk, vector) in chunks.iter().zip(vectors.iter()) {
                 let external_id = format!("{doc_id}#{}", chunk.index);
                 let id = Id(g.next_id);
                 g.next_id += 1;
+
+                // HNSW first: if it fails we didn't commit any map
+                // state for this chunk so there's nothing to roll
+                // back. Abort the whole document — partial chunk
+                // sets aren't meaningful for RAG.
+                if let Err(e) = self.hnsw.insert(id, vector) {
+                    // Tombstone every chunk we've already inserted
+                    // in this doc so the failed upsert doesn't leak
+                    // partial content into search.
+                    for prev_external in &parent_set {
+                        let pk = (bucket.to_string(), prev_external.clone());
+                        if let Some(prev_id) = g.by_key.remove(&pk) {
+                            g.docs.remove(&prev_id);
+                            let _ = self.hnsw.delete(prev_id);
+                        }
+                    }
+                    return Err(IndexError::Core(e));
+                }
+
                 g.by_key
                     .insert((bucket.to_string(), external_id.clone()), id);
                 g.docs.insert(
@@ -422,33 +440,9 @@ impl TextIndex {
                         chunk_index: Some(chunk.index),
                     },
                 );
-                parent_set.insert(external_id.clone());
-                registered.push((id, external_id));
+                parent_set.insert(external_id);
             }
             g.parents.insert(parent_key, parent_set);
-
-            // Drop the write lock before the HNSW inserts to minimize
-            // the blast radius. The chunks are already visible in the
-            // maps under tombstone-safe semantics: an HNSW insert
-            // failure will undo both sides.
-            drop(g);
-
-            for ((id, external_id), vector) in registered.iter().zip(vectors.iter()) {
-                if let Err(e) = self.hnsw.insert(*id, vector) {
-                    // Rollback every chunk for this doc so we don't
-                    // leave a half-inserted document.
-                    let mut g = self.inner.write();
-                    for (rid, rkey) in &registered {
-                        g.docs.remove(rid);
-                        g.by_key.remove(&(bucket.to_string(), rkey.clone()));
-                        let _ = self.hnsw.delete(*rid);
-                    }
-                    g.parents.remove(&(bucket.to_string(), doc_id.to_string()));
-                    return Err(IndexError::Core(e));
-                }
-                // Suppress unused warning when the iteration is loop-final.
-                let _ = external_id;
-            }
         }
         Ok(chunk_count)
     }
@@ -498,12 +492,10 @@ impl TextIndex {
                     g.parents.remove(&(doc.bucket, parent));
                 }
             }
-        }
-        // HNSW deletes are soft-tombstones; safe to call outside the
-        // write lock since the HNSW has its own internal lock.
-        drop(g);
-        for id in victims {
-            let _ = self.hnsw.delete(id);
+            // Tombstone under the write lock so readers never see a
+            // state where `by_key` is empty but HNSW still returns a
+            // live id. Consistent with the single-item delete path.
+            let _ = self.hnsw.delete(*id);
         }
         n
     }
@@ -580,8 +572,14 @@ impl TextIndex {
         // 4x is a rule-of-thumb; a real system would adapt based on the
         // bucket's share of the corpus.
         let fetch = if bucket.is_some() { k.saturating_mul(4).max(32) } else { k };
-        let raw = self.hnsw.search(vector, fetch, ef)?;
+
+        // Lock order discipline: `inner` before `hnsw`, everywhere.
+        // Writers take `inner.write()` then drive `hnsw` under it;
+        // readers take `inner.read()` then `hnsw.search` under it.
+        // Mixing the order would expose us to an AB-BA deadlock
+        // under `parking_lot::RwLock`'s write-priority contention.
         let g = self.inner.read();
+        let raw = self.hnsw.search(vector, fetch, ef)?;
         let mut hits = Vec::with_capacity(raw.len());
         for r in raw {
             let Some(doc) = g.docs.get(&r.id) else {
