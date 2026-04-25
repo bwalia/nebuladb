@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nebuladb.fullname" . }}
+  labels:
+    {{- include "nebuladb.server.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.server.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "nebuladb.server.selectorLabels" . | nindent 6 }}
+  # `Recreate` not `RollingUpdate`: NebulaDB is single-writer-per-node
+  # in-memory today, so rolling a new Pod alongside the old one would
+  # split writes across two instances. Flip to RollingUpdate once the
+  # durability story (snapshot + restore) lands.
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "nebuladb.server.selectorLabels" . | nindent 8 }}
+        {{- with .Values.server.podLabels }}{{ toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        # Re-roll the Pod when env-carrying resources change. Without
+        # these, a `helm upgrade` that edits values.env would silently
+        # keep the old Pod running with the old env.
+        checksum/config: {{ include (print $.Template.BasePath "/server-configmap.yaml") . | sha256sum }}
+        {{- with .Values.server.podAnnotations }}{{ toYaml . | nindent 8 }}{{- end }}
+    spec:
+      serviceAccountName: {{ include "nebuladb.serviceAccountName" . }}
+      {{- with .Values.server.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.podSecurityContext }}
+      securityContext: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          {{- with .Values.server.securityContext }}
+          securityContext: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: rest
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+            - name: pg
+              containerPort: 5432
+              protocol: TCP
+          envFrom:
+            # Non-secret env: ConfigMap keeps the values inspectable
+            # via `kubectl describe cm` without leaking secrets.
+            - configMapRef:
+                name: {{ include "nebuladb.fullname" . }}
+            {{- range $key, $secret := .Values.server.secretEnv }}
+            # Each secret-backed var references its own Secret so
+            # rotation doesn't need to touch every other env entry.
+            - secretRef:
+                name: {{ $secret }}
+            {{- end }}
+          env:
+            - name: NEBULA_BIND
+              value: "0.0.0.0:8080"
+            - name: NEBULA_GRPC_BIND
+              value: "0.0.0.0:50051"
+            - name: NEBULA_PG_BIND
+              value: "0.0.0.0:5432"
+            {{- with (include "nebuladb.redisUrl" .) }}
+            - name: NEBULA_REDIS_URL
+              value: {{ . | quote }}
+            {{- end }}
+          {{- with .Values.server.livenessProbe }}
+          livenessProbe: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.readinessProbe }}
+          readinessProbe: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.server.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # `readOnlyRootFilesystem: true` on the container means
+            # we must provide writable paths for tempdir-style needs.
+            # `/tmp` covers rustls, reqwest, and any transient caches.
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.server.persistence.enabled }}
+            - name: data
+              mountPath: /var/lib/nebuladb
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.server.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "nebuladb.fullname" . }}-data
+        {{- end }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

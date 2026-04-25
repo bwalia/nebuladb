@@ -1,0 +1,14 @@
+{{- if .Values.server.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "nebuladb.fullname" . }}
+  labels:
+    {{- include "nebuladb.server.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.server.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "nebuladb.server.selectorLabels" . | nindent 6 }}
+{{- end -}}

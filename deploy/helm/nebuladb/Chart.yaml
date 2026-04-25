@@ -1,0 +1,39 @@
+apiVersion: v2
+name: nebuladb
+description: |
+  AI-native hybrid database. Deploys `nebula-server` and optionally the
+  `nebula-showcase` admin UI. Redis (for the second-tier embedding
+  cache) can be brought up by enabling the bundled Bitnami subchart,
+  or pointed at an external instance via values.
+type: application
+
+# Chart versioning is decoupled from app versioning. Bump `version`
+# on chart-template changes; bump `appVersion` when the default
+# image tag changes.
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - database
+  - vector
+  - rag
+  - llm
+  - ai
+  - postgres
+  - hnsw
+
+home: https://github.com/bwalia/nebuladb
+sources:
+  - https://github.com/bwalia/nebuladb
+maintainers:
+  - name: bwalia
+    url: https://github.com/bwalia
+
+# Bitnami Redis as a dependency, gated by `redis.enabled=false`
+# default. Users who want an external Redis (recommended in prod)
+# set `redis.enabled=false` and provide `externalRedisUrl`.
+dependencies:
+  - name: redis
+    version: "~19.6.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled

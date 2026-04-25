@@ -204,6 +204,58 @@ jobs:
         run: docker compose down -v --remove-orphans
 
   # --------------------------------------------------------------------------
+  # Helm chart: lint + render-with-defaults + render-with-all-features.
+  # Fails loud on a broken template; catches the common "I edited
+  # values.yaml and now nothing renders" regressions before an
+  # operator discovers them with `helm install`.
+  # --------------------------------------------------------------------------
+  helm:
+    name: helm lint + template
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.15.3"
+      - name: Fetch subchart deps
+        # The Bitnami Redis subchart is a `dependency` in Chart.yaml;
+        # `helm lint` warns without the charts/ dir populated, and
+        # `helm template` hard-fails. Fetch before either.
+        run: helm dependency update deploy/helm/nebuladb
+      - name: helm lint
+        run: helm lint deploy/helm/nebuladb
+      - name: helm template (defaults)
+        # `--debug` surfaces render errors with Chart.yaml line info.
+        run: helm template ci-test deploy/helm/nebuladb --debug >/dev/null
+      - name: helm template (all features on)
+        # Exercise every optional branch so a template bug in the
+        # rarely-rendered Ingress / PDB / ServiceMonitor paths
+        # surfaces in CI, not when a user turns them on.
+        run: |
+          cat >/tmp/full.yaml <<'EOF'
+          redis:
+            enabled: true
+          server:
+            ingress:
+              enabled: true
+              hosts:
+                - host: nebula.example.com
+                  paths:
+                    - path: /
+                      pathType: Prefix
+            podDisruptionBudget:
+              enabled: true
+            persistence:
+              enabled: true
+              size: 5Gi
+          serviceMonitor:
+            enabled: true
+          EOF
+          helm template ci-test deploy/helm/nebuladb -f /tmp/full.yaml --debug >/dev/null
+
+  # --------------------------------------------------------------------------
   # Slack notification — opt-in. Skips silently if the webhook secret
   # isn't set, so forks of this repo get a green notify step instead
   # of a confusing red one.
@@ -211,7 +263,7 @@ jobs:
   notify:
     name: notify on failure
     runs-on: ubuntu-latest
-    needs: [unit, e2e]
+    needs: [unit, e2e, helm]
     if: failure() && github.event_name == 'schedule'
     steps:
       - name: Post to Slack

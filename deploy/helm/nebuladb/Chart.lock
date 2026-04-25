@@ -1,0 +1,6 @@
+dependencies:
+- name: redis
+  repository: https://charts.bitnami.com/bitnami
+  version: 19.6.4
+digest: sha256:4d7776744eec0e9e9403bc105c0e9a4386cce731b5c5e9a7afe0766e77c9902f
+generated: "2026-04-25T07:37:17.359475+01:00"

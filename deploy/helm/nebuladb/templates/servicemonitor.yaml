@@ -1,0 +1,23 @@
+{{- if .Values.serviceMonitor.enabled -}}
+# ServiceMonitor for Prometheus Operator / kube-prometheus-stack.
+# Only rendered when the CRD is available in the cluster — we don't
+# try to install the CRD ourselves, that's the operator's job.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "nebuladb.fullname" . }}
+  labels:
+    {{- include "nebuladb.server.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "nebuladb.server.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: rest
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end -}}

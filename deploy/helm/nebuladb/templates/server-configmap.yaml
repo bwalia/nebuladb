@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nebuladb.fullname" . }}
+  labels:
+    {{- include "nebuladb.server.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+data:
+  # Only non-empty values get mounted; blank values stay unset so the
+  # server falls back to its hardcoded defaults. This matches the
+  # binary's "unset env var → sensible default" behavior exactly.
+  {{- range $k, $v := .Values.server.env }}
+  {{- if ne (toString $v) "" }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+  {{- end }}

@@ -1,0 +1,202 @@
+# Default values for nebuladb.
+#
+# Philosophy: single-node defaults that work out of the box (`helm
+# install nebula .`), with production knobs clearly labelled. Every
+# env-var that `nebula-server` accepts has a corresponding values key
+# — see `README.md` in the main repo for the full semantics.
+
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
+server:
+  replicaCount: 1
+  image:
+    repository: bwalia/nebula-server
+    # Pinned so `helm upgrade` is explicit. Use `helm upgrade --set
+    # server.image.tag=X` to roll a new version.
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+  # Service account: created by default so RBAC policies can be
+  # attached. Disable + point at a pre-existing SA for shared envs.
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
+  podAnnotations: {}
+  podLabels: {}
+
+  podSecurityContext:
+    runAsNonRoot: true
+    fsGroup: 10001
+  securityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  service:
+    type: ClusterIP
+    # Three distinct listeners, all on the same Pod:
+    restPort: 8080
+    grpcPort: 50051
+    pgPort: 5432
+
+  resources:
+    # Conservative demo defaults. Production should size based on
+    # corpus; HNSW is mostly RAM-bound (4 bytes per dim per doc).
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+
+  # Liveness uses /healthz; readiness gates on the same endpoint with
+  # a stricter cadence so a temporarily-slow server doesn't get
+  # culled mid-request.
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 2
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Env vars forwarded to the binary. Leave any of these unset to
+  # fall back to the binary's own defaults (see main README).
+  env:
+    # LLM provider (RAG). Defaults to MockLlm when unset.
+    NEBULA_LLM_OLLAMA_URL: ""
+    NEBULA_LLM_MODEL: ""
+
+    # Embedder provider. Defaults to MockEmbedder when unset.
+    NEBULA_OPENAI_API_KEY: ""
+    NEBULA_OPENAI_BASE_URL: ""
+    NEBULA_OPENAI_MODEL: ""
+    NEBULA_EMBED_DIM: "384"
+    NEBULA_EMBED_CACHE_SIZE: "20000"
+
+    # SQL result cache + chunker.
+    NEBULA_CHUNK_CHARS: "500"
+    NEBULA_CHUNK_OVERLAP: "50"
+    NEBULA_SQL_CACHE: "on"
+    NEBULA_SQL_CACHE_SIZE: "512"
+    NEBULA_SQL_CACHE_TTL_SECS: "30"
+
+    # Rate limiting. Prod defaults are tighter than dev; raise
+    # NEBULA_RATE_LIMIT_BURST / _RPS to suit workload.
+    NEBULA_RATE_LIMIT: "on"
+    NEBULA_RATE_LIMIT_BURST: "120"
+    NEBULA_RATE_LIMIT_RPS: "20"
+
+    RUST_LOG: "info"
+
+  # Secret-sourced env vars. Populated from a Kubernetes Secret so
+  # JWT + bearer tokens don't land in plain-text values.
+  # Format: { key: secret-name } — the chart mounts `secret-name`
+  # with a `key=value` data entry and injects via envFrom.
+  secretEnv:
+    # NEBULA_API_KEYS: my-api-keys
+    # NEBULA_JWT_SECRET: my-jwt-secret
+
+  # PodDisruptionBudget for multi-replica deployments. Defaults
+  # disabled (single-replica — no DB to distribute yet).
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+  # Persistence is off by default — NebulaDB is currently fully
+  # in-memory. A PVC here will become meaningful once the HNSW
+  # snapshot-to-disk feature lands; leaving the hook in so
+  # upgrades don't re-template Pods when that does ship.
+  persistence:
+    enabled: false
+    storageClass: ""
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+
+  # Ingress for the REST + showcase surfaces. gRPC and pgwire
+  # typically live on a Service of type LoadBalancer in prod; this
+  # ingress only exposes HTTP.
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: nebuladb.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+# ---------------------------------------------------------------------------
+# Showcase (React admin UI)
+# ---------------------------------------------------------------------------
+showcase:
+  enabled: true
+  image:
+    repository: bwalia/nebula-showcase
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "64Mi"
+    requests:
+      cpu: "10m"
+      memory: "16Mi"
+  # NGINX proxies these to the server service at the URL below.
+  # Set automatically to the cluster DNS of the server's Service.
+  # Override only for split deployments.
+  nebulaServerUrl: ""
+
+# ---------------------------------------------------------------------------
+# Redis (bundled Bitnami subchart)
+# ---------------------------------------------------------------------------
+redis:
+  # `enabled=true` deploys Bitnami Redis. `enabled=false` +
+  # `externalRedisUrl` pointed at an existing cluster is the
+  # production path.
+  enabled: false
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: false
+
+# External Redis URL (used when redis.enabled is false). If both
+# are empty the embedding cache runs in-proc only.
+externalRedisUrl: ""
+
+# ---------------------------------------------------------------------------
+# Observability — optional ServiceMonitor for kube-prometheus-stack
+# ---------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  # Additional labels merged onto the ServiceMonitor so
+  # kube-prometheus-stack's `serviceMonitorSelector` picks it up.
+  labels: {}

@@ -5,3 +5,8 @@ node_modules/
 dist/
 .nebula.env
 # package-lock.json is committed so Docker builds reproducibly.
+
+# Helm: subchart artifacts are fetched by CI / helm dep update, not
+# committed. Chart.lock pins versions and *is* worth committing.
+deploy/helm/**/charts/
+deploy/helm/**/*.tgz

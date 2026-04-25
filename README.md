@@ -229,6 +229,41 @@ End-to-end smoke scripts — usable locally and wired into CI:
 ./scripts/smoke_load.sh      # 60 concurrent requests, p95 budget
 ```
 
+## Deployment
+
+### Docker Hub images
+
+`.github/workflows/publish.yml` builds multi-arch images
+(linux/amd64 + linux/arm64) and pushes to Docker Hub on every main
+push and every `v*.*.*` tag:
+
+```bash
+docker pull bwalia/nebula-server:latest
+docker pull bwalia/nebula-showcase:latest
+```
+
+Skips gracefully on forks that don't have `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN` repo secrets set.
+
+### Helm chart
+
+`deploy/helm/nebuladb/` is a single chart covering the server,
+showcase UI, optional bundled Redis, and an optional Prometheus
+Operator `ServiceMonitor`. Chart docs live alongside the chart in
+[`deploy/helm/nebuladb/README.md`](deploy/helm/nebuladb/README.md).
+
+```bash
+helm dependency update deploy/helm/nebuladb
+helm install nebula deploy/helm/nebuladb
+
+# Production-ish: external Redis, ingress on, persistence hook
+helm install nebula deploy/helm/nebuladb \
+  --set redis.enabled=false \
+  --set externalRedisUrl=redis://prod-redis:6379 \
+  --set server.ingress.enabled=true \
+  --set server.ingress.hosts[0].host=nebuladb.example.com
+```
+
 ## CI
 
 `.github/workflows/nightly.yml` runs:

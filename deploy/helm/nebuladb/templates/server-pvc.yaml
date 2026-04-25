@@ -1,0 +1,18 @@
+{{- if .Values.server.persistence.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nebuladb.fullname" . }}-data
+  labels:
+    {{- include "nebuladb.server.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.server.persistence.accessModes | nindent 4 }}
+  {{- if .Values.server.persistence.storageClass }}
+  storageClassName: {{ .Values.server.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.server.persistence.size }}
+{{- end -}}

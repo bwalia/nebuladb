@@ -1,0 +1,38 @@
+NebulaDB is now up.
+
+1. REST / gRPC / pgwire are exposed on the Service:
+     {{ include "nebuladb.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+       :{{ .Values.server.service.restPort }}  (REST)
+       :{{ .Values.server.service.grpcPort }}  (gRPC)
+       :{{ .Values.server.service.pgPort }}  (pgwire)
+
+2. Port-forward the REST endpoint:
+
+     kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "nebuladb.fullname" . }} 8080:{{ .Values.server.service.restPort }}
+
+   Then check:
+     curl http://localhost:8080/healthz
+
+{{- if .Values.showcase.enabled }}
+
+3. Showcase UI:
+
+     kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "nebuladb.fullname" . }}-showcase 5173:{{ .Values.showcase.service.port }}
+
+   Then open http://localhost:5173
+{{- end }}
+
+{{- if and (not .Values.redis.enabled) (not .Values.externalRedisUrl) }}
+
+Note: the second-tier Redis embedding cache is disabled. Enable it
+with `--set redis.enabled=true` (bundled Bitnami subchart) or
+`--set externalRedisUrl=redis://host:6379` for a shared cluster.
+{{- end }}
+
+{{- if .Values.server.ingress.enabled }}
+
+Ingress is configured. Expected hosts:
+{{- range .Values.server.ingress.hosts }}
+  https://{{ .host }}
+{{- end }}
+{{- end }}

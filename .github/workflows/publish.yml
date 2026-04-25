@@ -1,0 +1,157 @@
+# Docker Hub publish — multi-arch images for nebula-server and
+# nebula-showcase.
+#
+# Triggers:
+#   - push to main: build + push `:main` + `:sha-<short>` tags.
+#   - git tag vX.Y.Z: build + push `:X.Y.Z`, `:X.Y`, `:X`, and
+#     `:latest`. Tags are derived from the git ref via
+#     docker/metadata-action.
+#   - manual dispatch: same as push-to-main but idempotent.
+#
+# Secrets:
+#   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN — access token (not password;
+#     use a scoped PAT from Docker Hub's "Account Settings →
+#     Security" page).
+#
+# If either secret is missing the whole job short-circuits with a
+# friendly message rather than failing the pipeline. That lets forks
+# / PRs pass CI without needing repo secrets configured.
+#
+# Buildx layer cache lives in the runner's local image cache + the
+# GitHub Actions cache via `type=gha`. First build on a cold cache
+# takes ~15 min for the server (Rust + tonic-build + pgwire);
+# warm-cache builds are ~2 min.
+
+name: publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+concurrency:
+  # One publish run at a time per ref. Two overlapping main pushes
+  # would race on the `:main` tag; cancel-in-progress preserves
+  # "last push wins" semantics.
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-secrets:
+    name: preflight
+    runs-on: ubuntu-latest
+    # Surface whether the rest of the matrix will run. Makes the
+    # "publish skipped" state obvious in the Actions UI instead of
+    # having the real jobs all fail at the login step.
+    outputs:
+      has_dockerhub: ${{ steps.probe.outputs.has_dockerhub }}
+    steps:
+      - id: probe
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ -n "$DOCKERHUB_USERNAME" && -n "$DOCKERHUB_TOKEN" ]]; then
+            echo "has_dockerhub=true" >>"$GITHUB_OUTPUT"
+            echo "Docker Hub credentials present — will publish."
+          else
+            echo "has_dockerhub=false" >>"$GITHUB_OUTPUT"
+            echo "::warning::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN not configured — publish jobs will skip."
+          fi
+
+  build-and-push:
+    name: ${{ matrix.image }} · multi-arch
+    needs: check-secrets
+    if: needs.check-secrets.outputs.has_dockerhub == 'true'
+    runs-on: ubuntu-latest
+    # 90-minute ceiling: rust + tonic on a cold cache + a second
+    # arch can push long. Warm-cache runs finish in minutes.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: nebula-server
+            context: .
+            dockerfile: Dockerfile
+          - image: nebula-showcase
+            context: apps/showcase
+            dockerfile: apps/showcase/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU so we can build linux/arm64 from the amd64 runner. On a
+      # native arm64 runner (e.g. GitHub's new ones) this is a
+      # no-op; safe to leave unconditionally.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Hardcoding the namespace here so a fork that sets
+          # DOCKERHUB_USERNAME can't accidentally publish to
+          # someone else's repo. Update this line to move the
+          # namespace.
+          images: ${{ vars.DOCKERHUB_NAMESPACE || 'bwalia' }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          # arm64 covers AWS Graviton + Apple Silicon. If you only
+          # need amd64, drop it here — cuts build time ~50%.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # `type=gha` stores layers in GitHub's Actions cache. Much
+          # faster than rebuilding from scratch every run, and
+          # smaller blast radius than pushing a `:cache` tag.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # Summary job — prints the resulting image list even on skip so a
+  # developer reading the logs knows what got published.
+  summary:
+    name: published
+    needs: [check-secrets, build-and-push]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if [[ "${{ needs.check-secrets.outputs.has_dockerhub }}" == "true" ]]; then
+            echo "Images available:"
+            echo "  docker pull ${{ vars.DOCKERHUB_NAMESPACE || 'bwalia' }}/nebula-server:${{ github.ref_name }}"
+            echo "  docker pull ${{ vars.DOCKERHUB_NAMESPACE || 'bwalia' }}/nebula-showcase:${{ github.ref_name }}"
+          else
+            echo "Publish skipped (no DOCKERHUB credentials configured)."
+          fi
