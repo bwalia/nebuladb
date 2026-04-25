@@ -52,6 +52,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/query/explain", post(sql_explain))
         .route("/admin/buckets", get(admin_buckets))
         .route("/admin/audit", get(admin_audit))
+        .route("/admin/stats", get(admin_stats))
+        .route("/admin/bucket/:bucket/empty", post(admin_empty_bucket))
         // Layer order (innermost last; request flows top-to-bottom,
         // response bottom-to-top):
         //   rate_limit → audit → auth → handler
@@ -566,4 +568,77 @@ async fn admin_audit(
     axum::extract::Query(q): axum::extract::Query<AuditQuery>,
 ) -> Json<Vec<crate::audit::AuditEntry>> {
     Json(s.audit.recent(q.limit))
+}
+
+#[derive(Serialize)]
+struct StatsResponse {
+    requests_total: u64,
+    requests_errors: u64,
+    auth_failures: u64,
+    rate_limited: u64,
+    jwt_failures: u64,
+    docs_inserted: u64,
+    docs_deleted: u64,
+    searches_vector: u64,
+    searches_semantic: u64,
+    rag_requests: u64,
+    embed_cache_hits: u64,
+    embed_cache_misses: u64,
+    embed_cache_evictions: u64,
+    embed_cache_inserts: u64,
+    total_docs_live: usize,
+}
+
+/// Snapshot the server's counters as JSON. Parallels `/metrics`
+/// (Prometheus text) but with a stable typed shape — the UI can
+/// consume this every few seconds without re-parsing the text format
+/// on every tick. Field names match the Prometheus metric names with
+/// the `nebula_` prefix dropped.
+#[derive(Serialize)]
+struct EmptyBucketResponse {
+    bucket: String,
+    removed: usize,
+}
+
+/// Tombstone every doc in a bucket. "Empty" rather than "drop"
+/// because NebulaDB buckets are implicit — the bucket namespace
+/// survives an empty, which is the usual admin intent ("clear demo
+/// data, keep structure").
+async fn admin_empty_bucket(
+    State(s): State<AppState>,
+    axum::extract::Path(bucket): axum::extract::Path<String>,
+) -> Result<Json<EmptyBucketResponse>, ApiError> {
+    if bucket.is_empty() {
+        return Err(ApiError::BadRequest("bucket name required".into()));
+    }
+    let removed = s.index.empty_bucket(&bucket);
+    s.metrics.inc_delete();
+    Ok(Json(EmptyBucketResponse { bucket, removed }))
+}
+
+async fn admin_stats(State(s): State<AppState>) -> Json<StatsResponse> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let m = &s.metrics;
+    let (hits, misses, evictions, inserts) = s
+        .cache_stats
+        .as_ref()
+        .map(|c| c.snapshot())
+        .unwrap_or((0, 0, 0, 0));
+    Json(StatsResponse {
+        requests_total: m.requests_total.load(Relaxed),
+        requests_errors: m.requests_errors.load(Relaxed),
+        auth_failures: m.auth_failures.load(Relaxed),
+        rate_limited: m.rate_limited.load(Relaxed),
+        jwt_failures: m.jwt_failures.load(Relaxed),
+        docs_inserted: m.docs_inserted.load(Relaxed),
+        docs_deleted: m.docs_deleted.load(Relaxed),
+        searches_vector: m.searches_vector.load(Relaxed),
+        searches_semantic: m.searches_semantic.load(Relaxed),
+        rag_requests: m.rag_requests.load(Relaxed),
+        embed_cache_hits: hits,
+        embed_cache_misses: misses,
+        embed_cache_evictions: evictions,
+        embed_cache_inserts: inserts,
+        total_docs_live: s.index.len(),
+    })
 }

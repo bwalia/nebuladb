@@ -651,6 +651,84 @@ async fn allowlist_and_jwt_coexist() {
 }
 
 #[tokio::test]
+async fn admin_stats_returns_json_snapshot() {
+    let app = build_router(app_state(&[]));
+    // Insert one doc + run one semantic search so a couple counters move.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"s-1","text":"x"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"x","top_k":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let res = app
+        .oneshot(Request::get("/api/v1/admin/stats").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    // Shape, not exact values — counter values race with unrelated
+    // tests in parallel runs.
+    assert!(body.contains("\"requests_total\""));
+    assert!(body.contains("\"docs_inserted\""));
+    assert!(body.contains("\"searches_semantic\""));
+    assert!(body.contains("\"total_docs_live\":1"));
+}
+
+#[tokio::test]
+async fn admin_empty_bucket_drops_docs_only_in_target() {
+    let app = build_router(app_state(&[]));
+    for (b, i) in [("a", "1"), ("a", "2"), ("b", "1")] {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/bucket/{b}/doc"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"id":"{i}","text":"x"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/admin/bucket/a/empty")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"removed\":2"));
+
+    // b/1 must still be there.
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/bucket/b/doc/1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn admin_buckets_reports_per_bucket_stats() {
     let app = build_router(app_state(&[]));
     for (bucket, id, region) in [("a", "1", "eu"), ("a", "2", "us"), ("b", "1", "eu")] {

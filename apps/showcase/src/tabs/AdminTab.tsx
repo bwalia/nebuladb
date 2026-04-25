@@ -76,6 +76,7 @@ function BucketsPanel() {
                 <th className="text-left px-2 py-1 font-medium">docs</th>
                 <th className="text-left px-2 py-1 font-medium">parent docs</th>
                 <th className="text-left px-2 py-1 font-medium">top metadata keys</th>
+                <th className="text-right px-2 py-1 font-medium">actions</th>
               </tr>
             </thead>
             <tbody>
@@ -98,6 +99,31 @@ function BucketsPanel() {
                         </span>
                       ))}
                     </div>
+                  </td>
+                  <td className="px-2 py-1 text-right">
+                    <button
+                      className="text-xs text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 underline"
+                      onClick={async () => {
+                        // Confirmation: empties are idempotent but
+                        // destructive. A single-click wipe would be
+                        // an operator footgun.
+                        if (
+                          !confirm(
+                            `Empty bucket "${b.bucket}"? This tombstones ${b.docs} document(s).`
+                          )
+                        ) {
+                          return;
+                        }
+                        try {
+                          await api.emptyBucket(b.bucket);
+                          await refresh();
+                        } catch (e) {
+                          alert(`Failed: ${(e as Error).message}`);
+                        }
+                      }}
+                    >
+                      Empty
+                    </button>
                   </td>
                 </tr>
               ))}

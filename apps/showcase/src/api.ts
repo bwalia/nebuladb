@@ -73,6 +73,24 @@ export interface AuditEntry {
  */
 export type QueryPlan = unknown;
 
+export interface StatsSnapshot {
+  requests_total: number;
+  requests_errors: number;
+  auth_failures: number;
+  rate_limited: number;
+  jwt_failures: number;
+  docs_inserted: number;
+  docs_deleted: number;
+  searches_vector: number;
+  searches_semantic: number;
+  rag_requests: number;
+  embed_cache_hits: number;
+  embed_cache_misses: number;
+  embed_cache_evictions: number;
+  embed_cache_inserts: number;
+  total_docs_live: number;
+}
+
 /**
  * Thrown on non-2xx responses. Carries the decoded body so the UI
  * can show the server's stable `code` string (e.g. `sql_parse`)
@@ -182,4 +200,12 @@ export const api = {
 
   audit: (limit = 200) =>
     request<AuditEntry[]>(`/api/v1/admin/audit?limit=${limit}`),
+
+  stats: () => request<StatsSnapshot>("/api/v1/admin/stats"),
+
+  emptyBucket: (bucket: string) =>
+    request<{ bucket: string; removed: number }>(
+      `/api/v1/admin/bucket/${encodeURIComponent(bucket)}/empty`,
+      { method: "POST" }
+    ),
 };

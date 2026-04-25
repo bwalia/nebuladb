@@ -377,6 +377,39 @@ impl TextIndex {
         Ok(n)
     }
 
+    /// Tombstone every document in a bucket. Returns how many were
+    /// removed. Cheap "reset a bucket" for admins — the underlying
+    /// HNSW nodes become tombstones, same as per-doc delete, so the
+    /// vector index compacts on the next rebuild.
+    pub fn empty_bucket(&self, bucket: &str) -> usize {
+        let mut g = self.inner.write();
+        // Collect first so we can mutate the map without fighting the
+        // borrow checker over the iteration.
+        let victims: Vec<Id> = g
+            .docs
+            .iter()
+            .filter(|(_, d)| d.bucket == bucket)
+            .map(|(id, _)| *id)
+            .collect();
+        let n = victims.len();
+        for id in &victims {
+            if let Some(doc) = g.docs.remove(id) {
+                let key = (doc.bucket.clone(), doc.external_id.clone());
+                g.by_key.remove(&key);
+                if let Some(parent) = doc.parent_doc_id {
+                    g.parents.remove(&(doc.bucket, parent));
+                }
+            }
+        }
+        // HNSW deletes are soft-tombstones; safe to call outside the
+        // write lock since the HNSW has its own internal lock.
+        drop(g);
+        for id in victims {
+            let _ = self.hnsw.delete(id);
+        }
+        n
+    }
+
     /// One full-scan pass over the corpus. Cheap at demo scale
     /// (thousands of docs); at production scale we'd maintain these
     /// counters incrementally on the write path. Fine trade-off for
@@ -640,5 +673,19 @@ mod tests {
     async fn bucket_stats_empty_index_is_empty() {
         let idx = make_index();
         assert!(idx.bucket_stats(10).is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_bucket_drops_only_that_bucket() {
+        let idx = make_index();
+        idx.upsert_text("a", "1", "x", serde_json::json!({})).await.unwrap();
+        idx.upsert_text("a", "2", "x", serde_json::json!({})).await.unwrap();
+        idx.upsert_text("b", "1", "x", serde_json::json!({})).await.unwrap();
+        let removed = idx.empty_bucket("a");
+        assert_eq!(removed, 2);
+        assert!(idx.get("a", "1").is_none());
+        assert!(idx.get("a", "2").is_none());
+        assert!(idx.get("b", "1").is_some(), "b must be untouched");
+        assert_eq!(idx.empty_bucket("nonexistent"), 0);
     }
 }
