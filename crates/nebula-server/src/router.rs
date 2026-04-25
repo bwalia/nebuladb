@@ -40,6 +40,7 @@ pub fn build_router(state: AppState) -> Router {
     let api = Router::new()
         .route("/bucket/:bucket/doc", post(upsert_doc))
         .route("/bucket/:bucket/doc/:id", get(get_doc).delete(delete_doc))
+        .route("/bucket/:bucket/docs/bulk", post(upsert_docs_bulk))
         .route("/bucket/:bucket/document", post(upsert_document))
         .route(
             "/bucket/:bucket/document/:doc_id",
@@ -146,6 +147,62 @@ struct UpsertResponse {
     bucket: String,
     id: String,
     dim: usize,
+}
+
+#[derive(Deserialize)]
+struct BulkUpsertRequest {
+    items: Vec<UpsertDoc>,
+}
+
+#[derive(Serialize)]
+struct BulkUpsertResponse {
+    bucket: String,
+    inserted: usize,
+    requested: usize,
+}
+
+/// Batched upsert. Embeds every item in a single upstream call, then
+/// inserts sequentially into HNSW. Partial success is allowed: if
+/// one HNSW insert fails, that item is rolled back and the rest go
+/// through (we'd rather seed 999/1000 than 0/1000). A hard ceiling
+/// on batch size prevents a rogue client from pinning a giant embed
+/// call — common providers also reject > ~2k-item batches, so this
+/// matches upstream behaviour.
+async fn upsert_docs_bulk(
+    State(s): State<AppState>,
+    Path(bucket): Path<String>,
+    Json(body): Json<BulkUpsertRequest>,
+) -> Result<Json<BulkUpsertResponse>, ApiError> {
+    const MAX_BATCH: usize = 1000;
+    if body.items.is_empty() {
+        return Err(ApiError::BadRequest("items must be non-empty".into()));
+    }
+    if body.items.len() > MAX_BATCH {
+        return Err(ApiError::BadRequest(format!(
+            "batch of {} exceeds max {MAX_BATCH}",
+            body.items.len()
+        )));
+    }
+    // Reject empty fields up-front so every failure is 400 not 500.
+    for it in &body.items {
+        if it.text.trim().is_empty() {
+            return Err(ApiError::BadRequest("each item.text must be non-empty".into()));
+        }
+    }
+
+    let requested = body.items.len();
+    let prepared: Vec<(String, String, serde_json::Value)> = body
+        .items
+        .into_iter()
+        .map(|d| (d.id, d.text, d.metadata))
+        .collect();
+    let inserted = s.index.upsert_text_bulk(&bucket, &prepared).await?;
+    s.metrics.inc_insert();
+    Ok(Json(BulkUpsertResponse {
+        bucket,
+        inserted,
+        requested,
+    }))
 }
 
 async fn upsert_doc(

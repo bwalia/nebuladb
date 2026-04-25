@@ -91,12 +91,18 @@ export function RagTab() {
       // completion (the trailing frame is optional in our server).
       updater((t) => ({ ...t, done: true, endedAt: performance.now() }));
     } catch (e) {
-      const msg = (e as Error).message;
+      const raw = (e as Error).message;
       if (ctrl.signal.aborted) {
         updater((t) => ({ ...t, error: "cancelled", done: true }));
       } else {
-        setErr(msg);
-        updater((t) => ({ ...t, error: msg, done: true }));
+        // Detect the common local-dev failure mode: the server returns
+        // 500 because the LLM backend (Ollama) isn't reachable. Show
+        // a helpful explanation instead of the raw HTTP error.
+        const friendly = raw.includes("ollama") || raw.includes("llm:")
+          ? "LLM backend unreachable. Start Ollama (docker compose up ollama) or set NEBULA_LLM_OLLAMA_URL to a running instance. The rest of NebulaDB works without it."
+          : raw;
+        setErr(friendly);
+        updater((t) => ({ ...t, error: friendly, done: true }));
       }
     } finally {
       if (abortRef.current === ctrl) abortRef.current = null;

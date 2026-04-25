@@ -651,6 +651,70 @@ async fn allowlist_and_jwt_coexist() {
 }
 
 #[tokio::test]
+async fn bulk_upsert_inserts_many_in_one_call() {
+    let app = build_router(app_state(&[]));
+    // 50 items in one request — well under the 1000 cap.
+    let items: Vec<String> = (0..50)
+        .map(|i| format!(r#"{{"id":"b{i}","text":"doc number {i}","metadata":{{"i":{i}}}}}"#))
+        .collect();
+    let body = format!("{{\"items\":[{}]}}", items.join(","));
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/bulk/docs/bulk")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"requested\":50"));
+    assert!(body.contains("\"inserted\":50"));
+
+    // Spot-check: one of the inserted docs is fetchable.
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/bucket/bulk/doc/b42")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn bulk_upsert_rejects_empty_or_oversize() {
+    let app = build_router(app_state(&[]));
+    // Empty items array.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/x/docs/bulk")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"items":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Empty text on one item.
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/bucket/x/docs/bulk")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"items":[{"id":"a","text":"  ","metadata":{}}]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn admin_stats_returns_json_snapshot() {
     let app = build_router(app_state(&[]));
     // Insert one doc + run one semantic search so a couple counters move.

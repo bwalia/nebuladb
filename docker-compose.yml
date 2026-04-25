@@ -195,6 +195,12 @@ services:
       # Empty => auth disabled. Set NEBULA_API_KEYS=secret1,secret2 in
       # `.env` to require bearer auth.
       NEBULA_API_KEYS: "${NEBULA_API_KEYS:-}"
+      # Rate limiter. `on` by default; set to `off` when bulk-loading
+      # (the seeder scripts do this). Burst + RPS tune the token
+      # bucket when on.
+      NEBULA_RATE_LIMIT: "${NEBULA_RATE_LIMIT:-on}"
+      NEBULA_RATE_LIMIT_BURST: "${NEBULA_RATE_LIMIT_BURST:-120}"
+      NEBULA_RATE_LIMIT_RPS: "${NEBULA_RATE_LIMIT_RPS:-20}"
 
       RUST_LOG: "info,nebula_server=debug"
     healthcheck:

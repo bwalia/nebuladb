@@ -41,7 +41,10 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            max_body_bytes: 1024 * 1024,
+            // 16 MiB. Picks up bulk-upsert batches (up to 1000 items
+            // × a few KB of text each) without being large enough for
+            // an abusive client to OOM the server.
+            max_body_bytes: 16 * 1024 * 1024,
             api_keys: AHashSet::new(),
             jwt: None,
             default_ef_search: 64,

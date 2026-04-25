@@ -205,6 +205,104 @@ impl TextIndex {
         Ok(())
     }
 
+    /// Batch variant of [`Self::upsert_text`]. A single embedder call
+    /// amortizes the per-request overhead that dominates the remote
+    /// provider cost — for `MockEmbedder` it's a micro-optimization,
+    /// for OpenAI it's roughly 10-100x faster on 100-row batches.
+    ///
+    /// Replace semantics are preserved per item: any existing key is
+    /// tombstoned before the new id is inserted. On HNSW failure for
+    /// an individual item we roll back just that item, not the whole
+    /// batch — partial success is preferable to a single bad text
+    /// poisoning a whole ingest run.
+    pub async fn upsert_text_bulk(
+        &self,
+        bucket: &str,
+        items: &[(String, String, serde_json::Value)],
+    ) -> Result<usize> {
+        if bucket.is_empty() {
+            return Err(IndexError::Invalid("bucket must be non-empty".into()));
+        }
+        if items.is_empty() {
+            return Ok(0);
+        }
+        for (id, text, _) in items {
+            if id.is_empty() {
+                return Err(IndexError::Invalid("id must be non-empty".into()));
+            }
+            if text.is_empty() {
+                return Err(IndexError::Invalid("text must be non-empty".into()));
+            }
+        }
+
+        // One embedder call for the whole batch.
+        let inputs: Vec<String> = items.iter().map(|(_, t, _)| t.clone()).collect();
+        let vectors = self.embedder.embed(&inputs).await?;
+        if vectors.len() != items.len() {
+            return Err(IndexError::Embed(EmbedError::Decode(format!(
+                "embedder returned {} vectors for {} inputs",
+                vectors.len(),
+                items.len()
+            ))));
+        }
+        for v in &vectors {
+            if v.len() != self.dim() {
+                return Err(IndexError::Embed(EmbedError::DimensionMismatch {
+                    expected: self.dim(),
+                    actual: v.len(),
+                }));
+            }
+        }
+
+        // Register everything under one write lock, then hand to HNSW
+        // (which has its own lock). Matches the single-insert path's
+        // ordering so a concurrent searcher sees either old or new
+        // state, never a mixed map.
+        let mut inserted = 0usize;
+        let prepared: Vec<(Id, (String, String))> = {
+            let mut g = self.inner.write();
+            let mut out = Vec::with_capacity(items.len());
+            for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
+                let key = (bucket.to_string(), id.clone());
+                if let Some(&old_id) = g.by_key.get(&key) {
+                    let _ = self.hnsw.delete(old_id);
+                    g.docs.remove(&old_id);
+                    g.by_key.remove(&key);
+                }
+                let new_id = Id(g.next_id);
+                g.next_id += 1;
+                g.by_key.insert(key.clone(), new_id);
+                g.docs.insert(
+                    new_id,
+                    Document {
+                        bucket: bucket.to_string(),
+                        external_id: id.clone(),
+                        text: text.clone(),
+                        vector: vec.clone(),
+                        metadata: meta.clone(),
+                        parent_doc_id: None,
+                        chunk_index: None,
+                    },
+                );
+                out.push((new_id, key));
+            }
+            out
+        };
+
+        // Push each into HNSW outside the write lock. Per-item
+        // failure rolls back *that* item only.
+        for ((id, key), vec) in prepared.iter().zip(vectors.iter()) {
+            if let Err(_e) = self.hnsw.insert(*id, vec) {
+                let mut g = self.inner.write();
+                g.docs.remove(id);
+                g.by_key.remove(key);
+                continue;
+            }
+            inserted += 1;
+        }
+        Ok(inserted)
+    }
+
     pub fn get(&self, bucket: &str, external_id: &str) -> Option<Document> {
         let g = self.inner.read();
         let key = (bucket.to_string(), external_id.to_string());
@@ -673,6 +771,41 @@ mod tests {
     async fn bucket_stats_empty_index_is_empty() {
         let idx = make_index();
         assert!(idx.bucket_stats(10).is_empty());
+    }
+
+    #[tokio::test]
+    async fn upsert_text_bulk_inserts_and_replaces() {
+        let idx = make_index();
+        let batch: Vec<(String, String, serde_json::Value)> = (0..50)
+            .map(|i| (format!("d{i}"), format!("text {i}"), serde_json::json!({"i": i})))
+            .collect();
+        let n = idx.upsert_text_bulk("docs", &batch).await.unwrap();
+        assert_eq!(n, 50);
+        assert_eq!(idx.len(), 50);
+        // Replace-semantics on the second pass: same ids, different
+        // text. Doc count stays 50, but the text is the updated one.
+        let batch2: Vec<(String, String, serde_json::Value)> = (0..50)
+            .map(|i| (format!("d{i}"), format!("updated {i}"), serde_json::json!({})))
+            .collect();
+        let n2 = idx.upsert_text_bulk("docs", &batch2).await.unwrap();
+        assert_eq!(n2, 50);
+        assert_eq!(idx.len(), 50);
+        assert_eq!(idx.get("docs", "d0").unwrap().text, "updated 0");
+    }
+
+    #[tokio::test]
+    async fn upsert_text_bulk_rejects_empty_id_or_text() {
+        let idx = make_index();
+        let err = idx
+            .upsert_text_bulk("docs", &[("".into(), "x".into(), serde_json::json!({}))])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, IndexError::Invalid(_)));
+        let err = idx
+            .upsert_text_bulk("docs", &[("a".into(), "".into(), serde_json::json!({}))])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, IndexError::Invalid(_)));
     }
 
     #[tokio::test]
