@@ -122,14 +122,31 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=Apache-2.0
 
+      - name: Choose target platforms
+        id: platforms
+        # Tagged releases (`v*.*.*`) build for both architectures —
+        # the rare, deliberate case where we want Graviton /
+        # Apple-Silicon images and can eat the 30-40 min build time.
+        #
+        # Branch pushes to main build amd64 only. Rust under QEMU for
+        # arm64 takes ~45 min for the server crate; on a shared
+        # GitHub runner that regularly hits the 90-min per-job ceiling
+        # and strands `:main` / `:sha-...` tags. Keeping main builds
+        # on amd64 means the hot path (every commit) finishes in
+        # minutes and the `:latest` tag still updates.
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "platforms=linux/amd64,linux/arm64" >>"$GITHUB_OUTPUT"
+          else
+            echo "platforms=linux/amd64" >>"$GITHUB_OUTPUT"
+          fi
+
       - name: Build + push
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          # arm64 covers AWS Graviton + Apple Silicon. If you only
-          # need amd64, drop it here — cuts build time ~50%.
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.platforms.outputs.platforms }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
