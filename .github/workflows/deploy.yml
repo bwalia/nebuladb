@@ -1,0 +1,182 @@
+# Self-hosted deploy: brings the full nebuladb stack up on the runner
+# host (192.168.1.193 / `int`) on every push to `main`. The runner and
+# the deployment target are the same machine, so we just shell out to
+# `docker compose` in the checked-out workspace — no SSH hop needed.
+#
+# Host ports are remapped via `.env` (generated from
+# `.env.deploy.example`) because the box co-hosts other tenants and the
+# defaults (8080, 9090, 11434) are already taken.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time. A second push while a build is mid-flight should
+# wait, not race — `docker compose up` on the same project name from two
+# concurrent jobs would interleave container recreates.
+concurrency:
+  group: deploy-int
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: docker compose up (int / 192.168.1.193)
+    runs-on: [self-hosted, int]
+    # Cold first build (Rust + tonic + pgwire) is ~12 min; pulls + warm
+    # rebuilds finish in 2-3. 45 min ceiling absorbs a model pull on a
+    # fresh ollama-models volume.
+    timeout-minutes: 45
+
+    env:
+      COMPOSE_PROJECT: nebuladb
+      # docker compose looks for `.env` next to the compose file; we
+      # write it from `.env.deploy.example` in the first step.
+      ENV_TEMPLATE: .env.deploy.example
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner + docker context
+        run: |
+          echo "host: $(hostname)  ip: $(hostname -I | awk '{print $1}')"
+          docker --version
+          docker compose version
+
+      - name: Materialize .env (host-port overrides)
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$ENV_TEMPLATE" ]]; then
+            echo "::error::$ENV_TEMPLATE missing — required for host-port mapping"; exit 1
+          fi
+          cp "$ENV_TEMPLATE" .env
+          echo "Effective port map:"
+          grep -E '_HOST_PORT|SHOWCASE_PORT' .env | sed 's/^/  /'
+
+      - name: Pre-flight — ensure mapped host ports are free
+        # Fails fast with a clear message if another process grabbed one
+        # of our remapped ports between dev-time scoping and deploy time.
+        # Skips ports already bound by *our own* compose project (idempotent re-runs).
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          set -a; . ./.env; set +a
+          ports=(
+            "${NEBULA_REST_HOST_PORT:-18080}"
+            "${NEBULA_GRPC_HOST_PORT:-50051}"
+            "${NEBULA_PG_HOST_PORT:-25433}"
+            "${NEBULA_OLLAMA_HOST_PORT:-21434}"
+            "${NEBULA_REDIS_HOST_PORT:-16379}"
+            "${NEBULA_PROMETHEUS_HOST_PORT:-19090}"
+            "${NEBULA_GRAFANA_HOST_PORT:-13000}"
+            "${NEBULA_SHOWCASE_PORT:-15173}"
+          )
+          fail=0
+          for p in "${ports[@]}"; do
+            if ss -tln | awk '{print $4}' | grep -Eq "[:.]$p$"; then
+              # Already ours? `docker ps` rows for this project will show the binding.
+              if docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}" --format '{{.Ports}}' | grep -q "0.0.0.0:$p->\|:::$p->"; then
+                echo "  $p: in use by our project (ok)"
+              else
+                echo "::error::port $p is bound by another process"
+                ss -tlnp | awk -v p="$p" '$4 ~ ":"p"$"' || true
+                fail=1
+              fi
+            else
+              echo "  $p: free"
+            fi
+          done
+          [[ $fail -eq 0 ]] || exit 1
+
+      - name: docker compose pull (sidecars only)
+        # Cuts cold-start time when only the server changed: ollama,
+        # redis, prom, grafana are pinned tags so a `pull` is cheap and
+        # parallelisable. The `nebula-server` and `showcase` images are
+        # built locally in the next step.
+        run: docker compose pull --ignore-buildable || true
+
+      - name: docker compose up -d --build
+        run: |
+          set -euo pipefail
+          docker compose up -d --build --remove-orphans
+          docker compose ps
+
+      - name: Wait for healthchecks
+        # Polls the compose-declared healthchecks rather than hitting
+        # endpoints ourselves — keeps the success criterion in one
+        # place (the compose file).
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 600 ))   # 10 min max
+          want=(nebula-ollama nebula-redis nebula-server nebula-prometheus nebula-grafana nebula-showcase)
+          while :; do
+            unhealthy=()
+            for c in "${want[@]}"; do
+              state=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$c" 2>/dev/null || echo "missing")
+              [[ "$state" == "healthy" || "$state" == "running" ]] || unhealthy+=("$c=$state")
+            done
+            if (( ${#unhealthy[@]} == 0 )); then
+              echo "all services healthy"
+              break
+            fi
+            if (( $(date +%s) > deadline )); then
+              echo "::error::healthcheck timeout: ${unhealthy[*]}"
+              docker compose ps
+              docker compose logs --tail=80 nebula-server || true
+              exit 1
+            fi
+            echo "waiting on: ${unhealthy[*]}"
+            sleep 10
+          done
+
+      - name: Smoke test — REST + showcase + grafana
+        run: |
+          set -euo pipefail
+          set -a; . ./.env; set +a
+          host=192.168.1.193
+          rest=${NEBULA_REST_HOST_PORT:-18080}
+          show=${NEBULA_SHOWCASE_PORT:-15173}
+          graf=${NEBULA_GRAFANA_HOST_PORT:-13000}
+          prom=${NEBULA_PROMETHEUS_HOST_PORT:-19090}
+
+          echo "== /healthz =="
+          curl -fsS "http://${host}:${rest}/healthz" && echo
+          echo "== /metrics (head) =="
+          curl -fsS "http://${host}:${rest}/metrics" | head -5
+          echo "== showcase =="
+          curl -fsS -o /dev/null -w "showcase http %{http_code}\n" "http://${host}:${show}/"
+          echo "== grafana =="
+          curl -fsS -o /dev/null -w "grafana http %{http_code}\n" "http://${host}:${graf}/api/health"
+          echo "== prometheus =="
+          curl -fsS -o /dev/null -w "prometheus http %{http_code}\n" "http://${host}:${prom}/-/ready"
+
+      - name: Summary
+        if: always()
+        run: |
+          set -a; . ./.env 2>/dev/null || true; set +a
+          host=192.168.1.193
+          {
+            echo "## NebulaDB stack on \`${host}\`"
+            echo
+            echo "| service | url |"
+            echo "|---|---|"
+            echo "| nebula REST | http://${host}:${NEBULA_REST_HOST_PORT:-18080} |"
+            echo "| nebula gRPC | ${host}:${NEBULA_GRPC_HOST_PORT:-50051} |"
+            echo "| nebula pgwire | ${host}:${NEBULA_PG_HOST_PORT:-25433} |"
+            echo "| showcase UI | http://${host}:${NEBULA_SHOWCASE_PORT:-15173} |"
+            echo "| grafana | http://${host}:${NEBULA_GRAFANA_HOST_PORT:-13000} (admin/admin) |"
+            echo "| prometheus | http://${host}:${NEBULA_PROMETHEUS_HOST_PORT:-19090} |"
+            echo "| ollama | http://${host}:${NEBULA_OLLAMA_HOST_PORT:-21434} |"
+            echo "| redis | ${host}:${NEBULA_REDIS_HOST_PORT:-16379} |"
+            echo
+            echo "### container state"
+            echo '```'
+            docker compose ps 2>/dev/null || true
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

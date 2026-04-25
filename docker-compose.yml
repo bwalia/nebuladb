@@ -50,7 +50,7 @@ services:
     container_name: nebula-ollama
     <<: [*default-restart, *default-logging]
     ports:
-      - "11434:11434"
+      - "${NEBULA_OLLAMA_HOST_PORT:-11434}:11434"
     volumes:
       - ollama-models:/root/.ollama
     environment:
@@ -115,7 +115,7 @@ services:
     container_name: nebula-redis
     <<: [*default-restart, *default-logging]
     ports:
-      - "6379:6379"
+      - "${NEBULA_REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     # `allkeys-lru` so memory pressure silently evicts the oldest
@@ -225,7 +225,7 @@ services:
     container_name: nebula-prometheus
     <<: [*default-restart, *default-logging]
     ports:
-      - "9090:9090"
+      - "${NEBULA_PROMETHEUS_HOST_PORT:-9090}:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -284,7 +284,7 @@ services:
     container_name: nebula-grafana
     <<: [*default-restart, *default-logging]
     ports:
-      - "3000:3000"
+      - "${NEBULA_GRAFANA_HOST_PORT:-3000}:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
