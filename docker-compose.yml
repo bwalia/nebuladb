@@ -305,6 +305,13 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+      # Grafana's first-boot provisioning (loading the dashboards +
+      # datasource from `/etc/grafana/provisioning`) takes ~30s on
+      # GitHub's runners and occasionally races the healthcheck's
+      # 50s window (5 retries × 10s). A longer grace period keeps
+      # the nightly e2e job from tripping on a slow-but-healthy
+      # boot.
+      start_period: 60s
     deploy:
       resources:
         limits:
