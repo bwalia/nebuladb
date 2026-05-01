@@ -68,6 +68,12 @@ RUN apt-get update \
 RUN groupadd --system --gid 10001 nebula \
  && useradd  --system --uid 10001 --gid nebula --create-home --shell /sbin/nologin nebula
 
+# Precreate the durability dir owned by the runtime user. When compose
+# mounts an empty named volume here, Docker copies this directory's
+# ownership onto the volume — without this the volume is root:root and
+# the non-root server can't open WAL/snapshot files.
+RUN mkdir -p /var/lib/nebuladb && chown nebula:nebula /var/lib/nebuladb
+
 COPY --from=builder /usr/local/bin/nebula-server /usr/local/bin/nebula-server
 
 USER nebula
