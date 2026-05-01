@@ -201,6 +201,12 @@ services:
       NEBULA_RATE_LIMIT: "${NEBULA_RATE_LIMIT:-on}"
       NEBULA_RATE_LIMIT_BURST: "${NEBULA_RATE_LIMIT_BURST:-120}"
       NEBULA_RATE_LIMIT_RPS: "${NEBULA_RATE_LIMIT_RPS:-20}"
+      # Slow-query log: set to 0 to capture every SQL query (demo
+      # mode — the Admin tab's Slow queries panel populates
+      # instantly). Raise in production to keep the log focused on
+      # real outliers (typically 50 or 100 ms).
+      NEBULA_SLOW_QUERY_THRESHOLD_MS: "${NEBULA_SLOW_QUERY_THRESHOLD_MS:-10}"
+      NEBULA_SLOW_QUERY_CAPACITY: "${NEBULA_SLOW_QUERY_CAPACITY:-32}"
 
       RUST_LOG: "info,nebula_server=debug"
     healthcheck:

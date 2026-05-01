@@ -41,12 +41,23 @@ export function ErrorBanner({ err }: { err: string | null }) {
 }
 
 /**
- * Dead-simple JSON viewer. We use this instead of a heavy tree
- * library: dense pretty-printed JSON is readable *and* searchable
- * (Ctrl-F works), which matters on the Documents / Hybrid tabs where
- * metadata often contains the thing a demo-watcher wants to point at.
+ * Rich JSON viewer — backed by the collapsible tree in `tree.tsx`.
+ * Exported under the old `JsonView` name so every call site
+ * upgrades automatically. For the small number of cases where the
+ * old flat `<pre>` rendering is still wanted (raw blob paste,
+ * copy-friendly output), `JsonBlob` is kept around.
  */
+import { JsonTree } from "./tree";
+
 export function JsonView({ value }: { value: unknown }) {
+  return (
+    <div className="bg-gray-100 dark:bg-gray-950 rounded-md p-2 overflow-x-auto max-h-[28rem]">
+      <JsonTree value={value} />
+    </div>
+  );
+}
+
+export function JsonBlob({ value }: { value: unknown }) {
   return (
     <pre className="text-xs bg-gray-100 dark:bg-gray-950 rounded-md p-2 overflow-x-auto max-h-80 whitespace-pre-wrap break-words">
       {JSON.stringify(value, null, 2)}

@@ -20,7 +20,9 @@ use nebula_llm::{
     LlmClient, MockLlm, OllamaConfig, OllamaLlm, OpenAiChatConfig, OpenAiChatLlm,
 };
 use nebula_grpc::GrpcState;
-use nebula_server::{build_router, AppConfig, AppState, JwtConfig, RateLimitConfig, RateLimiter};
+use nebula_server::{
+    build_router, AppConfig, AppState, JwtConfig, RateLimitConfig, RateLimiter, SlowQueryLog,
+};
 use nebula_sql::{cache::SemanticCacheConfig, SemanticCache, SqlEngine};
 use nebula_vector::{HnswConfig, Metric};
 
@@ -242,6 +244,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(rl) = rate_limiter {
         state = state.with_rate_limiter(rl);
     }
+
+    // Slow-query log: default capacity 32, threshold 10 ms. Dev
+    // stacks on MockEmbedder are fast enough that nothing crosses
+    // 10ms, so the panel stays empty — set threshold to 0 for a
+    // demo, raise it for a noisy production (50 or 100 ms).
+    let slow_cap: usize = std::env::var("NEBULA_SLOW_QUERY_CAPACITY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(32);
+    let slow_threshold: u64 = std::env::var("NEBULA_SLOW_QUERY_THRESHOLD_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    state = state.with_slow_log(SlowQueryLog::new(slow_cap, slow_threshold));
 
     // Snapshot the Arc handles we need for the gRPC server before
     // moving `state` into the REST router. Both transports see the

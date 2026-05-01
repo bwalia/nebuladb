@@ -1,0 +1,163 @@
+{
+  "title": "NebulaDB — Query Performance",
+  "uid": "nebula-query-perf",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "tags": ["nebuladb", "performance"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Request rate (1m avg)",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        { "expr": "rate(nebula_requests_total{service=\"nebula-server\"}[1m])", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Error rate (1m avg)",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        { "expr": "rate(nebula_requests_errors{service=\"nebula-server\"}[1m])", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.1 },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Error ratio (5m)",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "description": "errors / total, as a percentage",
+      "targets": [
+        {
+          "expr": "sum(rate(nebula_requests_errors{service=\"nebula-server\"}[5m])) / clamp_min(sum(rate(nebula_requests_total{service=\"nebula-server\"}[5m])), 0.001)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Rate-limited (total)",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        { "expr": "nebula_rate_limited{service=\"nebula-server\"}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Request + error rate",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nebula_requests_total{service=\"nebula-server\"}[1m])",
+          "refId": "A",
+          "legendFormat": "total/s"
+        },
+        {
+          "expr": "rate(nebula_requests_errors{service=\"nebula-server\"}[1m])",
+          "refId": "B",
+          "legendFormat": "errors/s"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Endpoint mix (requests/s by kind)",
+      "description": "Derived from per-kind counters. The gap between total and the stacked sum is made up of admin + health + metrics scrapes.",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nebula_searches_semantic{service=\"nebula-server\"}[1m])",
+          "refId": "A",
+          "legendFormat": "semantic search"
+        },
+        {
+          "expr": "rate(nebula_searches_vector{service=\"nebula-server\"}[1m])",
+          "refId": "B",
+          "legendFormat": "vector search"
+        },
+        {
+          "expr": "rate(nebula_rag_requests{service=\"nebula-server\"}[1m])",
+          "refId": "C",
+          "legendFormat": "rag"
+        },
+        {
+          "expr": "rate(nebula_docs_inserted{service=\"nebula-server\"}[1m])",
+          "refId": "D",
+          "legendFormat": "doc upsert"
+        },
+        {
+          "expr": "rate(nebula_docs_deleted{service=\"nebula-server\"}[1m])",
+          "refId": "E",
+          "legendFormat": "doc delete"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "stacking": { "mode": "normal" }
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Traffic gates",
+      "description": "Every reject the server emits: rate-limit 429s, auth 401s, JWT-specific failures.",
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nebula_rate_limited{service=\"nebula-server\"}[1m])",
+          "refId": "A",
+          "legendFormat": "rate_limited/s"
+        },
+        {
+          "expr": "rate(nebula_auth_failures{service=\"nebula-server\"}[1m])",
+          "refId": "B",
+          "legendFormat": "auth_failures/s"
+        },
+        {
+          "expr": "rate(nebula_jwt_failures{service=\"nebula-server\"}[1m])",
+          "refId": "C",
+          "legendFormat": "jwt_failures/s"
+        }
+      ]
+    }
+  ]
+}

@@ -887,6 +887,55 @@ async fn admin_audit_records_writes_not_reads() {
 }
 
 #[tokio::test]
+async fn admin_slow_records_slow_sql_queries() {
+    // Force-install a slow log with a 0ms threshold so even a fast
+    // MockEmbedder query gets captured — the default 10ms threshold
+    // is too strict for a tight unit test.
+    use std::sync::Arc;
+    let emb: Arc<dyn nebula_embed::Embedder> =
+        Arc::new(nebula_embed::MockEmbedder::new(32));
+    let index = Arc::new(
+        nebula_index::TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
+    );
+    let state = AppState::new(index, AppConfig::default())
+        .with_slow_log(nebula_server::SlowQueryLog::new(10, 0));
+    let app = build_router(state);
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"1","text":"x"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/query")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"sql":"SELECT id FROM docs WHERE semantic_match(content, 'x') LIMIT 3"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(Request::get("/api/v1/admin/slow").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"sql\""));
+    assert!(body.contains("semantic_match"));
+    assert!(body.contains("\"ok\":true"));
+}
+
+#[tokio::test]
 async fn sql_query_runs_semantic_match() {
     let state = app_state(&[]);
     let app = build_router(state);

@@ -91,6 +91,14 @@ export interface StatsSnapshot {
   total_docs_live: number;
 }
 
+export interface SlowQueryEntry {
+  ts_ms: number;
+  took_ms: number;
+  rows: number;
+  sql: string;
+  ok: boolean;
+}
+
 /**
  * Thrown on non-2xx responses. Carries the decoded body so the UI
  * can show the server's stable `code` string (e.g. `sql_parse`)
@@ -202,6 +210,8 @@ export const api = {
     request<AuditEntry[]>(`/api/v1/admin/audit?limit=${limit}`),
 
   stats: () => request<StatsSnapshot>("/api/v1/admin/stats"),
+
+  slow: () => request<SlowQueryEntry[]>("/api/v1/admin/slow"),
 
   emptyBucket: (bucket: string) =>
     request<{ bucket: string; removed: number }>(

@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, type AuditEntry, type BucketStats, type QueryPlan } from "../api";
+import {
+  api,
+  ApiError,
+  type AuditEntry,
+  type BucketStats,
+  type QueryPlan,
+  type SlowQueryEntry,
+} from "../api";
 import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
 import { clearHistory, loadHistory, type HistoryEntry } from "../utils";
 import { FreshnessPill, useFreshness } from "../freshness";
@@ -21,6 +28,7 @@ export function AdminTab() {
       <BucketsPanel />
       <ExplainPanel />
       <HistoryPanel />
+      <SlowQueriesPanel />
       <AuditPanel />
     </div>
   );
@@ -346,6 +354,130 @@ function AuditPanel() {
                   <td className="px-2 py-1 font-mono">{e.path}</td>
                   <td className="px-2 py-1 font-mono text-gray-500 dark:text-gray-400">
                     {e.principal}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ---------- Slow queries ----------
+
+/**
+ * Slowest SQL queries seen since boot. Not a rolling window — the
+ * server keeps a fixed-capacity priority queue of worst offenders,
+ * so operators can answer "what's the dumbest query we've been
+ * running?" without scrolling audit logs.
+ *
+ * Only queries crossing the server's `min_threshold_ms` (default
+ * 10ms) are recorded; MockEmbedder noise stays out.
+ */
+function SlowQueriesPanel() {
+  const [entries, setEntries] = useState<SlowQueryEntry[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { bump, pill } = useFreshness(6000);
+
+  const refresh = useCallback(async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setEntries(await api.slow());
+      bump();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [bump]);
+
+  useEffect(() => {
+    void refresh();
+    // 3s poll — matches the Buckets panel cadence. Slow-log
+    // changes are rare (only when a query crosses the threshold)
+    // but the reader wants to see a freshly-slow query surface
+    // quickly during testing.
+    const id = setInterval(refresh, 3_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return (
+    <Panel
+      title="Slow queries"
+      subtitle="Top slowest SQL queries since boot (>10ms). Sorted worst-first."
+      action={
+        <div className="flex items-center gap-2">
+          <FreshnessPill {...pill} />
+          <button
+            className="btn-secondary !py-1 !px-2 !text-xs"
+            onClick={refresh}
+            disabled={busy}
+          >
+            {busy ? "…" : "Refresh"}
+          </button>
+        </div>
+      }
+    >
+      <ErrorBanner err={err} />
+      {entries === null && !err && <Spinner />}
+      {entries && entries.length === 0 && (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          No queries have crossed the 10ms threshold yet. Try running a SQL
+          query in the SQL tab — it'll show up here if it's slow enough.
+        </p>
+      )}
+      {entries && entries.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-xs">
+            <thead className="bg-gray-100 dark:bg-gray-950 text-gray-600 dark:text-gray-400">
+              <tr>
+                <th className="text-right px-2 py-1 font-medium">took</th>
+                <th className="text-right px-2 py-1 font-medium">rows</th>
+                <th className="text-left px-2 py-1 font-medium">ok</th>
+                <th className="text-left px-2 py-1 font-medium">when</th>
+                <th className="text-left px-2 py-1 font-medium">sql</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((e, i) => (
+                <tr
+                  key={i}
+                  className="border-t border-gray-200 dark:border-gray-800 align-top"
+                >
+                  <td className="px-2 py-1 font-mono text-right">
+                    <span
+                      className={
+                        e.took_ms >= 500
+                          ? "text-red-600 dark:text-red-400"
+                          : e.took_ms >= 100
+                          ? "text-orange-600 dark:text-orange-400"
+                          : "text-gray-900 dark:text-gray-100"
+                      }
+                    >
+                      {e.took_ms}ms
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 font-mono text-right">{e.rows}</td>
+                  <td className="px-2 py-1 font-mono">
+                    <span
+                      className={
+                        e.ok
+                          ? "text-green-700 dark:text-green-400"
+                          : "text-red-600 dark:text-red-400"
+                      }
+                    >
+                      {e.ok ? "ok" : "err"}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 font-mono text-gray-500">
+                    {new Date(e.ts_ms).toLocaleTimeString()}
+                  </td>
+                  <td className="px-2 py-1 font-mono whitespace-pre-wrap break-words">
+                    {e.sql}
                   </td>
                 </tr>
               ))}

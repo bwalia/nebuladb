@@ -17,6 +17,7 @@ use crate::audit::AuditLog;
 use crate::jwt::JwtConfig;
 use crate::metrics::Metrics;
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
+use crate::slow_log::SlowQueryLog;
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -75,6 +76,11 @@ pub struct AppState {
     /// Audit ring buffer. Populated by the audit middleware on every
     /// mutating request; surfaced via `GET /api/v1/admin/audit`.
     pub audit: Arc<AuditLog>,
+    /// Top-N slowest SQL queries seen since boot. Unlike `audit`,
+    /// this is a priority queue (hall of fame) rather than a
+    /// rolling window — operators want to find the worst offenders,
+    /// not the most recent ones.
+    pub slow_log: Arc<SlowQueryLog>,
     pub config: Arc<AppConfig>,
 }
 
@@ -96,8 +102,17 @@ impl AppState {
             rate_limiter: None,
             sql,
             audit: AuditLog::new(1024),
+            // Top 32 slowest since boot, threshold 10ms so MockEmbedder
+            // noise stays out. Override via with_slow_log() for bespoke
+            // sizing in tests or production tuning.
+            slow_log: SlowQueryLog::new(32, 10),
             config: Arc::new(config),
         }
+    }
+
+    pub fn with_slow_log(mut self, log: Arc<SlowQueryLog>) -> Self {
+        self.slow_log = log;
+        self
     }
 
     pub fn with_audit(mut self, audit: Arc<AuditLog>) -> Self {

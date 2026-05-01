@@ -1,0 +1,157 @@
+{
+  "title": "NebulaDB — AI & Cache",
+  "uid": "nebula-ai",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "tags": ["nebuladb", "ai", "cache"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Docs live",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "description": "Current corpus size. Approximated from (inserted - deleted); the admin /stats endpoint gives an authoritative count.",
+      "targets": [
+        {
+          "expr": "nebula_docs_inserted{service=\"nebula-server\"} - nebula_docs_deleted{service=\"nebula-server\"}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Semantic searches (total)",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        { "expr": "nebula_searches_semantic{service=\"nebula-server\"}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "RAG calls (total)",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        { "expr": "nebula_rag_requests{service=\"nebula-server\"}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Cache hit ratio (5m)",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "description": "In-proc embedding cache hits / total lookups. Trending low → consider raising NEBULA_EMBED_CACHE_SIZE.",
+      "targets": [
+        {
+          "expr": "sum(rate(nebula_embed_cache_hits{service=\"nebula-server\"}[5m])) / clamp_min((sum(rate(nebula_embed_cache_hits{service=\"nebula-server\"}[5m])) + sum(rate(nebula_embed_cache_misses{service=\"nebula-server\"}[5m]))), 0.001)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.3 },
+              { "color": "green", "value": 0.7 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "AI workload (reqs/s)",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nebula_searches_semantic{service=\"nebula-server\"}[1m])",
+          "refId": "A",
+          "legendFormat": "semantic search"
+        },
+        {
+          "expr": "rate(nebula_searches_vector{service=\"nebula-server\"}[1m])",
+          "refId": "B",
+          "legendFormat": "vector search"
+        },
+        {
+          "expr": "rate(nebula_rag_requests{service=\"nebula-server\"}[1m])",
+          "refId": "C",
+          "legendFormat": "rag"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Embedding cache",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nebula_embed_cache_hits{service=\"nebula-server\"}[1m])",
+          "refId": "A",
+          "legendFormat": "hits/s"
+        },
+        {
+          "expr": "rate(nebula_embed_cache_misses{service=\"nebula-server\"}[1m])",
+          "refId": "B",
+          "legendFormat": "misses/s"
+        },
+        {
+          "expr": "rate(nebula_embed_cache_evictions{service=\"nebula-server\"}[1m])",
+          "refId": "C",
+          "legendFormat": "evictions/s"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Cache hit ratio (trend)",
+      "description": "1m sliding window — spikes of ratio=0 are cold-miss bursts, settling back to the steady-state hit ratio.",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(nebula_embed_cache_hits{service=\"nebula-server\"}[1m])) / clamp_min((sum(rate(nebula_embed_cache_hits{service=\"nebula-server\"}[1m])) + sum(rate(nebula_embed_cache_misses{service=\"nebula-server\"}[1m]))), 0.001)",
+          "refId": "A",
+          "legendFormat": "hit ratio"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Ingest throughput",
+      "description": "Docs inserted vs deleted per second. During bulk loads the former dominates; steady-state should be near zero unless there's a churn workload.",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(nebula_docs_inserted{service=\"nebula-server\"}[1m])",
+          "refId": "A",
+          "legendFormat": "inserted/s"
+        },
+        {
+          "expr": "rate(nebula_docs_deleted{service=\"nebula-server\"}[1m])",
+          "refId": "B",
+          "legendFormat": "deleted/s"
+        }
+      ]
+    }
+  ]
+}

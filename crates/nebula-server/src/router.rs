@@ -54,6 +54,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/buckets", get(admin_buckets))
         .route("/admin/audit", get(admin_audit))
         .route("/admin/stats", get(admin_stats))
+        .route("/admin/slow", get(admin_slow))
         .route("/admin/bucket/:bucket/empty", post(admin_empty_bucket))
         // Layer order (innermost last; request flows top-to-bottom,
         // response bottom-to-top):
@@ -567,11 +568,26 @@ async fn sql_query(
     if req.sql.trim().is_empty() {
         return Err(ApiError::BadRequest("sql must be non-empty".into()));
     }
-    let out = s.sql.run(&req.sql).await?;
-    Ok(Json(SqlQueryResponse {
-        took_ms: out.took_ms,
-        rows: out.rows,
-    }))
+    // Time the whole `run` call here so the slow-log captures wall
+    // time even on the error path — where `SqlEngine::run` doesn't
+    // reach the point of computing `took_ms`. A query that burns
+    // 5s and then errors is exactly what operators want to see.
+    let started = std::time::Instant::now();
+    let result = s.sql.run(&req.sql).await;
+    let took_ms = started.elapsed().as_millis() as u64;
+    match result {
+        Ok(out) => {
+            s.slow_log.record(&req.sql, took_ms, out.rows.len(), true);
+            Ok(Json(SqlQueryResponse {
+                took_ms: out.took_ms,
+                rows: out.rows,
+            }))
+        }
+        Err(e) => {
+            s.slow_log.record(&req.sql, took_ms, 0, false);
+            Err(e.into())
+        }
+    }
 }
 
 // ---------- admin ----------
@@ -625,6 +641,15 @@ async fn admin_audit(
     axum::extract::Query(q): axum::extract::Query<AuditQuery>,
 ) -> Json<Vec<crate::audit::AuditEntry>> {
     Json(s.audit.recent(q.limit))
+}
+
+/// Slow-query log. Fixed-capacity priority queue of the slowest
+/// SQL queries seen since boot. Returned sorted descending by
+/// `took_ms` — the first entry is the worst offender.
+async fn admin_slow(
+    State(s): State<AppState>,
+) -> Json<Vec<crate::slow_log::SlowQueryEntry>> {
+    Json(s.slow_log.snapshot())
 }
 
 #[derive(Serialize)]

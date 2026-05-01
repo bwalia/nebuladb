@@ -8,6 +8,7 @@ import { SearchTab } from "./tabs/SearchTab";
 import { RagTab } from "./tabs/RagTab";
 import { HybridTab } from "./tabs/HybridTab";
 import { AdminTab } from "./tabs/AdminTab";
+import { MetricsTab } from "./tabs/MetricsTab";
 
 type TabId =
   | "overview"
@@ -16,6 +17,7 @@ type TabId =
   | "search"
   | "rag"
   | "hybrid"
+  | "metrics"
   | "admin";
 
 interface NavItem {
@@ -37,7 +39,8 @@ const NAV: NavItem[] = [
   { id: "search", label: "Semantic search", hint: "Vector retrieval", icon: "🔎", group: "ai" },
   { id: "rag", label: "RAG chat", hint: "Streaming answers", icon: "💬", group: "ai" },
   { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query", icon: "⚡", group: "ai" },
-  { id: "admin", label: "Admin", hint: "Buckets, EXPLAIN, audit", icon: "⚙", group: "ops" },
+  { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "📊", group: "ops" },
+  { id: "admin", label: "Admin", hint: "Buckets, EXPLAIN, audit, slow queries", icon: "⚙", group: "ops" },
 ];
 
 const GROUP_LABELS: Record<NavItem["group"], string> = {
@@ -125,6 +128,7 @@ export function App() {
             {tab === "search" && <SearchTab />}
             {tab === "rag" && <RagTab />}
             {tab === "hybrid" && <HybridTab />}
+            {tab === "metrics" && <MetricsTab />}
             {tab === "admin" && <AdminTab />}
           </div>
         </main>

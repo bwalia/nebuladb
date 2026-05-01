@@ -20,10 +20,12 @@ pub mod metrics;
 pub mod middleware;
 pub mod ratelimit;
 pub mod router;
+pub mod slow_log;
 pub mod state;
 
 pub use audit::AuditLog;
 pub use jwt::JwtConfig;
 pub use ratelimit::{RateLimitConfig, RateLimiter};
 pub use router::build_router;
+pub use slow_log::SlowQueryLog;
 pub use state::{AppConfig, AppState};
