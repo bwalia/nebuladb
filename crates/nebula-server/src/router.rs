@@ -55,6 +55,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/audit", get(admin_audit))
         .route("/admin/stats", get(admin_stats))
         .route("/admin/slow", get(admin_slow))
+        .route("/admin/durability", get(admin_durability))
+        .route("/admin/snapshot", post(admin_snapshot))
+        .route("/admin/wal/compact", post(admin_wal_compact))
         .route("/admin/bucket/:bucket/empty", post(admin_empty_bucket))
         // Layer order (innermost last; request flows top-to-bottom,
         // response bottom-to-top):
@@ -650,6 +653,44 @@ async fn admin_slow(
     State(s): State<AppState>,
 ) -> Json<Vec<crate::slow_log::SlowQueryEntry>> {
     Json(s.slow_log.snapshot())
+}
+
+#[derive(Serialize)]
+struct DurabilityInfo {
+    /// `true` when the server was booted with NEBULA_DATA_DIR and
+    /// every mutation is going through the WAL.
+    persistent: bool,
+    /// Absolute path to the data directory when persistent.
+    data_dir: Option<String>,
+    /// WAL stats: segment count, bytes on disk, seq range.
+    wal: Option<nebula_wal::WalStats>,
+}
+
+async fn admin_durability(State(s): State<AppState>) -> Json<DurabilityInfo> {
+    Json(DurabilityInfo {
+        persistent: s.index.is_persistent(),
+        data_dir: s.index.data_dir().map(|p| p.display().to_string()),
+        wal: s.index.wal_stats(),
+    })
+}
+
+async fn admin_snapshot(
+    State(s): State<AppState>,
+) -> Result<Json<nebula_index::SnapshotOutcome>, ApiError> {
+    let out = s.index.snapshot()?;
+    Ok(Json(out))
+}
+
+#[derive(Serialize)]
+struct WalCompactResponse {
+    removed_segments: usize,
+}
+
+async fn admin_wal_compact(
+    State(s): State<AppState>,
+) -> Result<Json<WalCompactResponse>, ApiError> {
+    let removed_segments = s.index.compact_wal()?;
+    Ok(Json(WalCompactResponse { removed_segments }))
 }
 
 #[derive(Serialize)]

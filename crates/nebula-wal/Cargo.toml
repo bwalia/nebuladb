@@ -1,0 +1,21 @@
+[package]
+name = "nebula-wal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nebula-core = { path = "../nebula-core" }
+
+serde.workspace = true
+serde_json.workspace = true
+bincode.workspace = true
+crc32fast.workspace = true
+zstd.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -74,6 +74,12 @@ spec:
             - name: NEBULA_REDIS_URL
               value: {{ . | quote }}
             {{- end }}
+            {{- if .Values.server.persistence.enabled }}
+            # Durability: enable WAL + snapshot by pointing the
+            # binary at the mounted PVC. Unset → in-memory.
+            - name: NEBULA_DATA_DIR
+              value: "/var/lib/nebuladb"
+            {{- end }}
           {{- with .Values.server.livenessProbe }}
           livenessProbe: {{- toYaml . | nindent 12 }}
           {{- end }}

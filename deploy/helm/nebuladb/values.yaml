@@ -123,10 +123,11 @@ server:
     enabled: false
     minAvailable: 1
 
-  # Persistence is off by default — NebulaDB is currently fully
-  # in-memory. A PVC here will become meaningful once the HNSW
-  # snapshot-to-disk feature lands; leaving the hook in so
-  # upgrades don't re-template Pods when that does ship.
+  # Persistence: when enabled, the chart provisions a PVC mounted at
+  # /var/lib/nebuladb and sets NEBULA_DATA_DIR so the binary opens
+  # in persistent mode — writes go through the WAL, snapshots are
+  # taken on demand via the Admin UI, and restarts replay the WAL.
+  # Off by default; the default in-memory mode still runs cleanly.
   persistence:
     enabled: false
     storageClass: ""

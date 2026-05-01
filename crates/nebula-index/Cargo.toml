@@ -10,10 +10,13 @@ nebula-core = { path = "../nebula-core" }
 nebula-vector = { path = "../nebula-vector" }
 nebula-embed = { path = "../nebula-embed" }
 nebula-chunk = { path = "../nebula-chunk" }
+nebula-wal = { path = "../nebula-wal" }
 
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+bincode.workspace = true
+zstd.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
 ahash.workspace = true
@@ -22,3 +25,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile.workspace = true

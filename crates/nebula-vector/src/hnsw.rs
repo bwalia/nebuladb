@@ -157,6 +157,25 @@ pub struct Hnsw {
     inner: RwLock<Inner>,
 }
 
+/// Plain-data view of a graph — what gets persisted and restored.
+/// Keep this in sync with `Inner` on every state-shape change; tests
+/// below catch the common cases (missing field, size mismatch).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HnswSnapshot {
+    pub dim: usize,
+    pub metric: Metric,
+    pub config: HnswConfig,
+    /// Flat arena, same layout as live.
+    pub vectors: Vec<f32>,
+    pub node_levels: Vec<u8>,
+    pub neighbors: Vec<Vec<Vec<u32>>>,
+    /// External IDs as raw `u64`s — bincode is happy with these,
+    /// and we reconstruct the `AHashMap` index on load.
+    pub external: Vec<u64>,
+    pub tombstones: Vec<u32>,
+    pub entry: Option<(u32, u8)>,
+}
+
 impl Hnsw {
     pub fn new(dim: usize, metric: Metric, config: HnswConfig) -> Result<Self> {
         if dim == 0 {
@@ -209,6 +228,66 @@ impl Hnsw {
 
     pub fn is_empty(&self) -> bool {
         self.len_live() == 0
+    }
+
+    /// Capture the whole graph state as a plain-data `HnswSnapshot`.
+    /// The RNG is re-seeded from `config.seed` on restore, which
+    /// keeps level sampling deterministic at the cost of never
+    /// reproducing the *exact* same sequence of future levels that
+    /// the live graph would have picked. That's fine — levels are
+    /// only used for new inserts and the restored graph is
+    /// statistically indistinguishable.
+    pub fn to_snapshot(&self) -> HnswSnapshot {
+        let g = self.inner.read();
+        HnswSnapshot {
+            dim: self.dim,
+            metric: self.metric,
+            config: self.config.clone(),
+            vectors: g.vectors.clone(),
+            node_levels: g.node_levels.clone(),
+            neighbors: g.neighbors.clone(),
+            external: g.external.iter().map(|id| id.0).collect(),
+            tombstones: g.tombstones.iter().copied().collect(),
+            entry: g.entry,
+        }
+    }
+
+    /// Rebuild a `Hnsw` from a snapshot. Rejects mismatched dim or
+    /// metric — those are load-bearing invariants for every node
+    /// currently in the graph; loading a mismatched snapshot would
+    /// silently produce wrong results.
+    pub fn restore_from_snapshot(snap: HnswSnapshot) -> Result<Self> {
+        if snap.dim == 0 {
+            return Err(NebulaError::InvalidConfig("snapshot dim must be > 0".into()));
+        }
+        if snap.vectors.len() != snap.external.len() * snap.dim {
+            return Err(NebulaError::InvalidConfig(format!(
+                "snapshot inconsistent: {} vector floats for {} nodes × dim {}",
+                snap.vectors.len(),
+                snap.external.len(),
+                snap.dim
+            )));
+        }
+        let rng = ChaCha8Rng::seed_from_u64(snap.config.seed);
+        let mut by_external = AHashMap::with_capacity(snap.external.len());
+        for (i, id) in snap.external.iter().enumerate() {
+            by_external.insert(Id(*id), i as u32);
+        }
+        Ok(Self {
+            dim: snap.dim,
+            metric: snap.metric,
+            config: snap.config,
+            inner: RwLock::new(Inner {
+                vectors: snap.vectors,
+                node_levels: snap.node_levels,
+                neighbors: snap.neighbors,
+                external: snap.external.into_iter().map(Id).collect(),
+                by_external,
+                tombstones: snap.tombstones.into_iter().collect(),
+                entry: snap.entry,
+                rng,
+            }),
+        })
     }
 
     /// Insert a vector under the given external id. Fails if the id is
@@ -643,5 +722,48 @@ mod tests {
         let r = h.search(&[1.0, 0.0, 0.0], 2, None).unwrap();
         assert_eq!(r[0].id, Id(1));
         assert_eq!(r[1].id, Id(3));
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_search() {
+        // Build a small graph, snapshot it, restore, confirm
+        // searches agree on the result set. Exact score parity
+        // isn't required by the API but we get it here because
+        // the vector bytes are the same.
+        let h = Hnsw::new(8, Metric::L2Sq, HnswConfig::with_m(4)).unwrap();
+        for i in 0..20u64 {
+            let mut v = vec![0.0f32; 8];
+            v[(i as usize) % 8] = 1.0 + (i as f32) * 0.1;
+            h.insert(Id(i), &v).unwrap();
+        }
+        // Tombstone one to ensure that state survives too.
+        h.delete(Id(7)).unwrap();
+
+        let snap = h.to_snapshot();
+        let h2 = Hnsw::restore_from_snapshot(snap).unwrap();
+
+        // Deleted id must stay excluded after restore.
+        let q = [1.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let r1 = h.search(&q, 5, None).unwrap();
+        let r2 = h2.search(&q, 5, None).unwrap();
+        let ids1: Vec<u64> = r1.iter().map(|x| x.id.0).collect();
+        let ids2: Vec<u64> = r2.iter().map(|x| x.id.0).collect();
+        assert_eq!(ids1, ids2, "restored graph gave different hits");
+        assert!(!ids2.contains(&7), "tombstone was lost");
+    }
+
+    #[test]
+    fn snapshot_roundtrip_via_bincode() {
+        // The actual server path goes through bincode for on-disk
+        // storage; verify that's wire-stable.
+        let h = Hnsw::new(4, Metric::Cosine, HnswConfig::default()).unwrap();
+        for i in 0..5u64 {
+            h.insert(Id(i), &[i as f32, 1.0, 0.0, 0.0]).unwrap();
+        }
+        let snap = h.to_snapshot();
+        let bytes = bincode::serialize(&snap).unwrap();
+        let back: HnswSnapshot = bincode::deserialize(&bytes).unwrap();
+        let h2 = Hnsw::restore_from_snapshot(back).unwrap();
+        assert_eq!(h2.len(), 5);
     }
 }

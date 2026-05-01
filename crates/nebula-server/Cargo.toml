@@ -18,6 +18,7 @@ nebula-llm = { path = "../nebula-llm" }
 nebula-cache = { path = "../nebula-cache" }
 nebula-redis-cache = { path = "../nebula-redis-cache" }
 nebula-index = { path = "../nebula-index" }
+nebula-wal = { path = "../nebula-wal" }
 nebula-sql = { path = "../nebula-sql" }
 nebula-grpc = { path = "../nebula-grpc" }
 nebula-pgwire = { path = "../nebula-pgwire" }

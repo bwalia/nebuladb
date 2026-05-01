@@ -8,6 +8,7 @@ members = [
     "crates/nebula-redis-cache",
     "crates/nebula-chunk",
     "crates/nebula-llm",
+    "crates/nebula-wal",
     "crates/nebula-index",
     "crates/nebula-sql",
     "crates/nebula-grpc",
@@ -62,6 +63,10 @@ tokio-stream = { version = "0.1", features = ["net"] }
 sqlparser = "0.52"
 pgwire = "0.25"
 redis = { version = "0.27", default-features = false, features = ["tokio-comp", "aio"] }
+crc32fast = "1.4"
+bincode = "1.3"
+zstd = { version = "0.13", default-features = false }
+tempfile = "3"
 
 # Observability
 tracing = "0.1"

@@ -166,10 +166,19 @@ services:
       # pgwire on 5433 host-side to avoid clashing with a real Postgres
       # that might be running on 5432.
       - "${NEBULA_PG_HOST_PORT:-5433}:5432"
+    volumes:
+      # Durability: WAL segments + snapshots live here. When set, the
+      # server opens in persistent mode — writes go through the WAL and
+      # a snapshot is taken on demand via the Admin tab. Remove this
+      # volume (or unset NEBULA_DATA_DIR below) to run fully in-memory.
+      - nebula-data:/var/lib/nebuladb
     environment:
       NEBULA_BIND: "0.0.0.0:8080"
       NEBULA_GRPC_BIND: "0.0.0.0:50051"
       NEBULA_PG_BIND: "0.0.0.0:5432"
+
+      # Durability data directory. Set to empty to disable persistence.
+      NEBULA_DATA_DIR: "${NEBULA_DATA_DIR:-/var/lib/nebuladb}"
 
       # LLM: point at the Ollama sidecar.
       NEBULA_LLM_OLLAMA_URL: "http://ollama:11434"
@@ -329,3 +338,4 @@ volumes:
   redis-data:
   prometheus-data:
   grafana-data:
+  nebula-data:

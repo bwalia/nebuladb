@@ -99,6 +99,24 @@ export interface SlowQueryEntry {
   ok: boolean;
 }
 
+export interface WalStats {
+  segment_count: number;
+  total_bytes: number;
+  oldest_seq: number;
+  newest_seq: number;
+}
+
+export interface DurabilityInfo {
+  persistent: boolean;
+  data_dir: string | null;
+  wal: WalStats | null;
+}
+
+export interface SnapshotOutcome {
+  path: string;
+  wal_seq_captured: number;
+}
+
 /**
  * Thrown on non-2xx responses. Carries the decoded body so the UI
  * can show the server's stable `code` string (e.g. `sql_parse`)
@@ -212,6 +230,16 @@ export const api = {
   stats: () => request<StatsSnapshot>("/api/v1/admin/stats"),
 
   slow: () => request<SlowQueryEntry[]>("/api/v1/admin/slow"),
+
+  durability: () => request<DurabilityInfo>("/api/v1/admin/durability"),
+
+  takeSnapshot: () =>
+    request<SnapshotOutcome>("/api/v1/admin/snapshot", { method: "POST" }),
+
+  compactWal: () =>
+    request<{ removed_segments: number }>("/api/v1/admin/wal/compact", {
+      method: "POST",
+    }),
 
   emptyBucket: (bucket: string) =>
     request<{ bucket: string; removed: number }>(

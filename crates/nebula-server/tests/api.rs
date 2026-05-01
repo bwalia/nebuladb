@@ -715,6 +715,33 @@ async fn bulk_upsert_rejects_empty_or_oversize() {
 }
 
 #[tokio::test]
+async fn admin_durability_reports_in_memory_status() {
+    // Default app_state creates an in-memory TextIndex. Verify the
+    // durability endpoint reports that honestly, and that snapshot
+    // returns 400 rather than pretending to work.
+    let app = build_router(app_state(&[]));
+    let res = app
+        .clone()
+        .oneshot(Request::get("/api/v1/admin/durability").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"persistent\":false"));
+    assert!(body.contains("\"data_dir\":null"));
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/admin/snapshot")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn admin_stats_returns_json_snapshot() {
     let app = build_router(app_state(&[]));
     // Insert one doc + run one semantic search so a couple counters move.

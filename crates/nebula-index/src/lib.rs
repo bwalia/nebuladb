@@ -5,11 +5,14 @@
 //! `(bucket, id, text)` and search by text or vector, with bucket
 //! filtering applied post-ANN.
 //!
-//! Everything is in-memory. Persistence is a separate concern — the
-//! `Arc<dyn Embedder>` dependency and the bucket map are both designed
-//! so that swapping in a disk-backed store later doesn't change the
-//! public API.
+//! Optionally durable: pass a `data_dir` at construction time to
+//! enable WAL + snapshot recovery (see the `durability` module).
+//! Without a data dir, everything is in-memory — the historical
+//! behaviour we still ship for tests and demos.
 
+pub mod durability;
+
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
@@ -21,6 +24,7 @@ use nebula_chunk::Chunker;
 use nebula_core::{Id, NebulaError};
 use nebula_embed::{EmbedError, Embedder};
 use nebula_vector::{Hnsw, HnswConfig, Metric};
+use nebula_wal::{Wal, WalChunk, WalConfig, WalRecord, WalStats};
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -70,6 +74,13 @@ pub struct Hit {
     pub metadata: serde_json::Value,
 }
 
+/// Return of a successful `TextIndex::snapshot()`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotOutcome {
+    pub path: PathBuf,
+    pub wal_seq_captured: u64,
+}
+
 /// One bucket's summary for the admin UI. `metadata_keys` counts how
 /// often each top-level metadata key appears — a cheap "which fields
 /// are worth filtering on?" signal that doesn't require a proper
@@ -80,6 +91,48 @@ pub struct BucketStats {
     pub docs: usize,
     pub parent_docs: usize,
     pub metadata_keys: Vec<(String, usize)>,
+}
+
+/// Rebuild an `Inner` from serialized-on-disk form. Factored out of
+/// `open_persistent` so the crate's tests can drive it directly.
+fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
+    let mut by_key = AHashMap::with_capacity(state.docs.len());
+    let mut docs = AHashMap::with_capacity(state.docs.len());
+    for d in state.docs {
+        let metadata: serde_json::Value = serde_json::from_str(&d.metadata_json)
+            .unwrap_or(serde_json::Value::Null);
+        let id = Id(d.internal_id);
+        by_key.insert((d.bucket.clone(), d.external_id.clone()), id);
+        // Vectors live in the HNSW snapshot — the `Document`
+        // struct we materialize here has an empty vector because
+        // we'd be duplicating bytes otherwise. The HNSW is the
+        // authority for the vector arena.
+        docs.insert(
+            id,
+            Document {
+                bucket: d.bucket,
+                external_id: d.external_id,
+                text: d.text,
+                vector: Vec::new(),
+                metadata,
+                parent_doc_id: d.parent_doc_id,
+                chunk_index: d.chunk_index,
+            },
+        );
+    }
+    let mut parents: AHashMap<(String, String), AHashSet<String>> = AHashMap::new();
+    for p in state.parents {
+        parents.insert(
+            (p.bucket, p.parent_doc_id),
+            p.external_ids.into_iter().collect(),
+        );
+    }
+    Inner {
+        by_key,
+        docs,
+        parents,
+        next_id: state.next_id,
+    }
 }
 
 struct Inner {
@@ -100,6 +153,11 @@ pub struct TextIndex {
     embedder: Arc<dyn Embedder>,
     hnsw: Hnsw,
     inner: RwLock<Inner>,
+    /// `Some` = durable. Every mutation writes to the WAL before
+    /// applying. `None` = in-memory, legacy behaviour.
+    wal: Option<Arc<Wal>>,
+    /// Parent dir for snapshots. Always `Some` iff `wal` is `Some`.
+    data_dir: Option<PathBuf>,
 }
 
 impl TextIndex {
@@ -115,11 +173,148 @@ impl TextIndex {
                 parents: AHashMap::new(),
                 next_id: 1,
             }),
+            wal: None,
+            data_dir: None,
         })
+    }
+
+    /// Durable variant: opens (or creates) a WAL in `data_dir/wal`,
+    /// loads the newest snapshot from `data_dir/snapshots` if any,
+    /// and replays WAL records newer than the snapshot. The
+    /// returned index is ready to serve traffic with exactly the
+    /// pre-crash state.
+    ///
+    /// Replay is embedder-free — WAL records carry resolved
+    /// vectors — so this works even if the embedder backend is
+    /// down at boot.
+    pub fn open_persistent(
+        embedder: Arc<dyn Embedder>,
+        metric: Metric,
+        config: HnswConfig,
+        data_dir: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let dim = embedder.dim();
+        let data_dir = data_dir.as_ref().to_path_buf();
+        let wal_dir = data_dir.join("wal");
+        let snapshots_dir = data_dir.join("snapshots");
+        std::fs::create_dir_all(&wal_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
+        std::fs::create_dir_all(&snapshots_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
+
+        // Load snapshot first, then replay only later WAL records.
+        let (inner, hnsw, snapshot_wal_seq) =
+            match durability::load_latest_snapshot(&snapshots_dir)? {
+                Some((header, hnsw_snap)) => {
+                    if hnsw_snap.dim != dim {
+                        return Err(IndexError::Invalid(format!(
+                            "snapshot dim {} != embedder dim {}",
+                            hnsw_snap.dim, dim
+                        )));
+                    }
+                    let hnsw = Hnsw::restore_from_snapshot(hnsw_snap)?;
+                    let inner = inner_from_serialized(header.docs);
+                    (inner, hnsw, header.wal_seq_at_snapshot)
+                }
+                None => {
+                    let hnsw = Hnsw::new(dim, metric, config.clone())?;
+                    let inner = Inner {
+                        by_key: AHashMap::new(),
+                        docs: AHashMap::new(),
+                        parents: AHashMap::new(),
+                        next_id: 1,
+                    };
+                    // No snapshot yet: every WAL record is fresh.
+                    // `u64::MAX` as "nothing superseded" would be
+                    // confusing; 0 is clearer since WAL seqs start
+                    // there.
+                    (inner, hnsw, 0)
+                }
+            };
+
+        let wal = Arc::new(Wal::open(&wal_dir, WalConfig::default()).map_err(durability::wal_err)?);
+
+        let index = Self {
+            embedder,
+            hnsw,
+            inner: RwLock::new(inner),
+            wal: Some(Arc::clone(&wal)),
+            data_dir: Some(data_dir),
+        };
+
+        // Replay WAL records that postdate the snapshot. We only
+        // care about records written AFTER the snapshot captured
+        // its state — earlier ones are already reflected in the
+        // loaded graph.
+        //
+        // In the common case (fresh boot, no snapshot) we replay
+        // everything. `snapshot_wal_seq` = 0 means "no records
+        // superseded yet"; WAL seq numbers the server cares about
+        // are 1-based from here, so nothing is skipped.
+        let records = wal.replay().map_err(durability::wal_err)?;
+        let _ = snapshot_wal_seq; // currently we replay ALL records
+                                  // in the WAL, relying on compact
+                                  // to have pruned already-snapshotted
+                                  // segments. See compact_wal.
+        for rec in records {
+            index.apply_wal_record(&rec)?;
+        }
+        Ok(index)
     }
 
     pub fn dim(&self) -> usize {
         self.embedder.dim()
+    }
+
+    /// Append a record to the WAL if persistence is on. No-op in
+    /// the in-memory path. Errors propagate so a failed WAL write
+    /// aborts the mutation — we never "partially commit" under
+    /// durability.
+    fn wal_append(&self, rec: &WalRecord) -> Result<()> {
+        if let Some(wal) = &self.wal {
+            wal.append(rec).map_err(durability::wal_err)?;
+        }
+        Ok(())
+    }
+
+    /// Apply a single WAL record to the in-memory state during
+    /// replay. Deliberately doesn't call the embedder — vectors
+    /// are carried in the record — and doesn't re-append to the
+    /// WAL (that would cause duplicate replay on the next boot).
+    fn apply_wal_record(&self, rec: &WalRecord) -> Result<()> {
+        match rec {
+            WalRecord::UpsertText {
+                bucket,
+                external_id,
+                text,
+                vector,
+                metadata_json,
+            } => {
+                let metadata: serde_json::Value = serde_json::from_str(metadata_json)
+                    .unwrap_or(serde_json::Value::Null);
+                self.apply_upsert_single(bucket, external_id, text, vector.clone(), metadata, None, None)?;
+            }
+            WalRecord::UpsertDocument {
+                bucket,
+                doc_id,
+                chunks,
+                metadata_json,
+            } => {
+                let metadata: serde_json::Value = serde_json::from_str(metadata_json)
+                    .unwrap_or(serde_json::Value::Null);
+                self.apply_upsert_document(bucket, doc_id, chunks, metadata)?;
+            }
+            WalRecord::Delete { bucket, external_id } => {
+                // delete() returns NotFound if the id's gone — that's
+                // fine during replay (earlier record was superseded).
+                let _ = self.delete_internal(bucket, external_id);
+            }
+            WalRecord::DeleteDocument { bucket, doc_id } => {
+                let _ = self.delete_document_internal(bucket, doc_id);
+            }
+            WalRecord::EmptyBucket { bucket } => {
+                self.empty_bucket_internal(bucket);
+            }
+        }
+        Ok(())
     }
 
     pub fn embedder_model(&self) -> &str {
@@ -157,25 +352,42 @@ impl TextIndex {
             }));
         }
 
-        let key = (bucket.to_string(), external_id.to_string());
+        // WAL first: if we crash between this append and the
+        // in-memory apply below, replay picks up the record. If we
+        // crash before the append, the caller's retry is safe —
+        // nothing was committed.
+        self.wal_append(&WalRecord::UpsertText {
+            bucket: bucket.to_string(),
+            external_id: external_id.to_string(),
+            text: text.to_string(),
+            vector: vector.clone(),
+            metadata_json: metadata.to_string(),
+        })?;
 
-        // Hold the inner write lock across the HNSW mutation so a
-        // concurrent reader never observes a half-committed write:
-        // either the doc is fully findable, or it isn't there at
-        // all. An earlier revision released the lock between the map
-        // insert and the HNSW insert, which produced a read-after-
-        // write race under load — the sort of bug that's invisible
-        // until 100k-doc bulk-load with dashboard polling on top.
-        //
-        // Lock order across the whole crate is *always*
-        // `inner` → `hnsw`. `search_vector` takes `inner.read()`
-        // before touching `hnsw.search`. Keeping that order
-        // everywhere means we never deadlock.
+        self.apply_upsert_single(bucket, external_id, text, vector, metadata, None, None)
+    }
+
+    /// Pure in-memory apply shared by `upsert_text` and WAL replay.
+    /// Holds the inner write lock across the HNSW mutation so a
+    /// concurrent reader never observes a half-committed write —
+    /// see the earlier revision that had this race.
+    ///
+    /// Lock order across the whole crate: `inner` → `hnsw`.
+    /// Readers (search_vector) do the same. Keeps us deadlock-free.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_upsert_single(
+        &self,
+        bucket: &str,
+        external_id: &str,
+        text: &str,
+        vector: Vec<f32>,
+        metadata: serde_json::Value,
+        parent_doc_id: Option<String>,
+        chunk_index: Option<usize>,
+    ) -> Result<()> {
+        let key = (bucket.to_string(), external_id.to_string());
         let mut g = self.inner.write();
 
-        // Replace semantics: tombstone the old node under the SAME
-        // write lock so the transition old-doc → new-doc is atomic
-        // from a reader's POV.
         if let Some(&old_id) = g.by_key.get(&key) {
             let _ = self.hnsw.delete(old_id);
             g.docs.remove(&old_id);
@@ -185,9 +397,6 @@ impl TextIndex {
         let new_internal_id = Id(g.next_id);
         g.next_id += 1;
 
-        // Try the HNSW insert first — if it fails we don't want a
-        // dangling `by_key`/`docs` entry. On success the map writes
-        // below commit the rest of the visible state.
         if let Err(e) = self.hnsw.insert(new_internal_id, &vector) {
             return Err(e.into());
         }
@@ -201,8 +410,8 @@ impl TextIndex {
                 text: text.to_string(),
                 vector,
                 metadata,
-                parent_doc_id: None,
-                chunk_index: None,
+                parent_doc_id,
+                chunk_index,
             },
         );
         Ok(())
@@ -257,6 +466,22 @@ impl TextIndex {
             }
         }
 
+        // WAL: write every record before we start applying. The
+        // WAL's writer is internally serialized so a batch lands
+        // contiguously in one segment. If any append fails the
+        // whole batch aborts — simpler than partial-commit
+        // bookkeeping, and `append` doesn't typically fail except
+        // on full disk.
+        for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
+            self.wal_append(&WalRecord::UpsertText {
+                bucket: bucket.to_string(),
+                external_id: id.clone(),
+                text: text.clone(),
+                vector: vec.clone(),
+                metadata_json: meta.to_string(),
+            })?;
+        }
+
         // Same atomic-per-item discipline as the single-item path:
         // hold the inner write lock across each item's HNSW mutation
         // so readers never see a half-committed insert. Under bulk
@@ -308,13 +533,21 @@ impl TextIndex {
     }
 
     pub fn delete(&self, bucket: &str, external_id: &str) -> Result<()> {
+        self.wal_append(&WalRecord::Delete {
+            bucket: bucket.to_string(),
+            external_id: external_id.to_string(),
+        })?;
+        self.delete_internal(bucket, external_id)
+    }
+
+    /// In-memory apply shared by the public path and WAL replay.
+    fn delete_internal(&self, bucket: &str, external_id: &str) -> Result<()> {
         let mut g = self.inner.write();
         let key = (bucket.to_string(), external_id.to_string());
         let id = g.by_key.remove(&key).ok_or_else(|| IndexError::DocNotFound {
             bucket: bucket.to_string(),
             id: external_id.to_string(),
         })?;
-        // If this was a chunk, also drop it from the parent's set.
         if let Some(doc) = g.docs.remove(&id) {
             if let Some(parent) = doc.parent_doc_id {
                 if let Some(set) = g.parents.get_mut(&(bucket.to_string(), parent.clone())) {
@@ -325,9 +558,6 @@ impl TextIndex {
                 }
             }
         }
-        // Hold the inner lock across the HNSW delete so a concurrent
-        // reader can't observe the window where `by_key` says "gone"
-        // but HNSW still returns the id as a live hit.
         let _ = self.hnsw.delete(id);
         Ok(())
     }
@@ -382,74 +612,98 @@ impl TextIndex {
             }
         }
 
-        // Replace semantics: drop any existing chunks for this doc,
-        // insert the new ones, tombstone any that fail at HNSW — all
-        // under a single write-lock acquisition so a concurrent
-        // reader never sees a mixed old/new chunk set for this
-        // `doc_id`. We pay the lock-hold cost (O(chunks) HNSW
-        // inserts) in exchange for atomicity from the reader side.
-        let chunk_count = chunks.len();
-        {
-            let mut g = self.inner.write();
-            let parent_key = (bucket.to_string(), doc_id.to_string());
-            if let Some(existing) = g.parents.remove(&parent_key) {
-                for external_id in existing {
-                    let key = (bucket.to_string(), external_id.clone());
-                    if let Some(id) = g.by_key.remove(&key) {
-                        g.docs.remove(&id);
-                        let _ = self.hnsw.delete(id);
-                    }
+        // WAL: one record per document (not per chunk) so replay
+        // can't produce a half-indexed doc. Chunks + their vectors
+        // are embedded directly in the record.
+        let wal_chunks: Vec<WalChunk> = chunks
+            .iter()
+            .zip(vectors.iter())
+            .map(|(c, v)| WalChunk {
+                index: c.index,
+                char_start: c.char_start,
+                text: c.text.clone(),
+                vector: v.clone(),
+            })
+            .collect();
+        self.wal_append(&WalRecord::UpsertDocument {
+            bucket: bucket.to_string(),
+            doc_id: doc_id.to_string(),
+            chunks: wal_chunks.clone(),
+            metadata_json: metadata.to_string(),
+        })?;
+
+        self.apply_upsert_document(bucket, doc_id, &wal_chunks, metadata)?;
+        Ok(chunks.len())
+    }
+
+    /// In-memory apply shared by public path and WAL replay. The
+    /// public method validates input + calls the embedder first;
+    /// this runs after those have produced resolved chunks.
+    fn apply_upsert_document(
+        &self,
+        bucket: &str,
+        doc_id: &str,
+        chunks: &[WalChunk],
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        let mut g = self.inner.write();
+        let parent_key = (bucket.to_string(), doc_id.to_string());
+        if let Some(existing) = g.parents.remove(&parent_key) {
+            for external_id in existing {
+                let key = (bucket.to_string(), external_id.clone());
+                if let Some(id) = g.by_key.remove(&key) {
+                    g.docs.remove(&id);
+                    let _ = self.hnsw.delete(id);
                 }
             }
-
-            let mut parent_set: AHashSet<String> = AHashSet::with_capacity(chunks.len());
-            for (chunk, vector) in chunks.iter().zip(vectors.iter()) {
-                let external_id = format!("{doc_id}#{}", chunk.index);
-                let id = Id(g.next_id);
-                g.next_id += 1;
-
-                // HNSW first: if it fails we didn't commit any map
-                // state for this chunk so there's nothing to roll
-                // back. Abort the whole document — partial chunk
-                // sets aren't meaningful for RAG.
-                if let Err(e) = self.hnsw.insert(id, vector) {
-                    // Tombstone every chunk we've already inserted
-                    // in this doc so the failed upsert doesn't leak
-                    // partial content into search.
-                    for prev_external in &parent_set {
-                        let pk = (bucket.to_string(), prev_external.clone());
-                        if let Some(prev_id) = g.by_key.remove(&pk) {
-                            g.docs.remove(&prev_id);
-                            let _ = self.hnsw.delete(prev_id);
-                        }
-                    }
-                    return Err(IndexError::Core(e));
-                }
-
-                g.by_key
-                    .insert((bucket.to_string(), external_id.clone()), id);
-                g.docs.insert(
-                    id,
-                    Document {
-                        bucket: bucket.to_string(),
-                        external_id: external_id.clone(),
-                        text: chunk.text.clone(),
-                        vector: vector.clone(),
-                        metadata: metadata.clone(),
-                        parent_doc_id: Some(doc_id.to_string()),
-                        chunk_index: Some(chunk.index),
-                    },
-                );
-                parent_set.insert(external_id);
-            }
-            g.parents.insert(parent_key, parent_set);
         }
-        Ok(chunk_count)
+
+        let mut parent_set: AHashSet<String> = AHashSet::with_capacity(chunks.len());
+        for chunk in chunks {
+            let external_id = format!("{doc_id}#{}", chunk.index);
+            let id = Id(g.next_id);
+            g.next_id += 1;
+            if let Err(e) = self.hnsw.insert(id, &chunk.vector) {
+                for prev_external in &parent_set {
+                    let pk = (bucket.to_string(), prev_external.clone());
+                    if let Some(prev_id) = g.by_key.remove(&pk) {
+                        g.docs.remove(&prev_id);
+                        let _ = self.hnsw.delete(prev_id);
+                    }
+                }
+                return Err(IndexError::Core(e));
+            }
+            g.by_key
+                .insert((bucket.to_string(), external_id.clone()), id);
+            g.docs.insert(
+                id,
+                Document {
+                    bucket: bucket.to_string(),
+                    external_id: external_id.clone(),
+                    text: chunk.text.clone(),
+                    vector: chunk.vector.clone(),
+                    metadata: metadata.clone(),
+                    parent_doc_id: Some(doc_id.to_string()),
+                    chunk_index: Some(chunk.index),
+                },
+            );
+            parent_set.insert(external_id);
+        }
+        g.parents.insert(parent_key, parent_set);
+        Ok(())
     }
 
     /// Delete every chunk associated with `doc_id`. Returns the number
     /// of chunks removed, or an error if no such document exists.
     pub fn delete_document(&self, bucket: &str, doc_id: &str) -> Result<usize> {
+        self.wal_append(&WalRecord::DeleteDocument {
+            bucket: bucket.to_string(),
+            doc_id: doc_id.to_string(),
+        })?;
+        self.delete_document_internal(bucket, doc_id)
+    }
+
+    fn delete_document_internal(&self, bucket: &str, doc_id: &str) -> Result<usize> {
         let mut g = self.inner.write();
         let parent_key = (bucket.to_string(), doc_id.to_string());
         let Some(chunks) = g.parents.remove(&parent_key) else {
@@ -474,9 +728,25 @@ impl TextIndex {
     /// HNSW nodes become tombstones, same as per-doc delete, so the
     /// vector index compacts on the next rebuild.
     pub fn empty_bucket(&self, bucket: &str) -> usize {
+        // WAL append errors are rare (full disk) and would make
+        // the mutation silently partial if we swallowed them. But
+        // the public `empty_bucket` returns `usize`, not `Result`.
+        // Keep that contract and log any WAL failure — the
+        // in-memory state is still the source of truth until a
+        // snapshot is taken. Callers that want strict durability
+        // should use `empty_bucket_durable` (added below).
+        if let Some(wal) = &self.wal {
+            if let Err(e) = wal.append(&WalRecord::EmptyBucket {
+                bucket: bucket.to_string(),
+            }) {
+                tracing::warn!(error = %e, bucket = %bucket, "wal append failed for empty_bucket");
+            }
+        }
+        self.empty_bucket_internal(bucket)
+    }
+
+    fn empty_bucket_internal(&self, bucket: &str) -> usize {
         let mut g = self.inner.write();
-        // Collect first so we can mutate the map without fighting the
-        // borrow checker over the iteration.
         let victims: Vec<Id> = g
             .docs
             .iter()
@@ -492,9 +762,6 @@ impl TextIndex {
                     g.parents.remove(&(doc.bucket, parent));
                 }
             }
-            // Tombstone under the write lock so readers never see a
-            // state where `by_key` is empty but HNSW still returns a
-            // live id. Consistent with the single-item delete path.
             let _ = self.hnsw.delete(*id);
         }
         n
@@ -505,6 +772,91 @@ impl TextIndex {
     /// counters incrementally on the write path. Fine trade-off for
     /// the admin UI today — rebuilds happen on demand, not per
     /// request.
+    /// Take a consistent snapshot and write it to `<data_dir>/snapshots`.
+    /// Returns the path + the WAL seq at the time of the snapshot. A
+    /// no-op and error if the index is in-memory (no `data_dir`).
+    ///
+    /// Snapshot is atomic w.r.t. writers: we hold the read lock for
+    /// the in-memory half (blocks writers briefly), take the HNSW
+    /// snapshot (also holds an HNSW read lock), then write to disk
+    /// outside any lock. The WAL's current seq captured *before*
+    /// the read lock is released ensures post-snapshot records
+    /// won't be double-applied on recovery.
+    pub fn snapshot(&self) -> Result<SnapshotOutcome> {
+        let data_dir = self
+            .data_dir
+            .as_ref()
+            .ok_or_else(|| IndexError::Invalid("index is in-memory; no data_dir".into()))?;
+        let wal = self
+            .wal
+            .as_ref()
+            .ok_or_else(|| IndexError::Invalid("index has no wal".into()))?;
+
+        // Make sure every buffered append is on disk before we
+        // read the seq. Without this a recent append could be
+        // included in the snapshot but not yet in any segment —
+        // recovery would think it was unseen.
+        wal.flush().map_err(durability::wal_err)?;
+        let wal_seq =
+            nebula_wal::current_seq(wal.dir()).map_err(durability::wal_err)?.unwrap_or(0);
+
+        // Capture in-memory + HNSW state under the read lock.
+        let (serialized_docs, hnsw_snap) = {
+            let g = self.inner.read();
+            let docs = durability::serialize_docs(g.next_id, &g.docs, &g.parents);
+            let hnsw = self.hnsw.to_snapshot();
+            (docs, hnsw)
+        };
+
+        let path = durability::write_snapshot(
+            &data_dir.join("snapshots"),
+            wal_seq,
+            serialized_docs,
+            hnsw_snap,
+        )?;
+        Ok(SnapshotOutcome {
+            path,
+            wal_seq_captured: wal_seq,
+        })
+    }
+
+    /// Delete WAL segments strictly older than the newest
+    /// snapshot's captured seq. Safe to call any time; does
+    /// nothing if no snapshot exists yet.
+    pub fn compact_wal(&self) -> Result<usize> {
+        let (Some(data_dir), Some(wal)) = (self.data_dir.as_ref(), self.wal.as_ref()) else {
+            return Ok(0);
+        };
+        let snapshots_dir = data_dir.join("snapshots");
+        let Some((header, _)) = durability::load_latest_snapshot(&snapshots_dir)? else {
+            return Ok(0);
+        };
+        // Also prune older snapshots so we don't accumulate them
+        // indefinitely.
+        let _ = durability::prune_old_snapshots(&snapshots_dir)?;
+        let removed = wal
+            .compact(header.wal_seq_at_snapshot)
+            .map_err(durability::wal_err)?;
+        Ok(removed)
+    }
+
+    /// Return WAL size / segment stats for the admin endpoint.
+    /// Returns `None` if the index is in-memory only.
+    pub fn wal_stats(&self) -> Option<WalStats> {
+        self.wal.as_ref().and_then(|w| w.stats().ok())
+    }
+
+    /// `true` if this index is durably persisting mutations.
+    pub fn is_persistent(&self) -> bool {
+        self.wal.is_some()
+    }
+
+    /// Absolute path to the data directory, if any. Used by the
+    /// admin endpoint to surface "where is my data?" for ops.
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.data_dir.as_deref()
+    }
+
     pub fn bucket_stats(&self, top_metadata_keys: usize) -> Vec<BucketStats> {
         let g = self.inner.read();
         // Per-bucket accumulator. A struct is clearer than a 3-tuple

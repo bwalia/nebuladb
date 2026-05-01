@@ -111,11 +111,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (redis_layer, None)
     };
 
-    let index = Arc::new(TextIndex::new(
-        embedder,
-        Metric::Cosine,
-        HnswConfig::default(),
-    )?);
+    // Durability: NEBULA_DATA_DIR turns on WAL + snapshots. When
+    // unset the server stays in-memory (legacy/demo default).
+    // The persistent path also runs replay-on-boot, so startup
+    // latency is proportional to WAL size — on a fresh dir it's
+    // ~instant.
+    let index = match std::env::var("NEBULA_DATA_DIR").ok() {
+        Some(dir) if !dir.is_empty() => {
+            let start = std::time::Instant::now();
+            let idx = Arc::new(TextIndex::open_persistent(
+                embedder,
+                Metric::Cosine,
+                HnswConfig::default(),
+                &dir,
+            )?);
+            tracing::info!(
+                data_dir = %dir,
+                docs = idx.len(),
+                took_ms = start.elapsed().as_millis() as u64,
+                "durability: recovered from disk"
+            );
+            idx
+        }
+        _ => Arc::new(TextIndex::new(
+            embedder,
+            Metric::Cosine,
+            HnswConfig::default(),
+        )?),
+    };
 
     let api_keys: AHashSet<String> = std::env::var("NEBULA_API_KEYS")
         .unwrap_or_default()

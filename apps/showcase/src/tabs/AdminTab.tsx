@@ -4,6 +4,7 @@ import {
   ApiError,
   type AuditEntry,
   type BucketStats,
+  type DurabilityInfo,
   type QueryPlan,
   type SlowQueryEntry,
 } from "../api";
@@ -25,6 +26,7 @@ import { FreshnessPill, useFreshness } from "../freshness";
 export function AdminTab() {
   return (
     <div className="grid gap-4">
+      <DurabilityPanel />
       <BucketsPanel />
       <ExplainPanel />
       <HistoryPanel />
@@ -487,4 +489,196 @@ function SlowQueriesPanel() {
       )}
     </Panel>
   );
+}
+
+// ---------- Durability ----------
+
+/**
+ * Durability panel: shows WAL/snapshot state and offers the two
+ * safe operator actions — take a snapshot (always safe; blocks
+ * writers briefly while we copy state) and compact the WAL
+ * (always safe; never removes the current segment).
+ *
+ * When the server is running in-memory (no NEBULA_DATA_DIR), the
+ * panel explains that clearly instead of showing a dead dashboard.
+ */
+function DurabilityPanel() {
+  const [info, setInfo] = useState<DurabilityInfo | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [lastAction, setLastAction] = useState<string | null>(null);
+  const { bump, pill } = useFreshness(6000);
+
+  const refresh = useCallback(async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      setInfo(await api.durability());
+      bump();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, [bump]);
+
+  useEffect(() => {
+    void refresh();
+    const id = setInterval(refresh, 3_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const takeSnapshot = async () => {
+    setLastAction(null);
+    setErr(null);
+    try {
+      const r = await api.takeSnapshot();
+      setLastAction(
+        `Snapshot at WAL seq ${r.wal_seq_captured} → ${shortPath(r.path)}`
+      );
+      await refresh();
+    } catch (e) {
+      if (e instanceof ApiError) setErr(`${e.code}: ${e.body}`);
+      else setErr((e as Error).message);
+    }
+  };
+
+  const compactWal = async () => {
+    setLastAction(null);
+    setErr(null);
+    try {
+      const r = await api.compactWal();
+      setLastAction(`Removed ${r.removed_segments} old WAL segment(s)`);
+      await refresh();
+    } catch (e) {
+      if (e instanceof ApiError) setErr(`${e.code}: ${e.body}`);
+      else setErr((e as Error).message);
+    }
+  };
+
+  return (
+    <Panel
+      title="Durability"
+      subtitle="WAL + snapshot state. Green = every write is durable before it returns."
+      action={
+        <div className="flex items-center gap-2">
+          <FreshnessPill {...pill} />
+          <button
+            className="btn-secondary !py-1 !px-2 !text-xs"
+            onClick={refresh}
+            disabled={busy}
+          >
+            {busy ? "…" : "Refresh"}
+          </button>
+        </div>
+      }
+    >
+      <ErrorBanner err={err} />
+      {info === null && !err && <Spinner />}
+
+      {info && !info.persistent && (
+        <div className="text-sm text-gray-600 dark:text-gray-400">
+          <p className="mb-2">
+            <span className="font-mono px-2 py-0.5 rounded bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300">
+              in-memory
+            </span>{" "}
+            This server was booted without{" "}
+            <code>NEBULA_DATA_DIR</code>, so mutations are not persisted. A
+            restart will lose every write.
+          </p>
+          <p className="text-xs">
+            To turn durability on, set <code>NEBULA_DATA_DIR=/path/to/data</code>{" "}
+            on the server and restart. Then this panel will show WAL + snapshot
+            state and offer the action buttons.
+          </p>
+        </div>
+      )}
+
+      {info && info.persistent && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <DurabilityStat label="Mode" value="persistent" tone="ok" />
+            <DurabilityStat
+              label="WAL segments"
+              value={info.wal?.segment_count ?? "—"}
+            />
+            <DurabilityStat
+              label="WAL size"
+              value={formatBytes(info.wal?.total_bytes ?? 0)}
+            />
+            <DurabilityStat
+              label="Data dir"
+              value={info.data_dir ? shortPath(info.data_dir) : "—"}
+              mono
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn !py-1 !px-3 !text-xs"
+              onClick={takeSnapshot}
+              title="Capture a consistent snapshot of the in-memory state to disk"
+            >
+              Take snapshot
+            </button>
+            <button
+              className="btn-secondary !py-1 !px-3 !text-xs"
+              onClick={compactWal}
+              title="Drop WAL segments that are fully superseded by the latest snapshot"
+            >
+              Compact WAL
+            </button>
+          </div>
+          {lastAction && (
+            <div className="text-xs text-green-700 dark:text-green-400">
+              {lastAction}
+            </div>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function DurabilityStat({
+  label,
+  value,
+  tone = "default",
+  mono = false,
+}: {
+  label: string;
+  value: string | number;
+  tone?: "default" | "ok";
+  mono?: boolean;
+}) {
+  const toneClass =
+    tone === "ok"
+      ? "text-green-700 dark:text-green-400"
+      : "text-gray-900 dark:text-gray-100";
+  return (
+    <div>
+      <div className="text-xs text-gray-500 dark:text-gray-400">{label}</div>
+      <div
+        className={`${toneClass} ${
+          mono ? "font-mono text-xs" : "text-lg font-semibold"
+        } truncate`}
+        title={String(value)}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function shortPath(p: string): string {
+  // Keep the last 2 path components — avoids scrolling a long
+  // absolute path but still shows the bucket-ish name.
+  const parts = p.split("/").filter(Boolean);
+  return parts.length > 2 ? ".../" + parts.slice(-2).join("/") : p;
 }
