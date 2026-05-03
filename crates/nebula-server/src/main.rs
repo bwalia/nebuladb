@@ -22,15 +22,23 @@ use nebula_llm::{
 use nebula_grpc::GrpcState;
 use nebula_server::state::{FollowerCursor, TeeCursorStore};
 use nebula_server::{
-    build_router, AppConfig, AppState, ClusterConfig, JwtConfig, RateLimitConfig, RateLimiter,
-    SlowQueryLog,
+    build_router, AppConfig, AppState, CapturingSubscriber, ClusterConfig, JwtConfig, LogBus,
+    LogLevel, RateLimitConfig, RateLimiter, SlowQueryLog,
 };
 use nebula_sql::{cache::SemanticCacheConfig, SemanticCache, SqlEngine};
 use nebula_vector::{HnswConfig, Metric};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber_init();
+    // LogBus created before the subscriber so the same Arc winds up
+    // on AppState later. Anything logged from this point on is
+    // captured and served via /admin/logs/stream.
+    let min_level = std::env::var("NEBULA_LOG_LEVEL")
+        .ok()
+        .and_then(|s| LogLevel::parse(&s))
+        .unwrap_or(LogLevel::Info);
+    let log_bus = Arc::new(LogBus::new(256, min_level));
+    tracing_subscriber_init(Arc::clone(&log_bus));
 
     let bind: SocketAddr = std::env::var("NEBULA_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
@@ -276,7 +284,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_llm(llm)
     .with_chunker(chunker)
     .with_sql(Arc::clone(&sql_engine))
-    .with_cluster(Arc::clone(&cluster));
+    .with_cluster(Arc::clone(&cluster))
+    .with_log_bus(Arc::clone(&log_bus));
     if let Some(fc) = follower_cursor.as_ref() {
         state = state.with_follower_cursor(Arc::clone(fc));
     }
@@ -482,36 +491,13 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received");
 }
 
-fn tracing_subscriber_init() {
-    // Best-effort: swallow errors so a missing feature (e.g. no
-    // env_logger) never stops the server from booting.
-    let _ = tracing::subscriber::set_global_default(
-        tracing_subscriber_stub::subscriber(),
-    );
-}
-
-// The binary pulls in `tracing` but not `tracing-subscriber` — avoiding
-// another heavy dep for the vertical slice. A no-op subscriber keeps
-// `tracing::info!` calls from panicking when no collector is set.
-mod tracing_subscriber_stub {
-    use tracing::{span, Metadata, Subscriber};
-
-    pub fn subscriber() -> impl Subscriber + Send + Sync {
-        NoopSubscriber
-    }
-
-    struct NoopSubscriber;
-    impl Subscriber for NoopSubscriber {
-        fn enabled(&self, _: &Metadata<'_>) -> bool {
-            false
-        }
-        fn new_span(&self, _: &span::Attributes<'_>) -> span::Id {
-            span::Id::from_u64(1)
-        }
-        fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
-        fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
-        fn event(&self, _: &tracing::Event<'_>) {}
-        fn enter(&self, _: &span::Id) {}
-        fn exit(&self, _: &span::Id) {}
-    }
+fn tracing_subscriber_init(bus: Arc<LogBus>) {
+    // Capturing subscriber replaces the former noop. Every
+    // `tracing::info!` / `warn!` / `error!` on a server task
+    // flows through `bus` and out to SSE subscribers.
+    //
+    // Best-effort: if another subscriber was already installed
+    // (tests can do this), swallow the error — the library has
+    // always been tolerant of that and we keep booting.
+    let _ = tracing::subscriber::set_global_default(CapturingSubscriber::new(bus));
 }

@@ -61,6 +61,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/bucket/:bucket/empty", post(admin_empty_bucket))
         .route("/admin/cluster/nodes", get(admin_cluster_nodes))
         .route("/admin/replication", get(admin_replication))
+        .route("/admin/logs/stream", get(admin_logs_stream))
         // Layer order (innermost last; request flows top-to-bottom,
         // response bottom-to-top):
         //   rate_limit → follower_guard → audit → auth → handler
@@ -904,6 +905,127 @@ async fn admin_replication(State(s): State<AppState>) -> Json<ReplicationInfo> {
         lag_bytes,
         behind,
     })
+}
+
+// ---- log streaming ----
+
+#[derive(Deserialize)]
+struct LogsStreamQuery {
+    /// Minimum level to include: trace/debug/info/warn/error.
+    /// Missing means "whatever the bus's current min_level is" —
+    /// the operator can narrow but not broaden past the bus cap.
+    level: Option<String>,
+    /// Case-sensitive substring on `target`. Useful to scope to
+    /// a subsystem (`target=nebula_grpc`) without decoding every
+    /// message.
+    target: Option<String>,
+    /// Initial snapshot from the recent-events ring. Defaults to
+    /// true — kubectl-style "what was happening just before you
+    /// connected" is the usual want. Set `replay=false` for a
+    /// pure tail.
+    replay: Option<bool>,
+}
+
+/// SSE endpoint. Each event has:
+///
+/// - `event: log` — one log line (JSON-encoded LogEvent).
+/// - `event: snapshot_done` — sentinel after the initial replay.
+/// - `event: lagged` — broadcast overflow. The client should
+///   reconnect for a fresh snapshot; we don't close the stream,
+///   the send is just a marker.
+///
+/// Keep-alives every 15s mirror the RAG endpoint so proxies that
+/// close idle streams don't chew on this one.
+async fn admin_logs_stream(
+    State(s): State<AppState>,
+    Query(q): Query<LogsStreamQuery>,
+) -> Response {
+    use crate::log_stream::{LogEvent, LogLevel};
+    use futures::stream::StreamExt;
+
+    // Level filter: default to the bus's current min_level.
+    let min_level: LogLevel = q
+        .level
+        .as_deref()
+        .and_then(LogLevel::parse)
+        .unwrap_or_else(|| s.log_bus.min_level());
+    let target_filter: Option<String> = q.target;
+    let replay = q.replay.unwrap_or(true);
+
+    let keep = move |e: &LogEvent| -> bool {
+        if e.level < min_level {
+            return false;
+        }
+        match target_filter.as_ref() {
+            Some(sub) => e.target.contains(sub.as_str()),
+            None => true,
+        }
+    };
+
+    // Snapshot FIRST so the client's first real frame is the
+    // historical tail, matching kubectl-logs behavior.
+    let snapshot_events: Vec<Result<Event, Infallible>> = if replay {
+        s.log_bus
+            .snapshot()
+            .into_iter()
+            .filter(|e| keep(e))
+            .map(|e| {
+                Ok::<_, Infallible>(
+                    Event::default()
+                        .event("log")
+                        .json_data(&e)
+                        .unwrap_or_else(|_| Event::default().event("log").data("{}")),
+                )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let snapshot_done = Ok::<_, Infallible>(Event::default().event("snapshot_done").data(""));
+
+    // Live tail: convert the broadcast receiver into a stream so
+    // we can chain it after the historical snapshot.
+    let rx = s.log_bus.subscribe();
+    let live = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
+        move |item| {
+            let keep = keep.clone();
+            async move {
+                match item {
+                    Ok(e) if keep(&e) => Some(Ok::<_, Infallible>(
+                        Event::default()
+                            .event("log")
+                            .json_data(&e)
+                            .unwrap_or_else(|_| Event::default().event("log").data("{}")),
+                    )),
+                    // Filtered out — don't emit anything.
+                    Ok(_) => None,
+                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                        Some(Ok::<_, Infallible>(
+                            Event::default()
+                                .event("lagged")
+                                .data(format!("missed {n} events; reconnect for a fresh snapshot")),
+                        ))
+                    }
+                }
+            }
+        },
+    );
+
+    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        Box::pin(
+            stream::iter(snapshot_events)
+                .chain(stream::iter(std::iter::once(snapshot_done)))
+                .chain(live),
+        );
+
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
 }
 
 /// Probe the leader's /admin/replication to read its newest cursor.

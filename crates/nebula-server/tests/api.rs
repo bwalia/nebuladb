@@ -1174,6 +1174,129 @@ async fn admin_cluster_nodes_shape() {
 }
 
 #[tokio::test]
+async fn admin_logs_stream_delivers_snapshot() {
+    // Seed the ring buffer directly via the bus, then hit the SSE
+    // endpoint with replay=true. We only need to read the first
+    // chunk — the snapshot events are delivered before the stream
+    // starts blocking on live events.
+    use futures::StreamExt;
+    use nebula_server::{LogBus, LogEvent, LogLevel};
+    use std::sync::Arc;
+
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(
+        TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
+    );
+    let bus = Arc::new(LogBus::new(16, LogLevel::Trace));
+    for i in 0..3 {
+        bus.push_for_test(LogEvent {
+            ts_ms: i,
+            level: LogLevel::Info,
+            target: "test".into(),
+            message: format!("seed-{i}"),
+        });
+    }
+    let state = AppState::new(index, AppConfig::default()).with_log_bus(Arc::clone(&bus));
+    let app = build_router(state);
+
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/logs/stream?replay=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    // Content-Type should be SSE — proves we wired Sse::new correctly.
+    let ct = res
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().unwrap_or("").to_string())
+        .unwrap_or_default();
+    assert!(ct.starts_with("text/event-stream"), "got CT: {ct}");
+
+    // Read just enough of the stream to see the snapshot events.
+    // The body never ends (live tail), so we collect with a small
+    // timeout and assert on what arrived.
+    let mut body = res.into_body().into_data_stream();
+    let mut accum = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(250);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(50), body.next()).await {
+            Ok(Some(Ok(chunk))) => accum.push_str(&String::from_utf8_lossy(&chunk)),
+            Ok(Some(Err(_))) | Ok(None) => break,
+            Err(_) => {
+                // No data for 50ms — snapshot is done, no live events
+                // to ship; we've read what we needed.
+                if accum.contains("snapshot_done") {
+                    break;
+                }
+            }
+        }
+    }
+    // Snapshot events arrive in order, each prefixed with `event: log`.
+    assert!(accum.contains("seed-0"), "missing seed-0 in: {accum}");
+    assert!(accum.contains("seed-2"), "missing seed-2 in: {accum}");
+    assert!(accum.contains("snapshot_done"), "snapshot_done marker missing");
+}
+
+#[tokio::test]
+async fn admin_logs_stream_level_filter() {
+    use nebula_server::{LogBus, LogEvent, LogLevel};
+    use std::sync::Arc;
+
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(
+        TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
+    );
+    let bus = Arc::new(LogBus::new(16, LogLevel::Trace));
+    bus.push_for_test(LogEvent {
+        ts_ms: 1,
+        level: LogLevel::Info,
+        target: "t".into(),
+        message: "info-line".into(),
+    });
+    bus.push_for_test(LogEvent {
+        ts_ms: 2,
+        level: LogLevel::Error,
+        target: "t".into(),
+        message: "error-line".into(),
+    });
+    let state = AppState::new(index, AppConfig::default()).with_log_bus(Arc::clone(&bus));
+    let app = build_router(state);
+
+    // level=error: info-line should be filtered out.
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/logs/stream?replay=true&level=error")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut body = res.into_body().into_data_stream();
+    let mut accum = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(200);
+    use futures::StreamExt;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(50), body.next()).await {
+            Ok(Some(Ok(chunk))) => accum.push_str(&String::from_utf8_lossy(&chunk)),
+            _ => {
+                if accum.contains("snapshot_done") {
+                    break;
+                }
+            }
+        }
+    }
+    assert!(accum.contains("error-line"), "error should pass: {accum}");
+    assert!(
+        !accum.contains("info-line"),
+        "info should be filtered: {accum}"
+    );
+}
+
+#[tokio::test]
 async fn admin_replication_handles_standalone() {
     // A standalone node has no WAL and no follower cursor. The
     // endpoint must still return 200 with all the optional fields

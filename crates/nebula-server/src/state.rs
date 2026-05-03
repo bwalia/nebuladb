@@ -17,6 +17,7 @@ use nebula_sql::SqlEngine;
 use crate::audit::AuditLog;
 use crate::cluster::ClusterConfig;
 use crate::jwt::JwtConfig;
+use crate::log_stream::LogBus;
 use crate::metrics::Metrics;
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
 use crate::slow_log::SlowQueryLog;
@@ -152,6 +153,11 @@ pub struct AppState {
     /// `/admin/replication` reads it to compute lag vs. the
     /// leader. `None` on leader / standalone.
     pub follower_cursor: Option<Arc<FollowerCursor>>,
+    /// Live log fan-out + recent-events ring. The `tracing`
+    /// subscriber pushes events here; `/admin/logs/stream` reads
+    /// them out as SSE. Always present so the endpoint doesn't
+    /// need to worry about None.
+    pub log_bus: Arc<LogBus>,
 }
 
 impl AppState {
@@ -179,7 +185,13 @@ impl AppState {
             config: Arc::new(config),
             cluster: Arc::new(ClusterConfig::default()),
             follower_cursor: None,
+            log_bus: Arc::new(LogBus::default()),
         }
+    }
+
+    pub fn with_log_bus(mut self, bus: Arc<LogBus>) -> Self {
+        self.log_bus = bus;
+        self
     }
 
     pub fn with_cluster(mut self, cluster: Arc<ClusterConfig>) -> Self {
