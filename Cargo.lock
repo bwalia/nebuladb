@@ -1561,6 +1561,7 @@ name = "nebula-grpc"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bincode",
  "futures",
  "nebula-chunk",
  "nebula-core",
@@ -1568,9 +1569,12 @@ dependencies = [
  "nebula-index",
  "nebula-llm",
  "nebula-vector",
+ "nebula-wal",
  "prost",
  "prost-types",
  "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tonic",

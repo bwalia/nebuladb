@@ -59,6 +59,13 @@ impl GrpcState {
             chunker,
         }
     }
+
+    /// The WAL handle this state will replicate from, if any.
+    /// Derived from the index rather than stored separately so the
+    /// two can't disagree about persistence mode.
+    pub fn wal(&self) -> Option<Arc<nebula_wal::Wal>> {
+        self.index.wal()
+    }
 }
 
 // ---- Document ----
@@ -286,6 +293,124 @@ impl pb::ai_service_server::AiService for AiSvc {
     }
 }
 
+pub mod follower;
+
+// ---- Replication (follower-mode WAL tail) ----
+
+/// gRPC service that streams the leader's WAL to follower replicas.
+///
+/// Internally this is a thin wrapper over [`nebula_wal::Wal::subscribe`]:
+/// every entry the subscriber yields is serialized and forwarded
+/// over the stream. The subscriber survives catch-up + live tail
+/// transparently, so the follower just drains one ordered stream.
+///
+/// # Failure modes
+///
+/// - Subscriber `Lagged` → close the stream with
+///   `FAILED_PRECONDITION`. The follower must reconnect with a
+///   cursor that's still in the retained WAL, or bootstrap from a
+///   fresh snapshot if it's fallen too far behind.
+/// - Client disconnect → mpsc send fails, the forwarder task exits,
+///   the subscriber drops, its ack slot is released (freeing up
+///   any compaction the leader was holding back on behalf of the
+///   dead follower).
+#[derive(Clone)]
+pub struct ReplicationSvc {
+    /// The leader's WAL handle. `None` means the leader is running
+    /// in-memory (no durability, nothing to replicate from) — every
+    /// TailWal call returns `FAILED_PRECONDITION` in that case.
+    wal: Option<std::sync::Arc<nebula_wal::Wal>>,
+}
+
+impl ReplicationSvc {
+    pub fn new(wal: Option<std::sync::Arc<nebula_wal::Wal>>) -> Self {
+        Self { wal }
+    }
+}
+
+#[async_trait]
+impl pb::replication_service_server::ReplicationService for ReplicationSvc {
+    type TailWalStream = ReceiverStream<Result<pb::WalTailEntry, Status>>;
+
+    async fn tail_wal(
+        &self,
+        req: Request<pb::TailWalRequest>,
+    ) -> Result<Response<Self::TailWalStream>, Status> {
+        let wal = self.wal.clone().ok_or_else(|| {
+            Status::failed_precondition(
+                "leader has no WAL (running in-memory); enable NEBULA_DATA_DIR to serve followers",
+            )
+        })?;
+
+        // Translate the proto cursor into the WAL's native one.
+        // Missing proto message => BEGIN; this matches the "give me
+        // everything" case from a fresh follower.
+        let start = match req.into_inner().start {
+            Some(c) => nebula_wal::WalCursor {
+                segment_seq: c.segment_seq,
+                byte_offset: c.byte_offset,
+            },
+            None => nebula_wal::WalCursor::BEGIN,
+        };
+
+        let mut sub = wal
+            .subscribe(start)
+            .map_err(|e| Status::internal(format!("wal subscribe: {e}")))?;
+
+        // Same buffer size as the RAG stream — handful of entries to
+        // smooth over client-side hiccups, small enough that a
+        // stalled client creates immediate backpressure.
+        let (tx, rx) = mpsc::channel::<Result<pb::WalTailEntry, Status>>(64);
+
+        tokio::spawn(async move {
+            while let Some(item) = sub.next().await {
+                let send_result = match item {
+                    Ok(entry) => {
+                        let body = match bincode::serialize(&entry.record) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                // Encoding our own record should never
+                                // fail; surface it loudly if it does.
+                                let _ = tx
+                                    .send(Err(Status::internal(format!(
+                                        "bincode encode: {e}"
+                                    ))))
+                                    .await;
+                                break;
+                            }
+                        };
+                        tx.send(Ok(pb::WalTailEntry {
+                            cursor: Some(pb::WalCursor {
+                                segment_seq: entry.cursor.segment_seq,
+                                byte_offset: entry.cursor.byte_offset,
+                            }),
+                            next_cursor: Some(pb::WalCursor {
+                                segment_seq: entry.next_cursor.segment_seq,
+                                byte_offset: entry.next_cursor.byte_offset,
+                            }),
+                            record_bincode: body,
+                        }))
+                        .await
+                    }
+                    Err(e) => {
+                        // Lagged / format error. Close the stream
+                        // with FAILED_PRECONDITION so the follower
+                        // knows to resubscribe (or bootstrap).
+                        tx.send(Err(Status::failed_precondition(e.to_string()))).await
+                    }
+                };
+                if send_result.is_err() {
+                    // Client dropped. Fall out; subscriber drop
+                    // releases the ack slot.
+                    break;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
 // ---- helpers ----
 
 fn validate_top_k(top_k: u32) -> Result<usize, Status> {
@@ -336,6 +461,7 @@ pub async fn serve(
     state: GrpcState,
     addr: std::net::SocketAddr,
 ) -> Result<(), tonic::transport::Error> {
+    let wal = state.wal();
     tonic::transport::Server::builder()
         .add_service(pb::document_service_server::DocumentServiceServer::new(
             DocumentSvc::new(state.clone()),
@@ -344,6 +470,12 @@ pub async fn serve(
             SearchSvc::new(state.clone()),
         ))
         .add_service(pb::ai_service_server::AiServiceServer::new(AiSvc::new(state)))
+        // ReplicationService is always mounted. In-memory leaders
+        // respond with FAILED_PRECONDITION, which is the right
+        // signal for a follower ("this node can't serve me").
+        .add_service(pb::replication_service_server::ReplicationServiceServer::new(
+            ReplicationSvc::new(wal),
+        ))
         .serve(addr)
         .await
 }

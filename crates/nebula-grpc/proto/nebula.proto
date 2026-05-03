@@ -124,3 +124,49 @@ message RagChunk {
 }
 
 message Done {}
+
+// ---- ReplicationService ----
+//
+// Server-streaming tail of the leader's WAL, used by follower
+// replicas to mirror writes. The follower connects, hands over its
+// last-applied cursor, and receives every record from that point
+// forward — historical catch-up + live tail are both delivered
+// through the same stream.
+//
+// Why bincode-on-the-wire: the WalRecord variants already have a
+// canonical serialization (bincode, via nebula-wal). Re-encoding
+// them into proto would double the surface area kept in sync and
+// break forward compatibility when we add a variant — the follower
+// and leader are always the same NebulaDB version, so this is
+// acceptable.
+service ReplicationService {
+  // Tail the leader's WAL. Server-streams WalTailEntry until the
+  // client drops, the server shuts down, or the follower lags so
+  // far it would require a segment we've already compacted (in
+  // which case the stream closes with a FAILED_PRECONDITION status
+  // and the follower must restart from a fresh snapshot).
+  rpc TailWal(TailWalRequest) returns (stream WalTailEntry);
+}
+
+message TailWalRequest {
+  // Where the follower wants to resume. An empty cursor means "give
+  // me everything you still have". After each applied entry the
+  // follower remembers `next_cursor` so a restart can hand it back
+  // here for at-least-once delivery.
+  WalCursor start = 1;
+}
+
+message WalCursor {
+  uint64 segment_seq = 1;
+  uint64 byte_offset = 2;
+}
+
+message WalTailEntry {
+  // Cursor of this record (where it sits on disk).
+  WalCursor cursor = 1;
+  // Cursor past this record — the resume point for the next entry.
+  WalCursor next_cursor = 2;
+  // Bincode-serialized nebula_wal::WalRecord. The follower decodes
+  // it with the same crate the leader wrote it with.
+  bytes record_bincode = 3;
+}

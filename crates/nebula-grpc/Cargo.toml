@@ -10,6 +10,8 @@ nebula-core = { path = "../nebula-core" }
 nebula-chunk = { path = "../nebula-chunk" }
 nebula-llm = { path = "../nebula-llm" }
 nebula-index = { path = "../nebula-index" }
+nebula-wal = { path = "../nebula-wal" }
+bincode.workspace = true
 
 tonic.workspace = true
 prost.workspace = true
@@ -19,6 +21,7 @@ tokio-stream.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [build-dependencies]
@@ -28,3 +31,4 @@ tonic-build.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 nebula-embed = { path = "../nebula-embed" }
 nebula-vector = { path = "../nebula-vector" }
+tempfile.workspace = true

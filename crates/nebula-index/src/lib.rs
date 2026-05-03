@@ -275,11 +275,28 @@ impl TextIndex {
         Ok(())
     }
 
-    /// Apply a single WAL record to the in-memory state during
-    /// replay. Deliberately doesn't call the embedder — vectors
-    /// are carried in the record — and doesn't re-append to the
-    /// WAL (that would cause duplicate replay on the next boot).
-    fn apply_wal_record(&self, rec: &WalRecord) -> Result<()> {
+    /// Handle to the underlying WAL when persistence is on. Exposed
+    /// so replication (follower mode) can subscribe to the leader's
+    /// WAL stream. Returns `None` for in-memory indexes — those
+    /// can't be leaders.
+    pub fn wal(&self) -> Option<Arc<Wal>> {
+        self.wal.clone()
+    }
+
+    /// Apply a single WAL record to the in-memory state — shared
+    /// between two callers:
+    ///
+    /// - crash recovery on boot (`open_persistent` replay), and
+    /// - follower-mode replication, which receives records over
+    ///   the wire from a leader and applies them locally.
+    ///
+    /// Deliberately doesn't call the embedder — vectors are carried
+    /// in the record — and doesn't re-append to the WAL. The latter
+    /// is important for followers: their writes come from the
+    /// leader, never from local clients, so re-appending would be
+    /// a bug (double-recording the record in the follower's own
+    /// WAL would make split-brain recovery incoherent).
+    pub fn apply_wal_record(&self, rec: &WalRecord) -> Result<()> {
         match rec {
             WalRecord::UpsertText {
                 bucket,
