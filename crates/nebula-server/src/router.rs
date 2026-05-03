@@ -59,13 +59,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/snapshot", post(admin_snapshot))
         .route("/admin/wal/compact", post(admin_wal_compact))
         .route("/admin/bucket/:bucket/empty", post(admin_empty_bucket))
+        .route("/admin/cluster/nodes", get(admin_cluster_nodes))
+        .route("/admin/replication", get(admin_replication))
         // Layer order (innermost last; request flows top-to-bottom,
         // response bottom-to-top):
-        //   rate_limit → audit → auth → handler
-        // Audit wraps auth so we record 401s too.
+        //   rate_limit → follower_guard → audit → auth → handler
+        // Follower guard runs BEFORE auth so an unauthenticated
+        // write on a follower still 409s — there's no point
+        // telling the client "auth first" when the answer is going
+        // to be "wrong node regardless." It runs AFTER audit so a
+        // rejected write still shows up in the audit log.
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::require_auth,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::guard_writes_on_follower,
         ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -691,6 +701,232 @@ async fn admin_wal_compact(
 ) -> Result<Json<WalCompactResponse>, ApiError> {
     let removed_segments = s.index.compact_wal()?;
     Ok(Json(WalCompactResponse { removed_segments }))
+}
+
+// ---- cluster + replication ----
+
+#[derive(Serialize)]
+struct ClusterResponse {
+    self_id: Option<String>,
+    role: crate::cluster::NodeRole,
+    leader_url: Option<String>,
+    peers: Vec<PeerView>,
+}
+
+#[derive(Serialize)]
+struct PeerView {
+    id: String,
+    base_url: String,
+    /// `Some(true)` healthy, `Some(false)` reachable but not 200,
+    /// `None` unreachable (timeout, DNS fail). Operators reading
+    /// this want the three-state distinction — "I didn't probe"
+    /// vs. "I probed and nothing answered" vs. "it answered sick".
+    healthy: Option<bool>,
+    /// Docs count from the peer's /healthz, when reachable. Lets
+    /// an operator eyeball replication drift without hitting each
+    /// peer individually.
+    docs: Option<usize>,
+    /// Millisecond round-trip for the probe. Only present when
+    /// reachable; nil when the probe itself failed.
+    probe_ms: Option<u64>,
+}
+
+async fn admin_cluster_nodes(State(s): State<AppState>) -> Json<ClusterResponse> {
+    let peers = if s.cluster.peers.is_empty() {
+        Vec::new()
+    } else {
+        probe_peers(&s.cluster.peers).await
+    };
+    Json(ClusterResponse {
+        self_id: s.cluster.node_id.clone(),
+        role: s.cluster.role,
+        leader_url: s.cluster.leader_url.clone(),
+        peers,
+    })
+}
+
+/// Probe every peer's `/healthz` concurrently with a short timeout.
+/// We deliberately don't cache — the endpoint is a low-frequency
+/// operator view, and a stale health state is worse than a slow
+/// one when an operator is diagnosing a split cluster.
+async fn probe_peers(peers: &[crate::cluster::PeerInfo]) -> Vec<PeerView> {
+    // 500ms is generous for a healthz probe on a local network
+    // and tight enough that an unreachable node doesn't stall the
+    // operator. Client is rebuilt per call — the peer list is
+    // tiny and this keeps the middleware story simple.
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            // Can't build a client — surface unreachable for all
+            // peers rather than 500ing the whole admin endpoint.
+            return peers
+                .iter()
+                .map(|p| PeerView {
+                    id: p.id.clone(),
+                    base_url: p.base_url.clone(),
+                    healthy: None,
+                    docs: None,
+                    probe_ms: None,
+                })
+                .collect();
+        }
+    };
+
+    let tasks = peers.iter().map(|p| {
+        let client = client.clone();
+        let p = p.clone();
+        async move {
+            let url = format!("{}/healthz", p.base_url.trim_end_matches('/'));
+            let started = std::time::Instant::now();
+            match client.get(&url).send().await {
+                Ok(resp) => {
+                    let probe_ms = started.elapsed().as_millis() as u64;
+                    let healthy = resp.status().is_success();
+                    let docs = if healthy {
+                        resp.json::<serde_json::Value>()
+                            .await
+                            .ok()
+                            .and_then(|v| v.get("docs")?.as_u64())
+                            .map(|n| n as usize)
+                    } else {
+                        None
+                    };
+                    PeerView {
+                        id: p.id,
+                        base_url: p.base_url,
+                        healthy: Some(healthy),
+                        docs,
+                        probe_ms: Some(probe_ms),
+                    }
+                }
+                Err(_) => PeerView {
+                    id: p.id,
+                    base_url: p.base_url,
+                    healthy: None,
+                    docs: None,
+                    probe_ms: None,
+                },
+            }
+        }
+    });
+    futures::future::join_all(tasks).await
+}
+
+#[derive(Serialize)]
+struct ReplicationInfo {
+    role: crate::cluster::NodeRole,
+    /// This node's own WAL newest cursor. On a leader this is
+    /// what followers are tailing toward. On a follower it's
+    /// just the local durability tip (mostly uninteresting unless
+    /// the follower is also persisting replicated writes — which
+    /// we don't do today).
+    local_newest: Option<CursorView>,
+    /// Follower-side: what this node's replication task has
+    /// applied so far. `None` on a leader or standalone.
+    follower_applied: Option<CursorView>,
+    /// Where the leader's WAL tip is *right now*, probed over
+    /// HTTP when this node is a follower. `None` when this node
+    /// is not a follower, when NEBULA_LEADER_REST_URL isn't set,
+    /// or when the probe failed.
+    leader_newest_probed: Option<CursorView>,
+    /// `leader_newest_probed - follower_applied` in bytes when
+    /// both are known and live in the same segment.
+    ///
+    /// Cross-segment lag is reported as `None` — the two cursors
+    /// live in different files, so a byte delta alone is
+    /// meaningless (it'd ignore any intermediate full segments).
+    /// Consumers should fall back to `behind` when this is nil.
+    lag_bytes: Option<u64>,
+    /// Whether the follower is trailing the probed leader tip.
+    /// `None` on a leader, standalone, or when probe fails.
+    behind: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct CursorView {
+    segment_seq: u64,
+    byte_offset: u64,
+}
+
+async fn admin_replication(State(s): State<AppState>) -> Json<ReplicationInfo> {
+    // This node's own WAL tip — meaningful on a leader, noise on
+    // a follower (since we don't currently persist replicated
+    // writes into the follower's local WAL).
+    let local_newest = s.index.wal().map(|w| {
+        let c = w.newest_cursor();
+        CursorView {
+            segment_seq: c.segment_seq,
+            byte_offset: c.byte_offset,
+        }
+    });
+
+    let follower_applied = s.follower_cursor.as_ref().map(|fc| {
+        let (seg, off) = fc.load();
+        CursorView {
+            segment_seq: seg,
+            byte_offset: off,
+        }
+    });
+
+    // Probe the leader's REST /admin/replication for its
+    // local_newest — that's the number we compare against to
+    // compute lag. Only do this on followers; leaders and
+    // standalones have nothing to measure against.
+    let (leader_newest_probed, lag_bytes, behind) = match (
+        s.cluster.is_follower(),
+        &follower_applied,
+    ) {
+        (true, Some(applied)) => match fetch_leader_newest().await {
+            Some(leader) => {
+                let behind_flag = leader.segment_seq > applied.segment_seq
+                    || (leader.segment_seq == applied.segment_seq
+                        && leader.byte_offset > applied.byte_offset);
+                let lag = if leader.segment_seq == applied.segment_seq {
+                    Some(leader.byte_offset.saturating_sub(applied.byte_offset))
+                } else {
+                    None
+                };
+                (Some(leader), lag, Some(behind_flag))
+            }
+            None => (None, None, None),
+        },
+        _ => (None, None, None),
+    };
+
+    Json(ReplicationInfo {
+        role: s.cluster.role,
+        local_newest,
+        follower_applied,
+        leader_newest_probed,
+        lag_bytes,
+        behind,
+    })
+}
+
+/// Probe the leader's /admin/replication to read its newest cursor.
+/// Returns `None` on any failure — the admin view degrades to
+/// "unknown" rather than erroring.
+async fn fetch_leader_newest() -> Option<CursorView> {
+    // The follower knows its leader's gRPC URL (NEBULA_FOLLOW_LEADER)
+    // but lag here is an HTTP probe, and gRPC/REST live on different
+    // ports in every real deployment. Rather than guessing port
+    // mappings, we look for an explicit sibling var. When it's
+    // absent we skip the probe — better than returning wrong lag.
+    let rest_base = std::env::var("NEBULA_LEADER_REST_URL").ok()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+        .ok()?;
+    let url = format!("{}/api/v1/admin/replication", rest_base.trim_end_matches('/'));
+    let v: serde_json::Value = client.get(&url).send().await.ok()?.json().await.ok()?;
+    let newest = v.get("local_newest")?;
+    Some(CursorView {
+        segment_seq: newest.get("segment_seq")?.as_u64()?,
+        byte_offset: newest.get("byte_offset")?.as_u64()?,
+    })
 }
 
 #[derive(Serialize)]

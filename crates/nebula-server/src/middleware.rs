@@ -105,6 +105,43 @@ pub async fn require_auth(
         .into_response())
 }
 
+/// Follower-mode write guard.
+///
+/// When the cluster role is `follower`, every mutating HTTP method
+/// short-circuits with 409 Conflict. The follower mirrors the
+/// leader's WAL; accepting a local write would silently diverge
+/// the two nodes and there is no merge story today. 409 is the
+/// right signal — the request is well-formed, the resource is in
+/// a state that forbids it.
+///
+/// Exempted: all GET/HEAD requests and the ops endpoints mounted
+/// outside /api/v1 (which this middleware never sees anyway).
+/// `/api/v1/admin/*` reads are allowed so operators can still
+/// inspect the follower.
+pub async fn guard_writes_on_follower(
+    axum::extract::State(state): axum::extract::State<crate::state::AppState>,
+    req: Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    if !state.cluster.is_follower() {
+        return next.run(req).await;
+    }
+    let is_write = !matches!(
+        req.method(),
+        &axum::http::Method::GET | &axum::http::Method::HEAD | &axum::http::Method::OPTIONS
+    );
+    if !is_write {
+        return next.run(req).await;
+    }
+    // Structured JSON so clients with an error envelope keep working.
+    (
+        StatusCode::CONFLICT,
+        [(header::CONTENT_TYPE, "application/json")],
+        r#"{"code":"read_only_follower","error":"this node is a follower; route writes to the leader"}"#,
+    )
+        .into_response()
+}
+
 /// Write-path audit middleware.
 ///
 /// Records method + path + principal + response status after the

@@ -20,8 +20,10 @@ use nebula_llm::{
     LlmClient, MockLlm, OllamaConfig, OllamaLlm, OpenAiChatConfig, OpenAiChatLlm,
 };
 use nebula_grpc::GrpcState;
+use nebula_server::state::{FollowerCursor, TeeCursorStore};
 use nebula_server::{
-    build_router, AppConfig, AppState, JwtConfig, RateLimitConfig, RateLimiter, SlowQueryLog,
+    build_router, AppConfig, AppState, ClusterConfig, JwtConfig, RateLimitConfig, RateLimiter,
+    SlowQueryLog,
 };
 use nebula_sql::{cache::SemanticCacheConfig, SemanticCache, SqlEngine};
 use nebula_vector::{HnswConfig, Metric};
@@ -249,6 +251,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eng
     });
 
+    // Cluster role + peers parse up front so a typo fails boot
+    // rather than silently degrading. The follower_cursor atomic
+    // is only created when we're actually a follower — leaders
+    // and standalones never need it.
+    let cluster = Arc::new(ClusterConfig::from_env().map_err(|e| -> Box<dyn std::error::Error> {
+        format!("cluster config: {e}").into()
+    })?);
+    let follower_cursor: Option<Arc<FollowerCursor>> = if cluster.is_follower() {
+        Some(Arc::new(FollowerCursor::default()))
+    } else {
+        None
+    };
+
     let mut state = AppState::new(
         index,
         AppConfig {
@@ -260,7 +275,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_llm(llm)
     .with_chunker(chunker)
-    .with_sql(Arc::clone(&sql_engine));
+    .with_sql(Arc::clone(&sql_engine))
+    .with_cluster(Arc::clone(&cluster));
+    if let Some(fc) = follower_cursor.as_ref() {
+        state = state.with_follower_cursor(Arc::clone(fc));
+    }
     if let Some(stats) = cache_stats {
         state = state.with_cache_stats(stats);
     }
@@ -350,7 +369,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let channel = tonic::transport::Channel::from_shared(leader.clone())?
                     .connect()
                     .await?;
-                let store: Option<std::sync::Arc<dyn nebula_grpc::follower::CursorStore>> =
+                // Durable (file-backed) half of the cursor store.
+                // Optional — without NEBULA_DATA_DIR the follower
+                // has nowhere on disk to persist, so it restarts
+                // from BEGIN (RAM-only state is fine with that).
+                let durable: Option<Arc<dyn nebula_grpc::follower::CursorStore>> =
                     match std::env::var("NEBULA_FOLLOWER_CURSOR_PATH")
                         .ok()
                         .or_else(|| {
@@ -369,6 +392,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             None
                         }
+                    };
+
+                // Wrap the durable store in a tee that also
+                // publishes to the AppState follower_cursor so
+                // /admin/replication can report lag without
+                // touching the file system.
+                let store: Option<Arc<dyn nebula_grpc::follower::CursorStore>> =
+                    match (durable, follower_cursor.as_ref()) {
+                        (Some(durable), Some(snapshot)) => {
+                            Some(Arc::new(TeeCursorStore {
+                                durable,
+                                snapshot: Arc::clone(snapshot),
+                            }))
+                        }
+                        // Snapshot-only (RAM) or durable-only
+                        // (role misconfigured but data dir set) —
+                        // both are edge cases; keep whichever we
+                        // have so lag is still visible in the
+                        // snapshot-only case.
+                        (None, Some(snapshot)) => {
+                            struct SnapshotOnly(Arc<FollowerCursor>);
+                            impl nebula_grpc::follower::CursorStore for SnapshotOnly {
+                                fn load(
+                                    &self,
+                                ) -> Result<
+                                    Option<nebula_wal::WalCursor>,
+                                    nebula_grpc::follower::CursorStoreError,
+                                > {
+                                    Ok(None)
+                                }
+                                fn save(
+                                    &self,
+                                    c: nebula_wal::WalCursor,
+                                ) -> Result<
+                                    (),
+                                    nebula_grpc::follower::CursorStoreError,
+                                > {
+                                    self.0.store(c.segment_seq, c.byte_offset);
+                                    Ok(())
+                                }
+                            }
+                            Some(Arc::new(SnapshotOnly(Arc::clone(snapshot))))
+                        }
+                        (Some(durable), None) => Some(durable),
+                        (None, None) => None,
                     };
                 Some(nebula_grpc::follower::spawn_with_store(
                     channel,

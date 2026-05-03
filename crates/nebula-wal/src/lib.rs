@@ -410,6 +410,19 @@ impl Wal {
     pub fn dir(&self) -> &Path {
         &self.dir
     }
+
+    /// Cursor pointing at where the next record will land. On a
+    /// fresh WAL this is `(0, MAGIC.len())` — past the header, at
+    /// the first append slot. Used by /admin/replication to report
+    /// "leader's latest position" so a follower can compute how far
+    /// behind it is.
+    pub fn newest_cursor(&self) -> subscriber::WalCursor {
+        let s = self.state.lock();
+        subscriber::WalCursor {
+            segment_seq: s.current_seq,
+            byte_offset: s.current_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

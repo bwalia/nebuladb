@@ -180,6 +180,15 @@ services:
       # Durability data directory. Set to empty to disable persistence.
       NEBULA_DATA_DIR: "${NEBULA_DATA_DIR:-/var/lib/nebuladb}"
 
+      # Cluster role for the admin view. Defaults to "leader" when
+      # we're running inside the replication profile; harmless as
+      # "standalone" when followers aren't running.
+      NEBULA_NODE_ID: "${NEBULA_NODE_ID:-nebula-leader}"
+      NEBULA_NODE_ROLE: "${NEBULA_NODE_ROLE:-leader}"
+      # Peer list for the cluster view: id=base-url pairs, comma-
+      # separated. Empty by default.
+      NEBULA_PEERS: "${NEBULA_PEERS:-nebula-follower=http://nebula-follower:8080}"
+
       # LLM: point at the Ollama sidecar.
       NEBULA_LLM_OLLAMA_URL: "http://ollama:11434"
       NEBULA_LLM_MODEL: "${OLLAMA_CHAT_MODEL:-llama3}"
@@ -267,6 +276,13 @@ services:
       # Point at the leader's gRPC endpoint. Inside the compose
       # network the service name resolves to its IP.
       NEBULA_FOLLOW_LEADER: "http://nebula-server:50051"
+      # Leader's REST URL — used by /admin/replication to compute
+      # lag by probing the leader's own cursor view. Different
+      # port from the gRPC URL above.
+      NEBULA_LEADER_REST_URL: "http://nebula-server:8080"
+      NEBULA_NODE_ID: "nebula-follower"
+      NEBULA_NODE_ROLE: "follower"
+      NEBULA_PEERS: "nebula-leader=http://nebula-server:8080"
       NEBULA_EMBED_DIM: "384"
       # No Redis / LLM on the follower in the demo — reads don't
       # need them, and adding them would double the memory for no

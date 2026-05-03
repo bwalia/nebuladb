@@ -14,6 +14,7 @@
 //! All handlers return structured JSON errors with stable `code` strings.
 
 pub mod audit;
+pub mod cluster;
 pub mod error;
 pub mod jwt;
 pub mod metrics;
@@ -24,6 +25,7 @@ pub mod slow_log;
 pub mod state;
 
 pub use audit::AuditLog;
+pub use cluster::{ClusterConfig, NodeRole, PeerInfo};
 pub use jwt::JwtConfig;
 pub use ratelimit::{RateLimitConfig, RateLimiter};
 pub use router::build_router;

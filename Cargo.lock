@@ -1679,6 +1679,7 @@ dependencies = [
  "nebula-vector",
  "nebula-wal",
  "parking_lot",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

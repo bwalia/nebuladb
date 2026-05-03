@@ -1056,3 +1056,172 @@ async fn vector_dim_mismatch_returns_400() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
+
+// -------------------------------------------------------------------------
+// Cluster + replication tests
+// -------------------------------------------------------------------------
+//
+// These cover the three-way split introduced in the cluster module:
+// standalone (default, no changes expected), leader (writes + replica
+// streaming), and follower (writes blocked). We exercise them at the
+// router layer so the middleware ordering and the state wiring are
+// both under test.
+
+use nebula_server::cluster::{ClusterConfig, NodeRole};
+use nebula_server::state::FollowerCursor;
+
+fn app_state_with_role(role: NodeRole) -> AppState {
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(
+        TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
+    );
+    let cluster = Arc::new(ClusterConfig {
+        node_id: Some("node-under-test".into()),
+        role,
+        leader_url: None,
+        peers: Vec::new(),
+    });
+    let mut state = AppState::new(index, AppConfig::default()).with_cluster(cluster);
+    if matches!(role, NodeRole::Follower) {
+        state = state.with_follower_cursor(Arc::new(FollowerCursor::default()));
+    }
+    state
+}
+
+#[tokio::test]
+async fn follower_rejects_writes_with_409() {
+    let app = build_router(app_state_with_role(NodeRole::Follower));
+    // Writes should 409 regardless of payload validity — the guard
+    // runs before handler-level validation.
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/bucket/b/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"x","text":"y","metadata":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CONFLICT);
+    let body = body_string(res.into_body()).await;
+    assert!(
+        body.contains("read_only_follower"),
+        "expected structured error code; got {body}"
+    );
+}
+
+#[tokio::test]
+async fn follower_still_accepts_reads() {
+    let app = build_router(app_state_with_role(NodeRole::Follower));
+    // GET /healthz: always public, always 200.
+    let res = app
+        .clone()
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    // A bucket GET: not an error for the guard, may 404 for the
+    // missing doc but must not 409.
+    let res2 = app
+        .oneshot(
+            Request::get("/api/v1/bucket/b/doc/none")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        res2.status(),
+        StatusCode::CONFLICT,
+        "reads must never hit the follower guard"
+    );
+}
+
+#[tokio::test]
+async fn standalone_accepts_writes_as_before() {
+    let app = build_router(app_state_with_role(NodeRole::Standalone));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/bucket/b/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"x","text":"hello","metadata":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Exact status depends on handler; we just need "not 409".
+    assert_ne!(res.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn admin_cluster_nodes_shape() {
+    let app = build_router(app_state_with_role(NodeRole::Leader));
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/cluster/nodes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    // Minimal schema assertions — don't couple the test to field
+    // ordering, just confirm the fields we care about are present.
+    assert!(body.contains("\"self_id\""));
+    assert!(body.contains("\"role\":\"leader\""));
+    assert!(body.contains("\"peers\":[]"));
+}
+
+#[tokio::test]
+async fn admin_replication_handles_standalone() {
+    // A standalone node has no WAL and no follower cursor. The
+    // endpoint must still return 200 with all the optional fields
+    // null — operators will hit this to confirm "not replicating."
+    let app = build_router(app_state_with_role(NodeRole::Standalone));
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/replication")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"role\":\"standalone\""));
+    assert!(body.contains("\"local_newest\":null"));
+    assert!(body.contains("\"follower_applied\":null"));
+    assert!(body.contains("\"leader_newest_probed\":null"));
+}
+
+#[tokio::test]
+async fn admin_replication_reports_cursors() {
+    // Follower with a known applied cursor; leader_newest is None
+    // because no persistent index is wired in this standalone test.
+    let mut state = app_state_with_role(NodeRole::Follower);
+    // Seed the follower cursor as if replication had applied a
+    // handful of records. The admin endpoint reads from this
+    // exact atomic.
+    let fc = Arc::new(FollowerCursor::default());
+    fc.store(1, 4096);
+    state.follower_cursor = Some(fc);
+    let app = build_router(state);
+
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/replication")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"role\":\"follower\""));
+    assert!(
+        body.contains("\"segment_seq\":1"),
+        "expected seeded cursor to be reported; got {body}"
+    );
+    assert!(body.contains("\"byte_offset\":4096"));
+}

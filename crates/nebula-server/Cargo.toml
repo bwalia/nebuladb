@@ -29,6 +29,7 @@ tower-http.workspace = true
 hyper.workspace = true
 http.workspace = true
 tonic.workspace = true
+reqwest.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net"] }
 async-trait.workspace = true
 futures.workspace = true

@@ -3,6 +3,7 @@
 //! Cloned cheaply by Axum into every handler — everything inside is
 //! already wrapped in `Arc` so clone is a refcount bump, not a deep copy.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use ahash::AHashSet;
@@ -14,10 +15,70 @@ use nebula_llm::{LlmClient, MockLlm};
 use nebula_sql::SqlEngine;
 
 use crate::audit::AuditLog;
+use crate::cluster::ClusterConfig;
 use crate::jwt::JwtConfig;
 use crate::metrics::Metrics;
 use crate::ratelimit::{RateLimitConfig, RateLimiter};
 use crate::slow_log::SlowQueryLog;
+
+/// Published position of the follower's last-applied cursor, so the
+/// admin endpoint can compute lag without going through the running
+/// follower task. Two atomics rather than a Mutex<WalCursor> because
+/// this gets read on every /admin/replication hit and written on
+/// every applied record — same hot path as cursor persistence.
+///
+/// Reads aren't consistent across the two atomics in isolation (a
+/// reader could see a new segment_seq paired with an old
+/// byte_offset for a single instant), but the consumer only uses
+/// (seg, off) to compute "how far behind am I" and a temporary
+/// under/over-estimate by one record is noise.
+#[derive(Default, Debug)]
+pub struct FollowerCursor {
+    pub segment_seq: AtomicU64,
+    pub byte_offset: AtomicU64,
+}
+
+impl FollowerCursor {
+    pub fn load(&self) -> (u64, u64) {
+        (
+            self.segment_seq.load(Ordering::Relaxed),
+            self.byte_offset.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn store(&self, segment_seq: u64, byte_offset: u64) {
+        self.segment_seq.store(segment_seq, Ordering::Relaxed);
+        self.byte_offset.store(byte_offset, Ordering::Relaxed);
+    }
+}
+
+/// Tee adapter: splits a `CursorStore::save` into the real durable
+/// store + an atomic snapshot read by /admin/replication. Load
+/// comes only from the durable half — the atomic is a pure mirror
+/// and starts empty across restarts.
+pub struct TeeCursorStore {
+    pub durable: Arc<dyn nebula_grpc::follower::CursorStore>,
+    pub snapshot: Arc<FollowerCursor>,
+}
+
+impl nebula_grpc::follower::CursorStore for TeeCursorStore {
+    fn load(
+        &self,
+    ) -> Result<Option<nebula_wal::WalCursor>, nebula_grpc::follower::CursorStoreError> {
+        self.durable.load()
+    }
+
+    fn save(
+        &self,
+        cursor: nebula_wal::WalCursor,
+    ) -> Result<(), nebula_grpc::follower::CursorStoreError> {
+        // Write to the snapshot first — it's infallible and we
+        // want the /admin/replication view updated even if the
+        // durable store is temporarily flaky.
+        self.snapshot.store(cursor.segment_seq, cursor.byte_offset);
+        self.durable.save(cursor)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -82,6 +143,15 @@ pub struct AppState {
     /// not the most recent ones.
     pub slow_log: Arc<SlowQueryLog>,
     pub config: Arc<AppConfig>,
+    /// Cluster membership + role. Standalone by default; every
+    /// multi-node feature reads this instead of sniffing envs
+    /// on its own.
+    pub cluster: Arc<ClusterConfig>,
+    /// Present when this node is a follower. The background
+    /// replication task writes its latest applied cursor here;
+    /// `/admin/replication` reads it to compute lag vs. the
+    /// leader. `None` on leader / standalone.
+    pub follower_cursor: Option<Arc<FollowerCursor>>,
 }
 
 impl AppState {
@@ -107,7 +177,19 @@ impl AppState {
             // sizing in tests or production tuning.
             slow_log: SlowQueryLog::new(32, 10),
             config: Arc::new(config),
+            cluster: Arc::new(ClusterConfig::default()),
+            follower_cursor: None,
         }
+    }
+
+    pub fn with_cluster(mut self, cluster: Arc<ClusterConfig>) -> Self {
+        self.cluster = cluster;
+        self
+    }
+
+    pub fn with_follower_cursor(mut self, cursor: Arc<FollowerCursor>) -> Self {
+        self.follower_cursor = Some(cursor);
+        self
     }
 
     pub fn with_slow_log(mut self, log: Arc<SlowQueryLog>) -> Self {
