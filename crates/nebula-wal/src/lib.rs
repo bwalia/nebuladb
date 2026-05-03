@@ -49,11 +49,16 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+mod subscriber;
+
+pub use subscriber::{WalCursor, WalEntry, WalSubscriber};
 
 #[derive(Debug, Error)]
 pub enum WalError {
@@ -71,13 +76,13 @@ pub type Result<T> = std::result::Result<T, WalError>;
 /// a stray file from ours. Bumping the version byte forces a
 /// clean-slate replay; old writers would refuse to append to a
 /// new-version file.
-const MAGIC: &[u8; 8] = b"NEBWAL01";
+pub(crate) const MAGIC: &[u8; 8] = b"NEBWAL01";
 
 /// Hard cap on a single record's encoded size. 16 MiB comfortably
 /// fits a 1536-dim vector + long chunk text + metadata; anything
 /// larger is almost certainly a corrupted `len` we shouldn't try
 /// to allocate for.
-const MAX_RECORD_BYTES: u32 = 16 * 1024 * 1024;
+pub(crate) const MAX_RECORD_BYTES: u32 = 16 * 1024 * 1024;
 
 /// Written body of a WAL frame. Every mutation the index performs
 /// is expressible as one variant. Variants are explicitly listed
@@ -163,6 +168,10 @@ pub struct Wal {
     // All mutation is serialized through this mutex: the WAL is
     // the commit point and must never interleave with itself.
     state: Mutex<WriterState>,
+    // Fans live appends out to subscribers and tracks their acks.
+    // Arc so subscribers can hold a clone for their lifetime
+    // independent of whether the Wal itself is dropped.
+    hub: Arc<subscriber::SubscriberHub>,
 }
 
 struct WriterState {
@@ -216,6 +225,7 @@ impl Wal {
                 current_file: BufWriter::new(file),
                 current_bytes: bytes,
             }),
+            hub: Arc::new(subscriber::SubscriberHub::new()),
         })
     }
 
@@ -262,6 +272,15 @@ impl Wal {
             s.current_bytes = MAGIC.len() as u64;
         }
 
+        // Cursor of THIS record: wherever the file pointer is right
+        // now, which is the start of the frame we're about to write.
+        // (After any rotation above, s.current_seq / s.current_bytes
+        // already reflect the new segment.)
+        let cursor = subscriber::WalCursor {
+            segment_seq: s.current_seq,
+            byte_offset: s.current_bytes,
+        };
+
         s.current_file.write_all(&len.to_le_bytes())?;
         s.current_file.write_all(&crc.to_le_bytes())?;
         s.current_file.write_all(&body)?;
@@ -271,7 +290,51 @@ impl Wal {
             s.current_file.flush()?;
             s.current_file.get_ref().sync_data()?;
         }
+
+        let next_cursor = subscriber::WalCursor {
+            segment_seq: s.current_seq,
+            byte_offset: s.current_bytes,
+        };
+
+        // Publish to any live subscribers. Holding `s` across the
+        // send keeps "durable" and "visible to followers" in the
+        // same critical section — a subscriber never sees a record
+        // that hasn't at least hit the kernel buffer.
+        self.hub.publish(subscriber::WalEntry {
+            cursor,
+            next_cursor,
+            record: rec.clone(),
+        });
+
         Ok(())
+    }
+
+    /// Subscribe to the WAL starting at `start`. Historical records
+    /// from disk are delivered first; when caught up, the
+    /// subscriber switches to live tailing.
+    ///
+    /// Pass [`WalCursor::BEGIN`] to receive every record from the
+    /// oldest surviving segment. Pass the `next_cursor` of the last
+    /// successfully-acked entry to resume.
+    pub fn subscribe(&self, start: subscriber::WalCursor) -> Result<subscriber::WalSubscriber> {
+        // Read historical first. We deliberately do this *outside*
+        // the writer lock — writes racing in parallel are delivered
+        // via the broadcast tail; the `live_start` handshake in the
+        // subscriber tosses duplicates.
+        let (catchup, live_start) = subscriber::read_from(&self.dir, start)?;
+        Ok(subscriber::WalSubscriber::new(
+            self.hub.clone(),
+            catchup,
+            live_start,
+            start,
+        ))
+    }
+
+    /// Minimum cursor still required by any live subscriber.
+    /// Surfaces to compaction / admin as "don't delete anything
+    /// past this". `None` when nothing is subscribed.
+    pub fn min_subscriber_ack(&self) -> Option<subscriber::WalCursor> {
+        self.hub.min_ack()
     }
 
     /// Scan every segment in order, yielding records. Short reads
@@ -295,12 +358,23 @@ impl Wal {
     /// every record up to a certain point, so earlier segments
     /// are pure overhead. Never deletes the current (in-use)
     /// segment even if the caller passes a higher seq.
+    ///
+    /// If a follower is subscribed and hasn't ack'd a cursor past
+    /// `oldest_to_keep`, we clamp down to the follower's ack: a
+    /// deleted segment it still needs would orphan it. This makes
+    /// compaction a no-op rather than an error in that case —
+    /// callers check the return value to decide if more progress
+    /// is possible.
     pub fn compact(&self, oldest_to_keep: u64) -> Result<usize> {
+        let effective = match self.hub.min_ack() {
+            Some(ack) => oldest_to_keep.min(ack.segment_seq),
+            None => oldest_to_keep,
+        };
         let s = self.state.lock();
         let segments = list_segments(&self.dir)?;
         let mut removed = 0;
         for seg in segments {
-            if seg.seq < oldest_to_keep && seg.seq < s.current_seq {
+            if seg.seq < effective && seg.seq < s.current_seq {
                 fs::remove_file(&seg.path)?;
                 removed += 1;
             }
@@ -350,16 +424,16 @@ pub struct WalStats {
 // segment file helpers
 // ---------------------------------------------------------------------------
 
-struct Segment {
-    seq: u64,
-    path: PathBuf,
+pub(crate) struct Segment {
+    pub(crate) seq: u64,
+    pub(crate) path: PathBuf,
 }
 
-fn segment_path(dir: &Path, seq: u64) -> PathBuf {
+pub(crate) fn segment_path(dir: &Path, seq: u64) -> PathBuf {
     dir.join(format!("{seq:010}.nwal"))
 }
 
-fn list_segments(dir: &Path) -> Result<Vec<Segment>> {
+pub(crate) fn list_segments(dir: &Path) -> Result<Vec<Segment>> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
