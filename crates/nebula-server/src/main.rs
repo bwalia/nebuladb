@@ -299,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc_fut: Option<_> = match std::env::var("NEBULA_GRPC_BIND").ok() {
         Some(addr) => {
             let grpc_addr: SocketAddr = addr.parse()?;
-            let grpc_state = GrpcState::new(grpc_index, grpc_llm, grpc_chunker);
+            let grpc_state = GrpcState::new(grpc_index.clone(), grpc_llm, grpc_chunker);
             tracing::info!("nebula-grpc listening on {grpc_addr}");
             Some(tokio::spawn(async move {
                 if let Err(e) = nebula_grpc::serve(grpc_state, grpc_addr).await {
@@ -328,6 +328,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
+    // Follower mode. When NEBULA_FOLLOW_LEADER is set to a gRPC
+    // endpoint like "http://leader:50051", the server also spawns
+    // a background task that tails the leader's WAL and applies
+    // records into this local index. The server itself still
+    // accepts reads on REST/gRPC/pgwire as normal — writes to
+    // mutating endpoints should not be made on a follower (they'd
+    // diverge from the leader), but we don't yet enforce this at
+    // the router layer. Wire protection is a follow-up.
+    //
+    // NEBULA_FOLLOWER_CURSOR_PATH controls where the follower
+    // persists its last-applied cursor. Defaults to
+    // "$NEBULA_DATA_DIR/follower.cursor" when a data dir is set,
+    // otherwise a per-process temp file (cursor doesn't survive
+    // restart — acceptable for an in-memory follower that will
+    // replay from BEGIN anyway).
+    let follower_handle: Option<nebula_grpc::follower::FollowerHandle> =
+        match std::env::var("NEBULA_FOLLOW_LEADER").ok() {
+            Some(leader) if !leader.is_empty() => {
+                tracing::info!(leader = %leader, "follower mode: connecting to leader");
+                let channel = tonic::transport::Channel::from_shared(leader.clone())?
+                    .connect()
+                    .await?;
+                let store: Option<std::sync::Arc<dyn nebula_grpc::follower::CursorStore>> =
+                    match std::env::var("NEBULA_FOLLOWER_CURSOR_PATH")
+                        .ok()
+                        .or_else(|| {
+                            std::env::var("NEBULA_DATA_DIR")
+                                .ok()
+                                .filter(|d| !d.is_empty())
+                                .map(|d| format!("{d}/follower.cursor"))
+                        }) {
+                        Some(path) => {
+                            tracing::info!(path = %path, "follower cursor persistence on");
+                            Some(Arc::new(nebula_grpc::follower::FileCursorStore::new(path)))
+                        }
+                        None => {
+                            tracing::warn!(
+                                "no cursor persistence — follower will replay from BEGIN on restart"
+                            );
+                            None
+                        }
+                    };
+                Some(nebula_grpc::follower::spawn_with_store(
+                    channel,
+                    Arc::clone(&grpc_index),
+                    nebula_wal::WalCursor::BEGIN,
+                    store,
+                ))
+            }
+            _ => None,
+        };
+
     tracing::info!("nebula-server listening on {bind}");
     let listener = tokio::net::TcpListener::bind(bind).await?;
     // `into_make_service_with_connect_info` is what lets the
@@ -349,6 +401,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         h.abort();
     }
     if let Some(h) = pg_fut {
+        h.abort();
+    }
+    if let Some(h) = follower_handle {
         h.abort();
     }
     Ok(())

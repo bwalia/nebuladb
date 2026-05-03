@@ -233,6 +233,57 @@ services:
           memory: 1g
 
   # ---------------------------------------------------------------------------
+  # Optional follower replica. Tails the leader's WAL over gRPC and
+  # mirrors every write into its own local index. Reads land here
+  # just as they would on the leader. Keep commented out for a
+  # single-node demo; uncomment to exercise replication end-to-end.
+  #
+  # Followers must NOT take writes — the leader is the only writer
+  # in this topology. The read endpoints are fine; mutating calls
+  # will diverge the follower from the leader until a follow-up
+  # session wires router-level protection.
+  # ---------------------------------------------------------------------------
+  nebula-follower:
+    image: nebuladb/server:dev
+    container_name: nebula-follower
+    <<: [*default-restart, *default-logging]
+    depends_on:
+      nebula-server:
+        condition: service_healthy
+    ports:
+      # Expose on different host ports to avoid clashing with the
+      # leader. Container-side matches the leader (same binary).
+      - "${NEBULA_FOLLOWER_REST_HOST_PORT:-8081}:8080"
+      - "${NEBULA_FOLLOWER_GRPC_HOST_PORT:-50052}:50051"
+    volumes:
+      # Own data dir — the follower's cursor file lives here so
+      # restarts resume from the last-applied record instead of
+      # replaying from BEGIN.
+      - nebula-follower-data:/var/lib/nebuladb
+    environment:
+      NEBULA_BIND: "0.0.0.0:8080"
+      NEBULA_GRPC_BIND: "0.0.0.0:50051"
+      NEBULA_DATA_DIR: "/var/lib/nebuladb"
+      # Point at the leader's gRPC endpoint. Inside the compose
+      # network the service name resolves to its IP.
+      NEBULA_FOLLOW_LEADER: "http://nebula-server:50051"
+      NEBULA_EMBED_DIM: "384"
+      # No Redis / LLM on the follower in the demo — reads don't
+      # need them, and adding them would double the memory for no
+      # benefit in the default stack.
+      RUST_LOG: "info,nebula_server=debug,nebula_grpc=debug"
+    profiles:
+      # Opt-in: `docker compose --profile replication up` includes
+      # it. Default `docker compose up` skips it so the demo stays
+      # single-node.
+      - replication
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+
+  # ---------------------------------------------------------------------------
   # Observability
   # ---------------------------------------------------------------------------
   prometheus:
@@ -339,3 +390,4 @@ volumes:
   prometheus-data:
   grafana-data:
   nebula-data:
+  nebula-follower-data:
