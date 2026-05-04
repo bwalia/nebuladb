@@ -1,0 +1,235 @@
+# Operator CI.
+#
+# Fast jobs (build, vet, schema) run on every PR/push that touches the
+# operator/ tree. They're cheap enough to keep the developer feedback
+# loop tight — < 2 minutes on a clean runner.
+#
+# The `e2e-kind` job is the expensive one: spins up a kind cluster,
+# builds the manager image, loads it, installs CRDs + RBAC + the
+# Deployment, applies a minimal NebulaCluster, and watches the
+# StatefulSet reach Ready. It only runs on nightly schedule + manual
+# dispatch so PRs aren't held up by a 4-minute kind boot.
+#
+# Path filter: the workflow triggers only when files under operator/
+# change, so unrelated Rust-only PRs don't spin up the Go toolchain.
+
+name: operator
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "operator/**"
+      - ".github/workflows/operator.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "operator/**"
+      - ".github/workflows/operator.yml"
+  schedule:
+    # Matches nightly.yml's 02:00 UTC window so both reports land
+    # around the same time in a single Slack thread.
+    - cron: "10 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: operator-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # build: go build + gofmt + go vet. The cheap sanity pass.
+  # --------------------------------------------------------------------------
+  build:
+    name: build + vet + fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: operator
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: operator/go.sum
+
+      - name: go mod download
+        run: go mod download
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt check
+        # `gofmt -l` prints diverging files and exits 0 either way;
+        # `test -z` turns any output into a non-zero exit so CI fails
+        # on unformatted code. Matches the convention in the Rust
+        # `cargo fmt -- --check` step upstream.
+        run: |
+          diverging=$(gofmt -l .)
+          if [ -n "$diverging" ]; then
+            echo "unformatted files:"
+            echo "$diverging"
+            exit 1
+          fi
+
+  # --------------------------------------------------------------------------
+  # test: go test ./... — unit tests only for now. Cheap.
+  # --------------------------------------------------------------------------
+  test:
+    name: go test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    defaults:
+      run:
+        working-directory: operator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: operator/go.sum
+      - name: go mod download
+        run: go mod download
+      - name: go test
+        run: go test -race -coverprofile=cover.out ./...
+      - name: upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operator-coverage
+          path: operator/cover.out
+          if-no-files-found: ignore
+
+  # --------------------------------------------------------------------------
+  # schema: install the CRDs into a throwaway kind cluster and run
+  # kubectl apply --dry-run=server on every example CR. This is the
+  # test that catches the "x-kubernetes-preserve-unknown-fields needs
+  # items:" kind of issue we hit on first install.
+  #
+  # Kept separate from e2e-kind because it doesn't need the manager
+  # image — just a cluster + kubectl. Finishes in ~40s.
+  # --------------------------------------------------------------------------
+  schema:
+    name: CRD schema + examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          version: v0.25.0
+          cluster_name: schema-check
+          wait: 90s
+
+      - name: Install CRDs
+        run: kubectl apply -k operator/config/crd
+
+      - name: List CRDs
+        run: kubectl get crd | grep nebula.nebuladb.io
+
+      - name: Server-side dry-run every example CR
+        # The examples ship with `namespace: nebuladb`, so create it
+        # first and then apply each CR with --dry-run=server. The
+        # real cluster's apiserver validates against the installed
+        # CRD schema — exactly the path we want to exercise.
+        run: |
+          kubectl create namespace nebuladb
+          for f in operator/examples/*.yaml; do
+            echo "=== $f ==="
+            kubectl apply --dry-run=server -f "$f"
+          done
+
+  # --------------------------------------------------------------------------
+  # e2e-kind: build the manager image, load it into kind, install the
+  # operator, apply a NebulaCluster CR, wait for the leader StatefulSet
+  # to reach Ready.
+  #
+  # Heavy (~4-5 minutes). Only runs on nightly schedule and manual
+  # dispatch — every-PR would burn too much runner time without
+  # proportional signal.
+  # --------------------------------------------------------------------------
+  e2e-kind:
+    name: e2e (kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [build, test]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: operator/go.sum
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          version: v0.25.0
+          cluster_name: nebula-operator-e2e
+          wait: 120s
+
+      - name: Build operator image
+        working-directory: operator
+        run: docker build -t ghcr.io/bwalia/nebuladb-operator:ci .
+
+      - name: Load image into kind
+        run: kind load docker-image ghcr.io/bwalia/nebuladb-operator:ci --name nebula-operator-e2e
+
+      - name: Install operator
+        # Apply CRDs + RBAC + manager via kustomize, patching the
+        # manager image to the local tag we just loaded.
+        run: |
+          kubectl apply -k operator/config/crd
+          kubectl apply -k operator/config/rbac
+          # Patch the manager Deployment to use the CI image.
+          kubectl apply -k operator/config/manager
+          kubectl -n nebuladb-system set image deployment/nebuladb-operator \
+            manager=ghcr.io/bwalia/nebuladb-operator:ci
+          kubectl -n nebuladb-system rollout status deployment/nebuladb-operator --timeout=180s
+
+      - name: Apply a minimal NebulaCluster
+        # The basic example targets the nebuladb namespace; create
+        # it first, then apply.
+        run: |
+          kubectl create namespace nebuladb
+          kubectl apply -f operator/examples/cluster-basic.yaml
+
+      - name: Wait for leader StatefulSet to appear and reconcile
+        # The operator should create a StatefulSet within a few
+        # reconcile cycles. We tolerate the pod not becoming
+        # Ready (the nebuladb image isn't published for CI yet),
+        # but the STS itself must exist — that proves the controller
+        # wrote to the API.
+        run: |
+          for i in $(seq 1 60); do
+            if kubectl -n nebuladb get statefulset nebula-demo-leader >/dev/null 2>&1; then
+              echo "leader StatefulSet created"
+              kubectl -n nebuladb get statefulset,svc,pvc
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "ERROR: leader StatefulSet was never created"
+          kubectl -n nebuladb-system logs deployment/nebuladb-operator --tail=200
+          exit 1
+
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          kubectl get nodes
+          kubectl -n nebuladb-system describe deployment/nebuladb-operator || true
+          kubectl -n nebuladb-system logs deployment/nebuladb-operator --tail=500 || true
+          kubectl -n nebuladb get all,nebulaclusters -o yaml || true

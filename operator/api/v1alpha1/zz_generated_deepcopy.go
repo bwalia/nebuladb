@@ -212,8 +212,7 @@ func (in *NebulaClusterStatus) DeepCopyInto(out *NebulaClusterStatus) {
 		out.Rebalance = &rb
 	}
 	if in.LastSnapshotAt != nil {
-		t := in.LastSnapshotAt.DeepCopy()
-		out.LastSnapshotAt = &t
+		out.LastSnapshotAt = in.LastSnapshotAt.DeepCopy()
 	}
 	if in.Conditions != nil {
 		out.Conditions = make([]metav1.Condition, len(in.Conditions))
@@ -293,8 +292,7 @@ func (in *NebulaBucketStatus) DeepCopyInto(out *NebulaBucketStatus) {
 		copy(out.TopKeys, in.TopKeys)
 	}
 	if in.LastSeeded != nil {
-		t := in.LastSeeded.DeepCopy()
-		out.LastSeeded = &t
+		out.LastSeeded = in.LastSeeded.DeepCopy()
 	}
 	if in.Conditions != nil {
 		out.Conditions = make([]metav1.Condition, len(in.Conditions))
@@ -365,24 +363,20 @@ func (in *NebulaRebalanceSpec) DeepCopyInto(out *NebulaRebalanceSpec) {
 func (in *RebalanceStep) DeepCopyInto(out *RebalanceStep) {
 	*out = *in
 	if in.StartedAt != nil {
-		t := in.StartedAt.DeepCopy()
-		out.StartedAt = &t
+		out.StartedAt = in.StartedAt.DeepCopy()
 	}
 	if in.FinishedAt != nil {
-		t := in.FinishedAt.DeepCopy()
-		out.FinishedAt = &t
+		out.FinishedAt = in.FinishedAt.DeepCopy()
 	}
 }
 
 func (in *NebulaRebalanceStatus) DeepCopyInto(out *NebulaRebalanceStatus) {
 	*out = *in
 	if in.StartedAt != nil {
-		t := in.StartedAt.DeepCopy()
-		out.StartedAt = &t
+		out.StartedAt = in.StartedAt.DeepCopy()
 	}
 	if in.CompletedAt != nil {
-		t := in.CompletedAt.DeepCopy()
-		out.CompletedAt = &t
+		out.CompletedAt = in.CompletedAt.DeepCopy()
 	}
 	if in.Steps != nil {
 		out.Steps = make([]RebalanceStep, len(in.Steps))
@@ -443,12 +437,10 @@ func (in *NebulaRegionFailoverSpec) DeepCopyInto(out *NebulaRegionFailoverSpec) 
 func (in *NebulaRegionFailoverStatus) DeepCopyInto(out *NebulaRegionFailoverStatus) {
 	*out = *in
 	if in.StartedAt != nil {
-		t := in.StartedAt.DeepCopy()
-		out.StartedAt = &t
+		out.StartedAt = in.StartedAt.DeepCopy()
 	}
 	if in.CompletedAt != nil {
-		t := in.CompletedAt.DeepCopy()
-		out.CompletedAt = &t
+		out.CompletedAt = in.CompletedAt.DeepCopy()
 	}
 	if in.Steps != nil {
 		out.Steps = make([]RebalanceStep, len(in.Steps))

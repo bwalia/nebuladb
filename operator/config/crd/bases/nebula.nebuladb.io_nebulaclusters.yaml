@@ -139,10 +139,14 @@ spec:
                       additionalProperties: {type: string}
                     tolerations:
                       type: array
-                      x-kubernetes-preserve-unknown-fields: true
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
                     topologySpreadConstraints:
                       type: array
-                      x-kubernetes-preserve-unknown-fields: true
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
                     crossRegion:
                       type: object
                       properties:
@@ -163,7 +167,9 @@ spec:
                 x-kubernetes-int-or-string: true
               extraEnv:
                 type: array
-                x-kubernetes-preserve-unknown-fields: true
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
               serviceType:
                 type: string
                 default: ClusterIP
@@ -188,10 +194,14 @@ spec:
                 x-kubernetes-preserve-unknown-fields: true
               followers:
                 type: array
-                x-kubernetes-preserve-unknown-fields: true
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
               rebalance:
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               conditions:
                 type: array
-                x-kubernetes-preserve-unknown-fields: true
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
