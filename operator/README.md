@@ -53,7 +53,7 @@ database catches up.
 | Implicit bucket creation           | Supported           | Seed doc upserted by bucket controller                |
 | Follower write rejection (REST)    | Supported           | Reconciler routes writes to leader service only       |
 | Bucket-level swap rebalance        | Supported (0.1.1+)  | `/admin/bucket/:b/export` + `/import` drive pod handoff |
-| Cross-region active-active         | **Not supported**   | Regions are app-side routed; CR provisions per-region |
+| Cross-region active-active         | Supported (0.1.1+)  | CrossRegionReplicationService + NebulaRegionFailover + nebula-client SDK |
 | Version introspection API          | Supported (0.1.1+)  | Operator probes `/healthz.version` + `/admin/version` |
 | gRPC / pgwire follower write guard | Supported (0.1.1+)  | gRPC returns FAILED_PRECONDITION, pgwire SQLSTATE 25006 |
 

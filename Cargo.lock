@@ -1534,6 +1534,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "hyper",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+]
+
+[[package]]
 name = "nebula-core"
 version = "0.1.0"
 dependencies = [

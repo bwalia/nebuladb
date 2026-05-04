@@ -69,12 +69,28 @@ func (c *Client) Healthz(ctx context.Context) (*Health, error) {
 
 // ReplicationStatus mirrors GET /api/v1/admin/replication.
 type ReplicationStatus struct {
-	Role               string `json:"role"`
-	LocalNewest        *int64 `json:"local_newest,omitempty"`
-	FollowerApplied    *int64 `json:"follower_applied,omitempty"`
-	LeaderNewestProbed *int64 `json:"leader_newest_probed,omitempty"`
-	LagBytes           *int64 `json:"lag_bytes,omitempty"`
-	Behind             bool   `json:"behind,omitempty"`
+	Role               string         `json:"role"`
+	LocalNewest        *int64         `json:"local_newest,omitempty"`
+	FollowerApplied    *int64         `json:"follower_applied,omitempty"`
+	LeaderNewestProbed *int64         `json:"leader_newest_probed,omitempty"`
+	LagBytes           *int64         `json:"lag_bytes,omitempty"`
+	Behind             bool           `json:"behind,omitempty"`
+	Region             string         `json:"region,omitempty"`
+	Remotes            []RemoteRegion `json:"remotes,omitempty"`
+}
+
+// RemoteRegion is one entry from the `remotes` array on the
+// /admin/replication response — per-remote-region consumer state.
+type RemoteRegion struct {
+	Region                string  `json:"region"`
+	GRPCURL               string  `json:"grpc_url"`
+	Healthy               bool    `json:"healthy"`
+	LastAppliedSegment    *uint64 `json:"last_applied_segment,omitempty"`
+	LastAppliedByteOffset *uint64 `json:"last_applied_byte_offset,omitempty"`
+	AppliedRecords        uint64  `json:"applied_records"`
+	ConsecutiveErrors     uint32  `json:"consecutive_errors"`
+	LastError             string  `json:"last_error,omitempty"`
+	LastErrorAt           string  `json:"last_error_at,omitempty"`
 }
 
 func (c *Client) Replication(ctx context.Context) (*ReplicationStatus, error) {

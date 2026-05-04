@@ -1,0 +1,14 @@
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaRegionFailover
+metadata:
+  name: catalog-to-us-west-2
+  namespace: nebuladb
+spec:
+  clusterRef: nebula-prod
+  bucket: catalog
+  newHomeRegion: us-west-2
+  # When the current home is actually unreachable, leave force=false.
+  # Set to true for a planned failover while the old home is still up.
+  force: false
+  drainTimeoutSeconds: 600
+  timeoutSeconds: 1800

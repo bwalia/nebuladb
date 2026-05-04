@@ -435,3 +435,69 @@ func (in *NebulaRebalanceList) DeepCopy() *NebulaRebalanceList {
 	return out
 }
 func (in *NebulaRebalanceList) DeepCopyObject() runtime.Object { return in.DeepCopy() }
+
+// ---------- NebulaRegionFailover ----------
+
+func (in *NebulaRegionFailoverSpec) DeepCopyInto(out *NebulaRegionFailoverSpec) { *out = *in }
+
+func (in *NebulaRegionFailoverStatus) DeepCopyInto(out *NebulaRegionFailoverStatus) {
+	*out = *in
+	if in.StartedAt != nil {
+		t := in.StartedAt.DeepCopy()
+		out.StartedAt = &t
+	}
+	if in.CompletedAt != nil {
+		t := in.CompletedAt.DeepCopy()
+		out.CompletedAt = &t
+	}
+	if in.Steps != nil {
+		out.Steps = make([]RebalanceStep, len(in.Steps))
+		for i := range in.Steps {
+			in.Steps[i].DeepCopyInto(&out.Steps[i])
+		}
+	}
+	if in.Conditions != nil {
+		out.Conditions = make([]metav1.Condition, len(in.Conditions))
+		for i := range in.Conditions {
+			in.Conditions[i].DeepCopyInto(&out.Conditions[i])
+		}
+	}
+}
+
+func (in *NebulaRegionFailover) DeepCopyInto(out *NebulaRegionFailover) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	in.Spec.DeepCopyInto(&out.Spec)
+	in.Status.DeepCopyInto(&out.Status)
+}
+func (in *NebulaRegionFailover) DeepCopy() *NebulaRegionFailover {
+	if in == nil {
+		return nil
+	}
+	out := new(NebulaRegionFailover)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *NebulaRegionFailover) DeepCopyObject() runtime.Object { return in.DeepCopy() }
+
+func (in *NebulaRegionFailoverList) DeepCopyInto(out *NebulaRegionFailoverList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		out.Items = make([]NebulaRegionFailover, len(in.Items))
+		for i := range in.Items {
+			in.Items[i].DeepCopyInto(&out.Items[i])
+		}
+	}
+}
+func (in *NebulaRegionFailoverList) DeepCopy() *NebulaRegionFailoverList {
+	if in == nil {
+		return nil
+	}
+	out := new(NebulaRegionFailoverList)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *NebulaRegionFailoverList) DeepCopyObject() runtime.Object { return in.DeepCopy() }
