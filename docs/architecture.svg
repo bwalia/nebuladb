@@ -1,0 +1,385 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1340" font-family="Inter, -apple-system, BlinkMacSystemFont, sans-serif">
+  <defs>
+    <marker id="arr-blue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arr-orange" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#ea580c"/>
+    </marker>
+    <marker id="arr-purple" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#7c3aed"/>
+    </marker>
+    <marker id="arr-green" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#16a34a"/>
+    </marker>
+    <marker id="arr-slate" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#475569"/>
+    </marker>
+    <marker id="arr-red" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="1340" fill="#f8fafc"/>
+
+  <!-- Title -->
+  <text x="800" y="42" text-anchor="middle" font-size="28" font-weight="700" fill="#0f172a">
+    NebulaDB · End-to-End Architecture
+  </text>
+  <text x="800" y="68" text-anchor="middle" font-size="13" fill="#64748b">
+    AI-native hybrid database in Rust · One binary serves REST, gRPC, pgwire over a shared corpus with HNSW + RAG · Leader/follower replication · Multi-region HA
+  </text>
+
+  <!-- ============================================================= -->
+  <!-- LAYER 1: CLIENTS                                              -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="60" y="100" width="1480" height="90" rx="12" fill="#e2e8f0" stroke="#475569" stroke-width="1.5"/>
+    <text x="80" y="125" font-size="15" font-weight="700" fill="#0f172a">Clients &amp; Surfaces</text>
+
+    <rect x="100" y="138" width="220" height="42" rx="6" fill="#ffffff" stroke="#475569"/>
+    <text x="210" y="158" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">Showcase UI (React)</text>
+    <text x="210" y="174" text-anchor="middle" font-size="10" fill="#475569">Documents · SQL · Search · RAG · Hybrid</text>
+
+    <rect x="340" y="138" width="180" height="42" rx="6" fill="#ffffff" stroke="#475569"/>
+    <text x="430" y="158" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">REST + SSE</text>
+    <text x="430" y="174" text-anchor="middle" font-size="10" fill="#475569">curl · fetch · streaming RAG</text>
+
+    <rect x="540" y="138" width="180" height="42" rx="6" fill="#ffffff" stroke="#475569"/>
+    <text x="630" y="158" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">gRPC (tonic)</text>
+    <text x="630" y="174" text-anchor="middle" font-size="10" fill="#475569">Document · Search · AI · Replication</text>
+
+    <rect x="740" y="138" width="180" height="42" rx="6" fill="#ffffff" stroke="#475569"/>
+    <text x="830" y="158" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">Postgres wire</text>
+    <text x="830" y="174" text-anchor="middle" font-size="10" fill="#475569">psql · any PG driver (simple query)</text>
+
+    <rect x="940" y="138" width="200" height="42" rx="6" fill="#ffffff" stroke="#475569"/>
+    <text x="1040" y="158" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">Prometheus / Grafana</text>
+    <text x="1040" y="174" text-anchor="middle" font-size="10" fill="#475569">/metrics scrape · dashboards</text>
+
+    <rect x="1160" y="138" width="180" height="42" rx="6" fill="#ffffff" stroke="#475569"/>
+    <text x="1250" y="158" text-anchor="middle" font-size="13" font-weight="600" fill="#0f172a">Admin / SRE</text>
+    <text x="1250" y="174" text-anchor="middle" font-size="10" fill="#475569">/admin/* · /healthz · log SSE</text>
+  </g>
+
+  <!-- arrow into edge -->
+  <line x1="800" y1="190" x2="800" y2="220" stroke="#475569" stroke-width="2" marker-end="url(#arr-slate)"/>
+
+  <!-- ============================================================= -->
+  <!-- LAYER 2: EDGE / MIDDLEWARE STACK                              -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="60" y="225" width="1480" height="120" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+    <text x="80" y="252" font-size="15" font-weight="700" fill="#312e81">nebula-server · axum router · request middleware chain</text>
+    <text x="80" y="270" font-size="11" fill="#4338ca">Outer → inner: rate-limit → audit → follower-write guard → auth → handler. Ops endpoints (/healthz, /metrics) bypass auth + limit so scrapes survive abuse.</text>
+
+    <rect x="90" y="285" width="195" height="46" rx="6" fill="#ffffff" stroke="#4f46e5"/>
+    <text x="187" y="304" text-anchor="middle" font-size="12" font-weight="600" fill="#312e81">Rate Limit</text>
+    <text x="187" y="320" text-anchor="middle" font-size="10" fill="#4338ca">token bucket · burst+rps</text>
+
+    <rect x="295" y="285" width="195" height="46" rx="6" fill="#ffffff" stroke="#4f46e5"/>
+    <text x="392" y="304" text-anchor="middle" font-size="12" font-weight="600" fill="#312e81">Audit log</text>
+    <text x="392" y="320" text-anchor="middle" font-size="10" fill="#4338ca">writes captured before auth fail</text>
+
+    <rect x="500" y="285" width="220" height="46" rx="6" fill="#ffffff" stroke="#4f46e5"/>
+    <text x="610" y="304" text-anchor="middle" font-size="12" font-weight="600" fill="#312e81">Follower-write guard</text>
+    <text x="610" y="320" text-anchor="middle" font-size="10" fill="#4338ca">409 on follower · prevents divergence</text>
+
+    <rect x="730" y="285" width="220" height="46" rx="6" fill="#ffffff" stroke="#4f46e5"/>
+    <text x="840" y="304" text-anchor="middle" font-size="12" font-weight="600" fill="#312e81">Auth (API key + JWT)</text>
+    <text x="840" y="320" text-anchor="middle" font-size="10" fill="#4338ca">bearer allowlist · HS256 + iss/aud</text>
+
+    <rect x="960" y="285" width="195" height="46" rx="6" fill="#ffffff" stroke="#4f46e5"/>
+    <text x="1057" y="304" text-anchor="middle" font-size="12" font-weight="600" fill="#312e81">Body limit + Trace</text>
+    <text x="1057" y="320" text-anchor="middle" font-size="10" fill="#4338ca">tower-http layers</text>
+
+    <rect x="1165" y="285" width="170" height="46" rx="6" fill="#ffffff" stroke="#4f46e5"/>
+    <text x="1250" y="304" text-anchor="middle" font-size="12" font-weight="600" fill="#312e81">Slow-log + SSE</text>
+    <text x="1250" y="320" text-anchor="middle" font-size="10" fill="#4338ca">stream tracing to UI</text>
+
+    <rect x="1345" y="285" width="180" height="46" rx="6" fill="#ffffff" stroke="#4f46e5"/>
+    <text x="1435" y="304" text-anchor="middle" font-size="12" font-weight="600" fill="#312e81">Metrics (Prom)</text>
+    <text x="1435" y="320" text-anchor="middle" font-size="10" fill="#4338ca">latency · counts · errors</text>
+  </g>
+
+  <line x1="800" y1="345" x2="800" y2="375" stroke="#475569" stroke-width="2" marker-end="url(#arr-slate)"/>
+
+  <!-- ============================================================= -->
+  <!-- LAYER 3: QUERY PLANES (READ + WRITE + AI)                     -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="60" y="380" width="1480" height="180" rx="12" fill="#fff7ed" stroke="#ea580c" stroke-width="2"/>
+    <text x="80" y="408" font-size="15" font-weight="700" fill="#9a3412">Query planes · how a request becomes work</text>
+
+    <!-- Write -->
+    <rect x="85" y="425" width="450" height="120" rx="8" fill="#ffffff" stroke="#ea580c"/>
+    <text x="100" y="447" font-size="13" font-weight="700" fill="#9a3412">Write path</text>
+    <text x="100" y="466" font-size="11" fill="#7c2d12">1. Chunk text (fixed window · 500c / 50 overlap)</text>
+    <text x="100" y="482" font-size="11" fill="#7c2d12">2. Embed each chunk (cache → Redis → upstream)</text>
+    <text x="100" y="498" font-size="11" fill="#7c2d12">3. WAL append + fsync (CRC32 framed)</text>
+    <text x="100" y="514" font-size="11" fill="#7c2d12">4. Index in HNSW + parent-child store</text>
+    <text x="100" y="530" font-size="11" fill="#7c2d12">5. Replicate to followers (gRPC stream)</text>
+
+    <!-- Read -->
+    <rect x="555" y="425" width="450" height="120" rx="8" fill="#ffffff" stroke="#ea580c"/>
+    <text x="570" y="447" font-size="13" font-weight="700" fill="#9a3412">Read / SQL path</text>
+    <text x="570" y="466" font-size="11" fill="#7c2d12">1. Parse SQL → typed plan (nebula-sql)</text>
+    <text x="570" y="482" font-size="11" fill="#7c2d12">2. Result cache lookup (LRU · TTL 30 s)</text>
+    <text x="570" y="498" font-size="11" fill="#7c2d12">3. Plan executes: semantic_match → HNSW topK</text>
+    <text x="570" y="514" font-size="11" fill="#7c2d12">4. Residual filter / GROUP BY / JOIN in-memory</text>
+    <text x="570" y="530" font-size="11" fill="#7c2d12">5. Shape rows for REST · gRPC · pgwire</text>
+
+    <!-- AI -->
+    <rect x="1025" y="425" width="490" height="120" rx="8" fill="#ffffff" stroke="#ea580c"/>
+    <text x="1040" y="447" font-size="13" font-weight="700" fill="#9a3412">AI / RAG streaming path</text>
+    <text x="1040" y="466" font-size="11" fill="#7c2d12">1. Embed query → top-k semantic search</text>
+    <text x="1040" y="482" font-size="11" fill="#7c2d12">2. Build prompt (build_rag_prompt)</text>
+    <text x="1040" y="498" font-size="11" fill="#7c2d12">3. Stream LLM tokens (Ollama / OpenAI / Mock)</text>
+    <text x="1040" y="514" font-size="11" fill="#7c2d12">4. SSE: event:context → answer_delta → done</text>
+    <text x="1040" y="530" font-size="11" fill="#7c2d12">5. TTFT measured + exposed in /metrics</text>
+  </g>
+
+  <line x1="310" y1="560" x2="310" y2="595" stroke="#ea580c" stroke-width="2" marker-end="url(#arr-orange)"/>
+  <line x1="780" y1="560" x2="780" y2="595" stroke="#ea580c" stroke-width="2" marker-end="url(#arr-orange)"/>
+  <line x1="1270" y1="560" x2="1270" y2="595" stroke="#ea580c" stroke-width="2" marker-end="url(#arr-orange)"/>
+
+  <!-- ============================================================= -->
+  <!-- LAYER 4: CORE CRATES                                          -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="60" y="600" width="1480" height="240" rx="12" fill="#f3e8ff" stroke="#7c3aed" stroke-width="2"/>
+    <text x="80" y="628" font-size="15" font-weight="700" fill="#5b21b6">Core engines · stateless logic, swappable trait objects</text>
+
+    <!-- nebula-index -->
+    <rect x="85" y="645" width="220" height="180" rx="8" fill="#ffffff" stroke="#7c3aed"/>
+    <text x="195" y="667" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">nebula-index</text>
+    <text x="195" y="684" text-anchor="middle" font-size="10" fill="#6d28d9">TextIndex (the warm store)</text>
+    <line x1="100" y1="694" x2="290" y2="694" stroke="#c4b5fd"/>
+    <text x="100" y="710" font-size="10" fill="#4c1d95">• Buckets · namespaces</text>
+    <text x="100" y="726" font-size="10" fill="#4c1d95">• Parent doc → chunk index</text>
+    <text x="100" y="742" font-size="10" fill="#4c1d95">• Chunked upsert + replace</text>
+    <text x="100" y="758" font-size="10" fill="#4c1d95">• Tombstones on delete</text>
+    <text x="100" y="774" font-size="10" fill="#4c1d95">• Hooks: WAL · snapshot</text>
+    <text x="100" y="790" font-size="10" fill="#4c1d95">• Metadata residual filter</text>
+    <text x="100" y="806" font-size="10" fill="#4c1d95">• Stats for /admin/stats</text>
+
+    <!-- nebula-vector / HNSW -->
+    <rect x="320" y="645" width="220" height="180" rx="8" fill="#ffffff" stroke="#7c3aed"/>
+    <text x="430" y="667" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">nebula-vector</text>
+    <text x="430" y="684" text-anchor="middle" font-size="10" fill="#6d28d9">HNSW ANN index</text>
+    <line x1="335" y1="694" x2="525" y2="694" stroke="#c4b5fd"/>
+    <text x="335" y="710" font-size="10" fill="#4c1d95">• Cosine · L2 · dot</text>
+    <text x="335" y="726" font-size="10" fill="#4c1d95">• Layered graph search</text>
+    <text x="335" y="742" font-size="10" fill="#4c1d95">• Sub-ms top-k @ 100k vecs</text>
+    <text x="335" y="758" font-size="10" fill="#4c1d95">• 384 / 1536 dim</text>
+    <text x="335" y="774" font-size="10" fill="#4c1d95">• In-memory; rebuilt on</text>
+    <text x="335" y="788" font-size="10" fill="#4c1d95">  WAL replay or snapshot</text>
+    <text x="335" y="806" font-size="10" fill="#4c1d95">• Resolved vec stored in WAL</text>
+
+    <!-- nebula-sql -->
+    <rect x="555" y="645" width="220" height="180" rx="8" fill="#ffffff" stroke="#7c3aed"/>
+    <text x="665" y="667" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">nebula-sql</text>
+    <text x="665" y="684" text-anchor="middle" font-size="10" fill="#6d28d9">Parser · plan · executor</text>
+    <line x1="570" y1="694" x2="760" y2="694" stroke="#c4b5fd"/>
+    <text x="570" y="710" font-size="10" fill="#4c1d95">• semantic_match(col,'q')</text>
+    <text x="570" y="726" font-size="10" fill="#4c1d95">• WHERE filters · LIMIT</text>
+    <text x="570" y="742" font-size="10" fill="#4c1d95">• GROUP BY · COUNT · SUM</text>
+    <text x="570" y="758" font-size="10" fill="#4c1d95">• INNER JOIN ON region</text>
+    <text x="570" y="774" font-size="10" fill="#4c1d95">• Result cache (LRU + TTL)</text>
+    <text x="570" y="790" font-size="10" fill="#4c1d95">• EXPLAIN endpoint</text>
+    <text x="570" y="806" font-size="10" fill="#4c1d95">• 400/42601 on unsupported</text>
+
+    <!-- nebula-embed -->
+    <rect x="790" y="645" width="220" height="180" rx="8" fill="#ffffff" stroke="#7c3aed"/>
+    <text x="900" y="667" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">nebula-embed</text>
+    <text x="900" y="684" text-anchor="middle" font-size="10" fill="#6d28d9">Embedder trait</text>
+    <line x1="805" y1="694" x2="995" y2="694" stroke="#c4b5fd"/>
+    <text x="805" y="710" font-size="10" fill="#4c1d95">• MockEmbedder (offline)</text>
+    <text x="805" y="726" font-size="10" fill="#4c1d95">• OpenAI / Azure / vLLM</text>
+    <text x="805" y="742" font-size="10" fill="#4c1d95">• Ollama via /v1 (OpenAI)</text>
+    <text x="805" y="758" font-size="10" fill="#4c1d95">• Dim auto-resolved</text>
+    <text x="805" y="774" font-size="10" fill="#4c1d95">• Retries + circuit-break</text>
+    <text x="805" y="790" font-size="10" fill="#4c1d95">• Batched chunk encode</text>
+    <text x="805" y="806" font-size="10" fill="#4c1d95">• Behind LRU + Redis cache</text>
+
+    <!-- nebula-cache (multi-tier) -->
+    <rect x="1025" y="645" width="220" height="180" rx="8" fill="#ffffff" stroke="#7c3aed"/>
+    <text x="1135" y="667" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">embedding cache</text>
+    <text x="1135" y="684" text-anchor="middle" font-size="10" fill="#6d28d9">multi-tier · failure-transparent</text>
+    <line x1="1040" y1="694" x2="1230" y2="694" stroke="#c4b5fd"/>
+    <text x="1040" y="710" font-size="10" fill="#4c1d95">L1 · in-proc LRU (10k)</text>
+    <text x="1040" y="726" font-size="10" fill="#4c1d95">L2 · Redis (shared)</text>
+    <text x="1040" y="742" font-size="10" fill="#4c1d95">L3 · upstream embedder</text>
+    <text x="1040" y="758" font-size="10" fill="#4c1d95">• key = hash(text+model)</text>
+    <text x="1040" y="774" font-size="10" fill="#4c1d95">• TTL configurable</text>
+    <text x="1040" y="790" font-size="10" fill="#4c1d95">• Redis outage = pass-through</text>
+    <text x="1040" y="806" font-size="10" fill="#4c1d95">• Cuts cost &amp; tail latency</text>
+
+    <!-- nebula-llm -->
+    <rect x="1260" y="645" width="265" height="180" rx="8" fill="#ffffff" stroke="#7c3aed"/>
+    <text x="1392" y="667" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">nebula-llm + chunker</text>
+    <text x="1392" y="684" text-anchor="middle" font-size="10" fill="#6d28d9">RAG completion + text split</text>
+    <line x1="1275" y1="694" x2="1510" y2="694" stroke="#c4b5fd"/>
+    <text x="1275" y="710" font-size="10" fill="#4c1d95">LlmClient: Ollama · OpenAI · Mock</text>
+    <text x="1275" y="726" font-size="10" fill="#4c1d95">build_rag_prompt(query, context)</text>
+    <text x="1275" y="742" font-size="10" fill="#4c1d95">Streaming token chunks → SSE</text>
+    <text x="1275" y="758" font-size="10" fill="#4c1d95">Chunker: fixed window · sentence</text>
+    <text x="1275" y="774" font-size="10" fill="#4c1d95">Configurable size + overlap</text>
+    <text x="1275" y="790" font-size="10" fill="#4c1d95">Deterministic Mock for CI</text>
+    <text x="1275" y="806" font-size="10" fill="#4c1d95">TTFT instrumented (p50/p95)</text>
+  </g>
+
+  <line x1="195" y1="840" x2="195" y2="875" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr-purple)"/>
+  <line x1="430" y1="840" x2="430" y2="875" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr-purple)"/>
+  <line x1="900" y1="840" x2="900" y2="875" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr-purple)"/>
+  <line x1="1135" y1="840" x2="1135" y2="875" stroke="#7c3aed" stroke-width="2" marker-end="url(#arr-purple)"/>
+
+  <!-- ============================================================= -->
+  <!-- LAYER 5: DURABILITY                                           -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="60" y="880" width="1000" height="220" rx="12" fill="#ecfdf5" stroke="#16a34a" stroke-width="2"/>
+    <text x="80" y="908" font-size="15" font-weight="700" fill="#166534">Durability · Write-Ahead Log + Snapshot + Recovery</text>
+    <text x="80" y="926" font-size="11" fill="#15803d">Every write is fsynced to the WAL before the index sees it. Recovery replays from the latest snapshot forward.</text>
+
+    <!-- WAL -->
+    <rect x="85" y="940" width="220" height="145" rx="8" fill="#ffffff" stroke="#16a34a"/>
+    <text x="195" y="962" text-anchor="middle" font-size="13" font-weight="700" fill="#166534">nebula-wal</text>
+    <text x="195" y="978" text-anchor="middle" font-size="10" fill="#15803d">append-only segments</text>
+    <line x1="100" y1="987" x2="290" y2="987" stroke="#86efac"/>
+    <text x="100" y="1003" font-size="10" fill="#14532d">• Frame: len + crc32 + bincode</text>
+    <text x="100" y="1018" font-size="10" fill="#14532d">• 10-digit seq.nwal segments</text>
+    <text x="100" y="1033" font-size="10" fill="#14532d">• MAGIC NEBWAL01 versioning</text>
+    <text x="100" y="1048" font-size="10" fill="#14532d">• Crash → truncate to last good</text>
+    <text x="100" y="1063" font-size="10" fill="#14532d">• Stores resolved vector</text>
+    <text x="100" y="1078" font-size="10" fill="#14532d">• Subscribe API → live tail</text>
+
+    <!-- Snapshot -->
+    <rect x="320" y="940" width="220" height="145" rx="8" fill="#ffffff" stroke="#16a34a"/>
+    <text x="430" y="962" text-anchor="middle" font-size="13" font-weight="700" fill="#166534">Snapshot</text>
+    <text x="430" y="978" text-anchor="middle" font-size="10" fill="#15803d">point-in-time index dump</text>
+    <line x1="335" y1="987" x2="525" y2="987" stroke="#86efac"/>
+    <text x="335" y="1003" font-size="10" fill="#14532d">• Triggered: /admin/snapshot</text>
+    <text x="335" y="1018" font-size="10" fill="#14532d">• Atomic rename install</text>
+    <text x="335" y="1033" font-size="10" fill="#14532d">• Compactable: WAL truncation</text>
+    <text x="335" y="1048" font-size="10" fill="#14532d">• Boot-time fast restore</text>
+    <text x="335" y="1063" font-size="10" fill="#14532d">• /admin/wal/compact endpoint</text>
+    <text x="335" y="1078" font-size="10" fill="#14532d">• Visible in /admin/durability</text>
+
+    <!-- Recovery -->
+    <rect x="555" y="940" width="220" height="145" rx="8" fill="#ffffff" stroke="#16a34a"/>
+    <text x="665" y="962" text-anchor="middle" font-size="13" font-weight="700" fill="#166534">Recovery</text>
+    <text x="665" y="978" text-anchor="middle" font-size="10" fill="#15803d">deterministic replay</text>
+    <line x1="570" y1="987" x2="760" y2="987" stroke="#86efac"/>
+    <text x="570" y="1003" font-size="10" fill="#14532d">• Load latest snapshot</text>
+    <text x="570" y="1018" font-size="10" fill="#14532d">• Replay segments &gt; snap.lsn</text>
+    <text x="570" y="1033" font-size="10" fill="#14532d">• Skip torn frames silently</text>
+    <text x="570" y="1048" font-size="10" fill="#14532d">• No embedder needed</text>
+    <text x="570" y="1063" font-size="10" fill="#14532d">  (vectors are in WAL)</text>
+    <text x="570" y="1078" font-size="10" fill="#14532d">• Tombstones honoured</text>
+
+    <!-- Storage -->
+    <rect x="790" y="940" width="250" height="145" rx="8" fill="#ffffff" stroke="#16a34a"/>
+    <text x="915" y="962" text-anchor="middle" font-size="13" font-weight="700" fill="#166534">Storage layout</text>
+    <text x="915" y="978" text-anchor="middle" font-size="10" fill="#15803d">/var/lib/nebula/&lt;node&gt;/</text>
+    <line x1="805" y1="987" x2="1025" y2="987" stroke="#86efac"/>
+    <text x="805" y="1003" font-size="10" fill="#14532d">wal/0000000001.nwal</text>
+    <text x="805" y="1018" font-size="10" fill="#14532d">wal/0000000002.nwal</text>
+    <text x="805" y="1033" font-size="10" fill="#14532d">snapshots/snap-00042.bin</text>
+    <text x="805" y="1048" font-size="10" fill="#14532d">snapshots/snap-00043.bin.tmp</text>
+    <text x="805" y="1063" font-size="10" fill="#14532d">cluster/follower.cursor</text>
+    <text x="805" y="1078" font-size="10" fill="#14532d">audit/audit.log (append-only)</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- LAYER 6: HA / CLUSTER / REPLICATION                           -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="1080" y="880" width="460" height="220" rx="12" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
+    <text x="1100" y="908" font-size="15" font-weight="700" fill="#991b1b">Cluster · HA · Replication</text>
+    <text x="1100" y="926" font-size="11" fill="#b91c1c">Leader / follower (declarative · NEBULA_NODE_ROLE). Single writer, N readers. Followers tail WAL via gRPC stream.</text>
+
+    <!-- leader -->
+    <rect x="1100" y="940" width="190" height="60" rx="8" fill="#ffffff" stroke="#dc2626"/>
+    <text x="1195" y="960" text-anchor="middle" font-size="12" font-weight="700" fill="#991b1b">Leader</text>
+    <text x="1195" y="976" text-anchor="middle" font-size="10" fill="#b91c1c">accepts writes · serves WAL</text>
+    <text x="1195" y="990" text-anchor="middle" font-size="10" fill="#b91c1c">ReplicationService (gRPC)</text>
+
+    <!-- follower 1 -->
+    <rect x="1310" y="940" width="210" height="60" rx="8" fill="#ffffff" stroke="#dc2626"/>
+    <text x="1415" y="960" text-anchor="middle" font-size="12" font-weight="700" fill="#991b1b">Follower N (multi-region)</text>
+    <text x="1415" y="976" text-anchor="middle" font-size="10" fill="#b91c1c">read-only · 409 on writes</text>
+    <text x="1415" y="990" text-anchor="middle" font-size="10" fill="#b91c1c">persistent WAL cursor</text>
+
+    <!-- arrow leader->follower -->
+    <line x1="1290" y1="970" x2="1310" y2="970" stroke="#dc2626" stroke-width="2" marker-end="url(#arr-red)"/>
+
+    <text x="1100" y="1020" font-size="10" font-weight="600" fill="#991b1b">Failover model</text>
+    <text x="1100" y="1035" font-size="10" fill="#b91c1c">• Promote follower → flip NEBULA_NODE_ROLE=leader, restart</text>
+    <text x="1100" y="1050" font-size="10" fill="#b91c1c">• Cursor durable → resume from last applied LSN, no re-stream</text>
+    <text x="1100" y="1065" font-size="10" fill="#b91c1c">• /admin/replication shows lag · /admin/cluster/nodes peer probe</text>
+    <text x="1100" y="1080" font-size="10" fill="#b91c1c">• DNS / LB swings reads → nearest healthy follower (multi-region)</text>
+  </g>
+
+  <!-- arrows from durability into cluster -->
+  <line x1="1040" y1="990" x2="1095" y2="990" stroke="#16a34a" stroke-width="2" marker-end="url(#arr-green)"/>
+  <text x="1067" y="985" text-anchor="middle" font-size="9" fill="#166534">tail</text>
+
+  <!-- ============================================================= -->
+  <!-- LAYER 7: OBSERVABILITY + INTELLIGENT REBALANCING + DEPLOY     -->
+  <!-- ============================================================= -->
+  <g>
+    <rect x="60" y="1130" width="1480" height="190" rx="12" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+    <text x="80" y="1158" font-size="15" font-weight="700" fill="#854d0e">Observability · intelligent routing · packaging</text>
+
+    <rect x="85" y="1175" width="280" height="130" rx="8" fill="#ffffff" stroke="#ca8a04"/>
+    <text x="225" y="1196" text-anchor="middle" font-size="12" font-weight="700" fill="#854d0e">Telemetry pipeline</text>
+    <line x1="100" y1="1205" x2="350" y2="1205" stroke="#fde68a"/>
+    <text x="100" y="1221" font-size="10" fill="#713f12">• /metrics: req count · latency p50/p95</text>
+    <text x="100" y="1236" font-size="10" fill="#713f12">• embed-cache hit rate (L1 / L2)</text>
+    <text x="100" y="1251" font-size="10" fill="#713f12">• RAG TTFT histogram</text>
+    <text x="100" y="1266" font-size="10" fill="#713f12">• replication lag gauge</text>
+    <text x="100" y="1281" font-size="10" fill="#713f12">• Prometheus scrape · Grafana dashboards</text>
+    <text x="100" y="1296" font-size="10" fill="#713f12">• /admin/logs/stream → SSE tracing</text>
+
+    <rect x="380" y="1175" width="290" height="130" rx="8" fill="#ffffff" stroke="#ca8a04"/>
+    <text x="525" y="1196" text-anchor="middle" font-size="12" font-weight="700" fill="#854d0e">Intelligent rebalancing</text>
+    <line x1="395" y1="1205" x2="655" y2="1205" stroke="#fde68a"/>
+    <text x="395" y="1221" font-size="10" fill="#713f12">• Embedding cache: hot keys promote L1</text>
+    <text x="395" y="1236" font-size="10" fill="#713f12">• SQL result cache: per-query LRU</text>
+    <text x="395" y="1251" font-size="10" fill="#713f12">• HNSW: re-link on heavy delete (compact)</text>
+    <text x="395" y="1266" font-size="10" fill="#713f12">• Rate limiter: per-tenant token buckets</text>
+    <text x="395" y="1281" font-size="10" fill="#713f12">• Read traffic steered to healthy followers</text>
+    <text x="395" y="1296" font-size="10" fill="#713f12">  via DNS/LB health probes (/healthz)</text>
+
+    <rect x="685" y="1175" width="290" height="130" rx="8" fill="#ffffff" stroke="#ca8a04"/>
+    <text x="830" y="1196" text-anchor="middle" font-size="12" font-weight="700" fill="#854d0e">Speed &amp; performance</text>
+    <line x1="700" y1="1205" x2="965" y2="1205" stroke="#fde68a"/>
+    <text x="700" y="1221" font-size="10" fill="#713f12">• Single Rust binary · zero-copy paths</text>
+    <text x="700" y="1236" font-size="10" fill="#713f12">• Tokio async; one runtime serves all 3 protocols</text>
+    <text x="700" y="1251" font-size="10" fill="#713f12">• HNSW sub-ms ANN at &gt;100k vectors</text>
+    <text x="700" y="1266" font-size="10" fill="#713f12">• L1 embedding cache → memcpy hit, no RPC</text>
+    <text x="700" y="1281" font-size="10" fill="#713f12">• SSE first-byte before LLM finishes</text>
+    <text x="700" y="1296" font-size="10" fill="#713f12">• 60-conn smoke load p95 under budget</text>
+
+    <rect x="990" y="1175" width="280" height="130" rx="8" fill="#ffffff" stroke="#ca8a04"/>
+    <text x="1130" y="1196" text-anchor="middle" font-size="12" font-weight="700" fill="#854d0e">High availability</text>
+    <line x1="1005" y1="1205" x2="1255" y2="1205" stroke="#fde68a"/>
+    <text x="1005" y="1221" font-size="10" fill="#713f12">• Stateless edge — N replicas behind LB</text>
+    <text x="1005" y="1236" font-size="10" fill="#713f12">• Per-node WAL · no shared FS</text>
+    <text x="1005" y="1251" font-size="10" fill="#713f12">• Multi-region followers · tail over WAN</text>
+    <text x="1005" y="1266" font-size="10" fill="#713f12">• Redis layer optional · cache outage transparent</text>
+    <text x="1005" y="1281" font-size="10" fill="#713f12">• Graceful degrade: Mock LLM if upstream down</text>
+    <text x="1005" y="1296" font-size="10" fill="#713f12">• Zero-downtime rolling deploys (followers first)</text>
+
+    <rect x="1285" y="1175" width="240" height="130" rx="8" fill="#ffffff" stroke="#ca8a04"/>
+    <text x="1405" y="1196" text-anchor="middle" font-size="12" font-weight="700" fill="#854d0e">Packaging</text>
+    <line x1="1300" y1="1205" x2="1510" y2="1205" stroke="#fde68a"/>
+    <text x="1300" y="1221" font-size="10" fill="#713f12">• Multi-arch Docker images</text>
+    <text x="1300" y="1236" font-size="10" fill="#713f12">  bwalia/nebula-server</text>
+    <text x="1300" y="1251" font-size="10" fill="#713f12">  bwalia/nebula-showcase</text>
+    <text x="1300" y="1266" font-size="10" fill="#713f12">• Helm chart deploy/helm/nebuladb</text>
+    <text x="1300" y="1281" font-size="10" fill="#713f12">• docker-compose demo stack</text>
+    <text x="1300" y="1296" font-size="10" fill="#713f12">• 124 tests · clippy gate · nightly E2E</text>
+  </g>
+</svg>

@@ -6,6 +6,12 @@ HNSW vector index, a pluggable embedder, a multi-tier embedding
 cache, and a streaming RAG endpoint — plus a React showcase app
 that demos the whole thing end-to-end.
 
+![NebulaDB end-to-end architecture](docs/architecture.png)
+
+> See [`docs/architecture.svg`](docs/architecture.svg) for the
+> source diagram, and [`docs/durability-architecture.svg`](docs/durability-architecture.svg)
+> for a deeper view of the WAL + snapshot + recovery path.
+
 - **124 tests passing**, clippy-clean on Rust stable.
 - **Nightly GitHub Actions** run the unit suite *and* the full
   docker-compose stack against real Ollama models; see

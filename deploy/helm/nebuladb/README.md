@@ -4,6 +4,13 @@ Single chart that deploys NebulaDB + the showcase admin UI on
 Kubernetes. Optional Redis subchart for the second-tier embedding
 cache.
 
+![NebulaDB architecture](../../../docs/architecture.png)
+
+For the full system view (clients, edge middleware, query planes,
+core engines, durability, replication, HA), see the
+[architecture diagram](../../../docs/architecture.svg) in the repo
+root `docs/` directory.
+
 ## Install
 
 ```bash
