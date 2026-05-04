@@ -11,6 +11,7 @@
 #   redis          -> localhost:6379         (embedding cache)
 #   prometheus     -> http://localhost:9090  (scrape + query)
 #   grafana        -> http://localhost:3000  (admin / admin)
+#   gatus          -> http://localhost:8280  (stack status page)
 #
 # First run pulls two Ollama models into the `ollama-models` volume:
 # `llama3` (chat) and `nomic-embed-text` (embeddings). Slow the first
@@ -360,6 +361,44 @@ services:
         limits:
           cpus: "0.25"
           memory: 64m
+
+  # ---------------------------------------------------------------------------
+  # Gatus: lightweight status page that probes every other service in the
+  # stack. Useful to tell at a glance "what's up?" without clicking
+  # through Prometheus / Grafana / container logs. Config is read-only
+  # mounted so edits happen in git, not inside the container.
+  # ---------------------------------------------------------------------------
+  gatus:
+    image: twinproduction/gatus:latest
+    container_name: nebula-gatus
+    <<: [*default-restart, *default-logging]
+    ports:
+      # 8280 host-side: 8080 is NebulaDB's, 9090 is Prometheus,
+      # 3000 is Grafana. 8280 is a memorable "next to Gatus"
+      # (the image defaults to 8080 container-side).
+      - "${NEBULA_GATUS_HOST_PORT:-8280}:8080"
+    volumes:
+      - ./deploy/gatus/config.yaml:/config/config.yaml:ro
+    environment:
+      GATUS_CONFIG_PATH: "/config/config.yaml"
+    depends_on:
+      # Start order only — Gatus handles downed targets gracefully
+      # (they just turn red), which is the whole point. We don't
+      # wait on condition: service_healthy here because Gatus being
+      # up even when half the stack is down is a feature.
+      nebula-server:
+        condition: service_started
+    healthcheck:
+      # Gatus's own health endpoint.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 96m
 
   grafana:
     image: grafana/grafana:latest

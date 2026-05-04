@@ -1,0 +1,141 @@
+# Gatus configuration for the NebulaDB demo stack.
+#
+# Gatus is a status-page + uptime checker. This config wires one
+# endpoint per service in the compose stack so the dashboard at
+# http://localhost:8280 gives an at-a-glance view of what's up.
+#
+# Endpoints are grouped by role. Each check uses the service-name
+# DNS inside the `nebuladb` compose network — Gatus runs inside
+# that network and talks to peers by name, exactly like our own
+# nebula-server talks to Ollama / Redis.
+#
+# Conventions:
+#   - HTTP services are probed by their public liveness endpoint
+#     (`/healthz`, `/api/health`, `/-/ready` — mirrors the
+#     healthcheck commands in docker-compose.yml).
+#   - Internal services without HTTP (Redis) use a TCP probe.
+#   - Ollama's HTTP path `/api/tags` returns 200 even before a model
+#     is pulled — same signal the compose healthcheck relies on.
+#   - The follower is listed but tagged with `client-group: replication`
+#     so the tile shows up only when the compose `replication`
+#     profile is active. Gatus will still try to reach it; failures
+#     are the expected state for the default single-node demo.
+#
+# Interval defaults to 10s everywhere — short enough to catch a
+# flake, infrequent enough not to drown dev laptops in probes.
+
+storage:
+  # In-memory only. A restart wipes the uptime history, which is
+  # fine for a demo stack. Swap for `type: sqlite` + a volume to
+  # retain history across restarts.
+  type: memory
+
+metrics: true
+
+ui:
+  title: "NebulaDB stack"
+  header: "NebulaDB demo stack — service status"
+  description: "Live status of every container in the compose network"
+
+endpoints:
+  # ---------------------------------------------------------------------------
+  # NebulaDB core
+  # ---------------------------------------------------------------------------
+  - name: nebula-server (REST)
+    group: NebulaDB
+    url: "http://nebula-server:8080/healthz"
+    interval: 10s
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY].status == ok"
+      - "[RESPONSE_TIME] < 1000"
+    alerts: []
+
+  - name: nebula-server (gRPC)
+    group: NebulaDB
+    # gRPC has no plain-HTTP probe; a TCP connect is enough to show
+    # the listener is accepting connections.
+    url: "tcp://nebula-server:50051"
+    interval: 10s
+    conditions:
+      - "[CONNECTED] == true"
+
+  - name: nebula-server (pgwire)
+    group: NebulaDB
+    url: "tcp://nebula-server:5432"
+    interval: 10s
+    conditions:
+      - "[CONNECTED] == true"
+
+  - name: nebula-server /metrics
+    group: NebulaDB
+    url: "http://nebula-server:8080/metrics"
+    interval: 30s
+    conditions:
+      - "[STATUS] == 200"
+      # Sanity: the metrics body should carry at least one of our
+      # own counters. Catches a "metrics endpoint up but blank" bug.
+      - "[BODY] == pat(*nebula_requests_total*)"
+
+  - name: nebula-follower (REST)
+    group: NebulaDB (replication profile)
+    url: "http://nebula-follower:8080/healthz"
+    interval: 15s
+    # Expected to be Down in the default demo — the follower only
+    # runs under `--profile replication`. Gatus still shows the tile;
+    # it's useful to watch go green when the profile is on.
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY].status == ok"
+
+  # ---------------------------------------------------------------------------
+  # AI sidecars
+  # ---------------------------------------------------------------------------
+  - name: Ollama (LLM + embeddings)
+    group: AI sidecars
+    url: "http://ollama:11434/api/tags"
+    interval: 15s
+    conditions:
+      - "[STATUS] == 200"
+    alerts: []
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+  - name: Redis (embed cache)
+    group: Infrastructure
+    # Redis speaks RESP, not HTTP — a TCP connect proves the daemon
+    # is accepting, and redis-cli's own healthcheck already runs
+    # INFO-level checks inside the container.
+    url: "tcp://redis:6379"
+    interval: 10s
+    conditions:
+      - "[CONNECTED] == true"
+
+  - name: Prometheus (scrape + query)
+    group: Observability
+    url: "http://prometheus:9090/-/ready"
+    interval: 15s
+    conditions:
+      - "[STATUS] == 200"
+
+  - name: Grafana (dashboards)
+    group: Observability
+    url: "http://grafana:3000/api/health"
+    interval: 15s
+    conditions:
+      - "[STATUS] == 200"
+      # Grafana's /api/health returns a JSON body {"database":"ok",...};
+      # we assert the DB portion because an unhealthy DB is the
+      # usual failure mode.
+      - "[BODY].database == ok"
+
+  # ---------------------------------------------------------------------------
+  # Demo UI
+  # ---------------------------------------------------------------------------
+  - name: Showcase UI
+    group: Demo
+    url: "http://showcase:80/"
+    interval: 30s
+    conditions:
+      - "[STATUS] == 200"
