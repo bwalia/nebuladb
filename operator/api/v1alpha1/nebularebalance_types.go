@@ -7,17 +7,20 @@ import (
 // RebalanceType enumerates the coordination flows this operator can drive.
 //
 // Standard  — simple scale event: adjust follower count, wait for followers
-//             to catch up via the leader's WAL tail. Fully supported.
+//
+//	to catch up via the leader's WAL tail. Fully supported.
 //
 // Failover  — leader is unreachable: promote a healthy follower by flipping
-//             its NEBULA_NODE_ROLE env from "follower" to "leader" on the
-//             follower StatefulSet and detaching it from the failed leader.
-//             Fully supported given the operator-managed topology.
+//
+//	its NEBULA_NODE_ROLE env from "follower" to "leader" on the
+//	follower StatefulSet and detaching it from the failed leader.
+//	Fully supported given the operator-managed topology.
 //
 // Swap      — paired old/new pod data migration. Requires a swap rebalance
-//             engine in NebulaDB which does NOT exist today. The controller
-//             accepts the CR, transitions to NotImplemented, and emits a
-//             warning event. Kept for forward compatibility.
+//
+//	engine in NebulaDB which does NOT exist today. The controller
+//	accepts the CR, transitions to NotImplemented, and emits a
+//	warning event. Kept for forward compatibility.
 //
 // +kubebuilder:validation:Enum=Standard;Failover;Swap
 type RebalanceType string

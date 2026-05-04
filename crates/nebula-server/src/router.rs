@@ -56,6 +56,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/stats", get(admin_stats))
         .route("/admin/slow", get(admin_slow))
         .route("/admin/durability", get(admin_durability))
+        .route("/admin/version", get(admin_version))
         .route("/admin/snapshot", post(admin_snapshot))
         .route("/admin/wal/compact", post(admin_wal_compact))
         .route("/admin/bucket/:bucket/empty", post(admin_empty_bucket))
@@ -104,6 +105,13 @@ struct Health {
     docs: usize,
     dim: usize,
     model: String,
+    /// Server crate version from Cargo. Stable across restarts; the
+    /// operator uses this to detect an upgrade has taken effect without
+    /// having to shell into the pod.
+    version: &'static str,
+    /// Git sha at build time when exposed via the `NEBULADB_GIT_SHA`
+    /// environment variable during `cargo build`. `"unknown"` otherwise.
+    git_commit: &'static str,
 }
 
 async fn healthz(State(s): State<AppState>) -> Json<Health> {
@@ -112,6 +120,8 @@ async fn healthz(State(s): State<AppState>) -> Json<Health> {
         docs: s.index.len(),
         dim: s.index.dim(),
         model: s.index.embedder_model().to_string(),
+        version: crate::build_info::VERSION,
+        git_commit: crate::build_info::GIT_COMMIT,
     })
 }
 
@@ -682,6 +692,32 @@ async fn admin_durability(State(s): State<AppState>) -> Json<DurabilityInfo> {
         persistent: s.index.is_persistent(),
         data_dir: s.index.data_dir().map(|p| p.display().to_string()),
         wal: s.index.wal_stats(),
+    })
+}
+
+#[derive(Serialize)]
+struct VersionInfo {
+    /// Cargo package version — matches the git tag on releases.
+    version: &'static str,
+    /// Short git sha when baked in at build time, `"unknown"` otherwise.
+    git_commit: &'static str,
+    /// Build date when baked in at build time.
+    build_date: &'static str,
+    /// Target OS / architecture the binary was compiled for.
+    os: &'static str,
+    arch: &'static str,
+}
+
+/// Full build identity. Used by the Kubernetes operator to verify an
+/// upgrade has taken effect inside the pod, and by `nebula-ctl`-style
+/// tooling for version-compatibility checks before issuing admin calls.
+async fn admin_version() -> Json<VersionInfo> {
+    Json(VersionInfo {
+        version: crate::build_info::VERSION,
+        git_commit: crate::build_info::GIT_COMMIT,
+        build_date: crate::build_info::BUILD_DATE,
+        os: crate::build_info::OS,
+        arch: crate::build_info::ARCH,
     })
 }
 

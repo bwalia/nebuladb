@@ -51,6 +51,11 @@ type Health struct {
 	Docs   int64  `json:"docs"`
 	Dim    int    `json:"dim"`
 	Model  string `json:"model"`
+	// Version is the CARGO_PKG_VERSION of the server crate. Added in
+	// NebulaDB 0.1.1+. Older servers will leave this empty.
+	Version string `json:"version,omitempty"`
+	// GitCommit is the short sha baked in at build time, or "unknown".
+	GitCommit string `json:"git_commit,omitempty"`
 }
 
 // Healthz probes GET /healthz.
@@ -64,12 +69,12 @@ func (c *Client) Healthz(ctx context.Context) (*Health, error) {
 
 // ReplicationStatus mirrors GET /api/v1/admin/replication.
 type ReplicationStatus struct {
-	Role                string `json:"role"`
-	LocalNewest         *int64 `json:"local_newest,omitempty"`
-	FollowerApplied     *int64 `json:"follower_applied,omitempty"`
-	LeaderNewestProbed  *int64 `json:"leader_newest_probed,omitempty"`
-	LagBytes            *int64 `json:"lag_bytes,omitempty"`
-	Behind              bool   `json:"behind,omitempty"`
+	Role               string `json:"role"`
+	LocalNewest        *int64 `json:"local_newest,omitempty"`
+	FollowerApplied    *int64 `json:"follower_applied,omitempty"`
+	LeaderNewestProbed *int64 `json:"leader_newest_probed,omitempty"`
+	LagBytes           *int64 `json:"lag_bytes,omitempty"`
+	Behind             bool   `json:"behind,omitempty"`
 }
 
 func (c *Client) Replication(ctx context.Context) (*ReplicationStatus, error) {
@@ -104,8 +109,8 @@ func (c *Client) ClusterNodes(ctx context.Context) (*ClusterNodesResponse, error
 
 // SnapshotResponse is returned by POST /api/v1/admin/snapshot.
 type SnapshotResponse struct {
-	Path            string `json:"path"`
-	WalSeqCaptured  int64  `json:"wal_seq_captured"`
+	Path           string `json:"path"`
+	WalSeqCaptured int64  `json:"wal_seq_captured"`
 }
 
 func (c *Client) Snapshot(ctx context.Context) (*SnapshotResponse, error) {
@@ -132,10 +137,10 @@ func (c *Client) EmptyBucket(ctx context.Context, bucket string) error {
 
 // BucketStats is one entry from GET /api/v1/admin/buckets.
 type BucketStats struct {
-	Name        string   `json:"name"`
-	Docs        int64    `json:"docs"`
-	ParentDocs  int64    `json:"parent_docs"`
-	TopKeys     []string `json:"top_keys,omitempty"`
+	Name       string   `json:"name"`
+	Docs       int64    `json:"docs"`
+	ParentDocs int64    `json:"parent_docs"`
+	TopKeys    []string `json:"top_keys,omitempty"`
 }
 
 type BucketsResponse struct {
@@ -169,6 +174,25 @@ func (c *Client) UpsertDoc(ctx context.Context, bucket string, req UpsertDocRequ
 	}
 	path := fmt.Sprintf("/api/v1/bucket/%s/doc", url.PathEscape(bucket))
 	return c.do(ctx, http.MethodPost, path, req, nil)
+}
+
+// BuildInfo mirrors GET /api/v1/admin/version. Gives the operator an
+// authoritative "what version is this pod actually running?" answer
+// independent of the image tag, which can be retagged in-place.
+type BuildInfo struct {
+	Version   string `json:"version"`
+	GitCommit string `json:"git_commit"`
+	BuildDate string `json:"build_date"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+}
+
+func (c *Client) Version(ctx context.Context) (*BuildInfo, error) {
+	var out BuildInfo
+	if err := c.do(ctx, http.MethodGet, "/api/v1/admin/version", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Durability is GET /api/v1/admin/durability — used to detect whether the

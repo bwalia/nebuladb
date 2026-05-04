@@ -25,14 +25,14 @@ import (
 //
 // State machine:
 //
-//   Pending        -> snapshot leader (if SnapshotBefore)    -> Preflight
-//   Preflight      -> dispatch by Type
-//                       Standard -> update cluster.followers  -> Rebalancing
-//                       Failover -> promote follower          -> Promoting
-//                       Swap     -> NotImplemented            -> terminal
-//   Rebalancing    -> wait for cluster follower ready count   -> Draining
-//   Promoting      -> patch chosen follower's role env        -> Draining
-//   Draining       -> optional compact WAL                    -> Completed
+//	Pending        -> snapshot leader (if SnapshotBefore)    -> Preflight
+//	Preflight      -> dispatch by Type
+//	                    Standard -> update cluster.followers  -> Rebalancing
+//	                    Failover -> promote follower          -> Promoting
+//	                    Swap     -> NotImplemented            -> terminal
+//	Rebalancing    -> wait for cluster follower ready count   -> Draining
+//	Promoting      -> patch chosen follower's role env        -> Draining
+//	Draining       -> optional compact WAL                    -> Completed
 //
 // The CR is single-fire: once Completed or Failed, no further work happens.
 type NebulaRebalanceReconciler struct {

@@ -48,6 +48,27 @@ async fn healthz_is_public() {
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_string(res.into_body()).await;
     assert!(body.contains("\"status\":\"ok\""));
+    // Operator reads this to detect an upgrade took effect — guarantee
+    // the field is present and matches the crate version.
+    let expected = format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"));
+    assert!(body.contains(&expected), "body missing version: {body}");
+}
+
+#[tokio::test]
+async fn admin_version_reports_build_identity() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(Request::get("/api/v1/admin/version").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    // We don't assert the git sha (may be `"unknown"` in CI builds) but
+    // the fields must be present so clients can parse stably.
+    assert!(body.contains("\"version\""));
+    assert!(body.contains("\"git_commit\""));
+    assert!(body.contains("\"os\""));
+    assert!(body.contains("\"arch\""));
 }
 
 #[tokio::test]

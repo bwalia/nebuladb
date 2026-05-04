@@ -54,7 +54,7 @@ database catches up.
 | Follower write rejection (REST)    | Supported           | Reconciler routes writes to leader service only       |
 | Swap rebalance engine              | **Not implemented** | `NebulaRebalance` Type=Swap moves to `NotImplemented` |
 | Cross-region active-active         | **Not supported**   | Regions are app-side routed; CR provisions per-region |
-| Version introspection API          | **Missing**         | Operator tracks version via image tag only            |
+| Version introspection API          | Supported (0.1.1+)  | Operator probes `/healthz.version` + `/admin/version` |
 | gRPC / pgwire follower write guard | **Missing**         | Operator omits GRPC_BIND/PG_BIND on follower pods     |
 
 ## Quick start

@@ -14,6 +14,7 @@
 //! All handlers return structured JSON errors with stable `code` strings.
 
 pub mod audit;
+pub mod build_info;
 pub mod cluster;
 pub mod error;
 pub mod jwt;

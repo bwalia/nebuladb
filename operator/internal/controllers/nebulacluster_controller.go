@@ -26,12 +26,12 @@ import (
 
 // NebulaClusterReconciler owns the full cluster lifecycle. The flow:
 //
-//   1. Ensure finalizer present.
-//   2. For each region: reconcile leader STS, follower STS, services.
-//   3. Probe each pod's /healthz and populate NodeStatus list.
-//   4. Handle version drift — snapshot leader, then delete leader pod to let
-//      STS recreate with new image (OnDelete update strategy).
-//   5. Update status.phase + conditions.
+//  1. Ensure finalizer present.
+//  2. For each region: reconcile leader STS, follower STS, services.
+//  3. Probe each pod's /healthz and populate NodeStatus list.
+//  4. Handle version drift — snapshot leader, then delete leader pod to let
+//     STS recreate with new image (OnDelete update strategy).
+//  5. Update status.phase + conditions.
 //
 // Rationale for OnDelete + explicit pod delete: NebulaDB is single-writer
 // per node. A rolling STS update would bring a new pod up while the old one
@@ -181,11 +181,11 @@ func (r *NebulaClusterReconciler) upsertStatefulSet(ctx context.Context, owner *
 // reconcileUpgrade handles version bumps. For each region leader pod, if the
 // running pod's image tag differs from spec.version, we:
 //
-//   1. Snapshot via POST /admin/snapshot (so followers have a clean recovery
-//      point if they were mid-replay).
-//   2. Update the STS template (already done via upsertStatefulSet).
-//   3. Delete the leader pod — STS OnDelete strategy recreates it with the
-//      new image.
+//  1. Snapshot via POST /admin/snapshot (so followers have a clean recovery
+//     point if they were mid-replay).
+//  2. Update the STS template (already done via upsertStatefulSet).
+//  3. Delete the leader pod — STS OnDelete strategy recreates it with the
+//     new image.
 //
 // Followers are handled via the same pattern but without the snapshot step.
 // The SwapRebalance strategy is accepted but logs "not implemented" and
@@ -209,7 +209,7 @@ func (r *NebulaClusterReconciler) upgradeRegion(ctx context.Context, cluster *ne
 	// Only act once the STS spec carries the new version — upsertStatefulSet
 	// already did that before this point.
 	leaderPod := fmt.Sprintf("%s-0", leaderSTSName(cluster, region.Name))
-	needs, err := r.podNeedsRefresh(ctx, cluster.Namespace, leaderPod, cluster.Spec.Version)
+	needs, err := r.podNeedsRefresh(ctx, cluster, region.Name, leaderPod, cluster.Spec.Version)
 	if err != nil {
 		return err
 	}
@@ -237,7 +237,7 @@ func (r *NebulaClusterReconciler) upgradeRegion(ctx context.Context, cluster *ne
 	if cluster.Spec.Replication.Enabled && cluster.Spec.Replication.Followers > 0 {
 		for i := int32(0); i < cluster.Spec.Replication.Followers; i++ {
 			pod := fmt.Sprintf("%s-%d", followerSTSName(cluster, region.Name), i)
-			needs, err := r.podNeedsRefresh(ctx, cluster.Namespace, pod, cluster.Spec.Version)
+			needs, err := r.podNeedsRefresh(ctx, cluster, region.Name, pod, cluster.Spec.Version)
 			if err != nil {
 				return err
 			}
@@ -254,20 +254,46 @@ func (r *NebulaClusterReconciler) upgradeRegion(ctx context.Context, cluster *ne
 	return nil
 }
 
-func (r *NebulaClusterReconciler) podNeedsRefresh(ctx context.Context, ns, name, wantVersion string) (bool, error) {
+// podNeedsRefresh returns true when the pod is running a version other
+// than spec.version. We check three independent signals in order:
+//
+//  1. Live /healthz.version — authoritative for NebulaDB >= 0.1.1, and
+//     robust against image tags that were re-pushed in place.
+//  2. Pod label app.kubernetes.io/version — set by the operator when
+//     creating the STS template; matches image tag intent.
+//  3. Container image suffix — last-resort string match.
+//
+// The live probe requires a reachable pod; when it fails we fall back
+// to the label/image checks so reconciliation still converges.
+func (r *NebulaClusterReconciler) podNeedsRefresh(ctx context.Context, cluster *nebulav1alpha1.NebulaCluster, region, name, wantVersion string) (bool, error) {
 	var pod corev1.Pod
-	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &pod); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: name}, &pod); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
 		return false, err
 	}
+
+	// (1) Live probe — most accurate. Ignore errors: unreachable pods
+	// are handled by the fallback checks.
+	role := ComponentLeader
+	if pod.Labels[LabelRole] == ComponentFollower {
+		role = ComponentFollower
+	}
+	svc := headlessServiceName(cluster, region, role)
+	url := fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:8080", name, svc, cluster.Namespace)
+	if health, err := r.NebulaFactory(url).WithTimeout(2 * time.Second).Healthz(ctx); err == nil && health.Version != "" {
+		return health.Version != wantVersion, nil
+	}
+
+	// (2) Label check.
 	if pod.Labels[LabelAppVersion] == wantVersion {
 		return false, nil
 	}
+
+	// (3) Image suffix.
 	for _, c := range pod.Spec.Containers {
 		if c.Name == "nebula" {
-			// Tag must match what we expect; fallback is the label check above.
 			return !endsWithTag(c.Image, wantVersion), nil
 		}
 	}
@@ -365,6 +391,9 @@ func (r *NebulaClusterReconciler) probePod(ctx context.Context, cluster *nebulav
 	}
 	ns.Healthy = health.Status == "ok"
 	ns.Docs = health.Docs
+	// NebulaDB 0.1.1+ exposes its build version on /healthz. Older builds
+	// leave it empty, in which case we fall back to the image-tag label.
+	ns.Version = health.Version
 
 	if role == ComponentFollower {
 		// Follower lag probing is best-effort. A busy cluster can reject us
