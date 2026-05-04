@@ -403,6 +403,21 @@ impl Hnsw {
         Ok(())
     }
 
+    /// Return a copy of the vector associated with `id`, if present.
+    /// Used by the bucket export path so a rebalance target can ingest
+    /// raw vectors without re-running the embedder. Skips tombstoned
+    /// nodes since the caller is about to delete the source.
+    pub fn get_vector(&self, id: Id) -> Option<Vec<f32>> {
+        let g = self.inner.read();
+        let node = *g.by_external.get(&id)? as usize;
+        if g.tombstones.contains(&(node as u32)) {
+            return None;
+        }
+        let start = node * self.dim;
+        let end = start + self.dim;
+        g.vectors.get(start..end).map(|s| s.to_vec())
+    }
+
     /// k-NN search. `ef` overrides the configured `ef_search`; pass
     /// `None` to use the default. `ef` is clamped to `>= k`.
     pub fn search(&self, query: &[f32], k: usize, ef: Option<usize>) -> Result<Vec<SearchResult>> {

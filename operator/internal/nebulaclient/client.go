@@ -176,6 +176,67 @@ func (c *Client) UpsertDoc(ctx context.Context, bucket string, req UpsertDocRequ
 	return c.do(ctx, http.MethodPost, path, req, nil)
 }
 
+// ExportedDoc mirrors nebula_index::ExportedDoc — the wire shape for
+// bucket export/import. The vector is an f32 slice; JSON renders it
+// as a flat array of numbers. The target index must have a matching
+// `dim()` or the import is rejected before any WAL append.
+type ExportedDoc struct {
+	ExternalID  string                 `json:"external_id"`
+	Text        string                 `json:"text"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	ParentDocID *string                `json:"parent_doc_id,omitempty"`
+	ChunkIndex  *int                   `json:"chunk_index,omitempty"`
+	Vector      []float32              `json:"vector"`
+}
+
+type ExportBucketResponse struct {
+	Bucket string        `json:"bucket"`
+	Dim    int           `json:"dim"`
+	Model  string        `json:"model"`
+	Count  int           `json:"count"`
+	Docs   []ExportedDoc `json:"docs"`
+}
+
+// ExportBucket streams every document in `bucket` from this node,
+// including the pre-embedded vector. Pair with ImportBucket on a
+// different node to drive a rebalance swap.
+func (c *Client) ExportBucket(ctx context.Context, bucket string) (*ExportBucketResponse, error) {
+	if bucket == "" {
+		return nil, errors.New("bucket required")
+	}
+	path := fmt.Sprintf("/api/v1/admin/bucket/%s/export", url.PathEscape(bucket))
+	var out ExportBucketResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type ImportBucketRequest struct {
+	Dim  int           `json:"dim"`
+	Docs []ExportedDoc `json:"docs"`
+}
+
+type ImportBucketResponse struct {
+	Bucket    string `json:"bucket"`
+	Imported  int    `json:"imported"`
+	Requested int    `json:"requested"`
+}
+
+// ImportBucket ingests a batch of pre-embedded documents. Fails fast
+// on dim mismatch so a half-imported state is not possible.
+func (c *Client) ImportBucket(ctx context.Context, bucket string, req ImportBucketRequest) (*ImportBucketResponse, error) {
+	if bucket == "" {
+		return nil, errors.New("bucket required")
+	}
+	path := fmt.Sprintf("/api/v1/admin/bucket/%s/import", url.PathEscape(bucket))
+	var out ImportBucketResponse
+	if err := c.do(ctx, http.MethodPost, path, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // BuildInfo mirrors GET /api/v1/admin/version. Gives the operator an
 // authoritative "what version is this pod actually running?" answer
 // independent of the image tag, which can be retagged in-place.

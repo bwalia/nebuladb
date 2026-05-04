@@ -1369,3 +1369,135 @@ async fn admin_replication_reports_cursors() {
     );
     assert!(body.contains("\"byte_offset\":4096"));
 }
+
+/// Source-of-truth test for the bucket export/import swap primitive.
+/// Seeds one bucket, exports it, spins up a *second* independent
+/// index, imports the export, and asserts the second index can serve
+/// identical reads. This is the shape the operator's rebalance
+/// coordinator drives across pods during a swap rebalance.
+#[tokio::test]
+async fn bucket_export_import_roundtrip() {
+    // Source index — populate via the normal upsert path so the
+    // HNSW, WAL-apply, and metadata code paths all get exercised.
+    let source = app_state(&[]);
+    let source_app = build_router(source.clone());
+    for (i, text) in [
+        "zero trust networking",
+        "dns failover strategies",
+        "kubernetes gitops",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let res = source_app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/bucket/migratable/doc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"id":"{i}","text":"{text}"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "insert {i} failed");
+    }
+
+    // Export from the source.
+    let res = source_app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/admin/bucket/migratable/export")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let export_body = body_string(res.into_body()).await;
+    // Sanity: body mentions all three ids and reports count:3.
+    assert!(export_body.contains("\"count\":3"), "got {export_body}");
+    for i in 0..3 {
+        assert!(
+            export_body.contains(&format!("\"external_id\":\"{i}\"")),
+            "missing id {i} in export: {export_body}"
+        );
+    }
+
+    // Fresh target index — different MockEmbedder instance, same dim.
+    // This is the important bit: imports must not call the embedder,
+    // so the target's embedder being distinct from the source's is
+    // exactly what we want to prove.
+    let target = app_state(&[]);
+    let target_app = build_router(target.clone());
+
+    // Drop the wrapper envelope and forward just `docs` into the
+    // import endpoint. We also drop `model` from the payload so the
+    // target isn't forced to match the source's embedder name.
+    let parsed: serde_json::Value = serde_json::from_str(&export_body).unwrap();
+    let docs = parsed.get("docs").cloned().unwrap();
+    let import_payload = serde_json::json!({
+        "dim": parsed["dim"],
+        "docs": docs,
+    });
+    let res = target_app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/admin/bucket/migratable/import")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&import_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let import_body = body_string(res.into_body()).await;
+    assert!(
+        import_body.contains("\"imported\":3"),
+        "import underreported: {import_body}"
+    );
+
+    // Prove the target now answers the same queries as the source.
+    for i in 0..3 {
+        let res = target_app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/bucket/migratable/doc/{i}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "target missing doc {i}");
+    }
+}
+
+/// Dim-mismatch guard: a client sending vectors of the wrong length
+/// should be rejected before any WAL append so the bucket never
+/// ends up partially imported.
+#[tokio::test]
+async fn bucket_import_rejects_wrong_dim() {
+    let state = app_state(&[]);
+    let app = build_router(state);
+    // MockEmbedder here uses dim=32 (per app_state). Send a vector of
+    // length 16 and expect a 400.
+    let payload = serde_json::json!({
+        "dim": 32,
+        "docs": [{
+            "external_id": "x",
+            "text": "hi",
+            "vector": vec![0.1_f32; 16],
+        }]
+    });
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/admin/bucket/b/import")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}

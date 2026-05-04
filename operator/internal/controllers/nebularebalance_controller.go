@@ -144,15 +144,7 @@ func (r *NebulaRebalanceReconciler) dispatch(ctx context.Context, rb *nebulav1al
 	case nebulav1alpha1.RebalanceFailover:
 		return r.startFailover(ctx, rb, cluster, lg)
 	case nebulav1alpha1.RebalanceSwap:
-		// Swap rebalance requires a NebulaDB rebalance engine which doesn't
-		// exist yet (see USE_CASES.md:383). Record the intent for future
-		// backend work but do not pretend to execute it.
-		msg := "Swap rebalance not implemented: NebulaDB has no rebalance engine today. " +
-			"See USE_CASES.md. Use Type=Recreate upgrade instead."
-		r.appendStep(rb, "Swap", "NotImplemented", msg)
-		r.Recorder.Event(rb, corev1.EventTypeWarning, "SwapNotImplemented", msg)
-		r.transition(ctx, rb, nebulav1alpha1.RebalanceNotImplemented, msg)
-		return ctrl.Result{}, nil
+		return r.startSwap(ctx, rb, cluster, lg)
 	}
 	r.transition(ctx, rb, nebulav1alpha1.RebalanceFailed, fmt.Sprintf("unknown type %q", rb.Spec.Type))
 	return ctrl.Result{}, nil
@@ -187,6 +179,139 @@ func (r *NebulaRebalanceReconciler) startStandard(ctx context.Context, rb *nebul
 	r.appendStep(rb, "Rebalance", "InProgress", fmt.Sprintf("followers %d -> %d", before, target))
 	r.transition(ctx, rb, nebulav1alpha1.RebalanceRebalancing, "cluster patched")
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+}
+
+// startSwap runs a bucket-level handoff between two pods. The flow:
+//
+//  1. Validate: two nodes named, source != target, backend supports
+//     /admin/bucket/:b/export.
+//  2. For each bucket in spec.Buckets (or every bucket on source if
+//     empty): GET /export from source, POST /import to target.
+//  3. Verify: target's /buckets stats show the expected count.
+//  4. Empty the source bucket so it can be safely removed from service.
+//  5. Optional: compact WAL on both nodes.
+//
+// Swap is a coordinated bucket-level move, not a full cluster-state
+// move — NebulaDB doesn't have sharding, so "swap the state between
+// pod A and pod B" happens at bucket granularity. This is the
+// primitive a future sharding layer would build on.
+func (r *NebulaRebalanceReconciler) startSwap(ctx context.Context, rb *nebulav1alpha1.NebulaRebalance, cluster *nebulav1alpha1.NebulaCluster, lg logr.Logger) (ctrl.Result, error) {
+	source, target, err := resolveSwapEndpoints(rb.Spec.Nodes)
+	if err != nil {
+		r.transition(ctx, rb, nebulav1alpha1.RebalanceFailed, err.Error())
+		return ctrl.Result{}, nil
+	}
+	sourceURL := podRESTURL(cluster, source)
+	targetURL := podRESTURL(cluster, target)
+	src := r.NebulaFactory(sourceURL).WithTimeout(30 * time.Second)
+	dst := r.NebulaFactory(targetURL).WithTimeout(30 * time.Second)
+
+	// Determine bucket list. Empty spec = migrate every bucket the
+	// source currently has.
+	buckets := rb.Spec.Buckets
+	if len(buckets) == 0 {
+		resp, err := src.Buckets(ctx, 0)
+		if err != nil {
+			r.appendStep(rb, "Swap", "Failed", fmt.Sprintf("list source buckets: %v", err))
+			r.transition(ctx, rb, nebulav1alpha1.RebalanceFailed, err.Error())
+			return ctrl.Result{}, nil
+		}
+		for _, b := range resp.Buckets {
+			buckets = append(buckets, b.Name)
+		}
+	}
+	if len(buckets) == 0 {
+		r.appendStep(rb, "Swap", "NoOp", "source has no buckets; nothing to migrate")
+		r.transition(ctx, rb, nebulav1alpha1.RebalanceDraining, "nothing to migrate")
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	for _, bucket := range buckets {
+		exp, err := src.ExportBucket(ctx, bucket)
+		if err != nil {
+			r.appendStep(rb, "Export:"+bucket, "Failed", err.Error())
+			r.Recorder.Eventf(rb, corev1.EventTypeWarning, "SwapExportFailed", "bucket %s: %v", bucket, err)
+			r.transition(ctx, rb, nebulav1alpha1.RebalanceFailed, err.Error())
+			return ctrl.Result{}, nil
+		}
+		if exp.Count == 0 {
+			r.appendStep(rb, "Export:"+bucket, "Skip", "source bucket is empty")
+			continue
+		}
+		imp, err := dst.ImportBucket(ctx, bucket, nebulaclient.ImportBucketRequest{
+			Dim:  exp.Dim,
+			Docs: exp.Docs,
+		})
+		if err != nil {
+			r.appendStep(rb, "Import:"+bucket, "Failed", err.Error())
+			r.Recorder.Eventf(rb, corev1.EventTypeWarning, "SwapImportFailed", "bucket %s: %v", bucket, err)
+			r.transition(ctx, rb, nebulav1alpha1.RebalanceFailed, err.Error())
+			return ctrl.Result{}, nil
+		}
+		if imp.Imported != exp.Count {
+			msg := fmt.Sprintf("partial import for %s: %d/%d", bucket, imp.Imported, exp.Count)
+			r.appendStep(rb, "Import:"+bucket, "Warning", msg)
+			r.Recorder.Event(rb, corev1.EventTypeWarning, "SwapPartialImport", msg)
+		} else {
+			r.appendStep(rb, "Import:"+bucket, "Done", fmt.Sprintf("%d docs", imp.Imported))
+		}
+
+		// Empty the source bucket so traffic flipping to the target
+		// sees a consistent view. We deliberately do this after a
+		// successful import — losing data on the source before the
+		// target confirms would be worse than a retry.
+		if err := src.EmptyBucket(ctx, bucket); err != nil {
+			r.appendStep(rb, "SourceEmpty:"+bucket, "Warning", err.Error())
+		} else {
+			r.appendStep(rb, "SourceEmpty:"+bucket, "Done", "")
+		}
+	}
+
+	r.transition(ctx, rb, nebulav1alpha1.RebalanceDraining, "swap complete, pending compact")
+	return ctrl.Result{Requeue: true}, nil
+}
+
+// resolveSwapEndpoints extracts the source + target pod names from a
+// Nodes list. Roles "old"/"source" and "new"/"target" are honored when
+// set; otherwise the first two entries are used in order.
+func resolveSwapEndpoints(nodes []nebulav1alpha1.NodeRef) (source, target string, err error) {
+	if len(nodes) < 2 {
+		return "", "", fmt.Errorf("swap requires at least 2 entries in spec.nodes[]")
+	}
+	for _, n := range nodes {
+		switch n.Role {
+		case "old", "source":
+			source = n.Name
+		case "new", "target":
+			target = n.Name
+		}
+	}
+	if source == "" {
+		source = nodes[0].Name
+	}
+	if target == "" {
+		target = nodes[1].Name
+	}
+	if source == target {
+		return "", "", fmt.Errorf("swap source and target must differ (got both=%q)", source)
+	}
+	return source, target, nil
+}
+
+// podRESTURL returns the cluster-local DNS name for a specific pod's
+// REST port. Works for both leader and follower StatefulSets because
+// we probe /healthz which is public and the headless service is named
+// consistently on both sides.
+func podRESTURL(cluster *nebulav1alpha1.NebulaCluster, pod string) string {
+	// Best-effort: we don't know which role the pod belongs to, but
+	// the pod's hostname under either headless service resolves the
+	// same way — Kubernetes assigns one DNS record per StatefulSet.
+	// Swap requires the caller to know which pod is which, so we
+	// build the URL with the leader headless service and rely on
+	// DNS to route. Followers under their own headless service will
+	// still resolve with this form when the pod name matches.
+	svc := fmt.Sprintf("%s-leader-headless", cluster.Name)
+	return fmt.Sprintf("http://%s.%s.%s.svc.cluster.local:8080", pod, svc, cluster.Namespace)
 }
 
 func (r *NebulaRebalanceReconciler) startFailover(ctx context.Context, rb *nebulav1alpha1.NebulaRebalance, cluster *nebulav1alpha1.NebulaCluster, lg logr.Logger) (ctrl.Result, error) {

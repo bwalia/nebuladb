@@ -74,6 +74,26 @@ pub struct Hit {
     pub metadata: serde_json::Value,
 }
 
+/// Wire shape for bucket export / import. Unlike `Document`, the
+/// vector is serialized — the whole point of this type is to move
+/// pre-embedded data between nodes without re-running the embedder.
+///
+/// Stable JSON field names so a future `nebula-ctl` or external tool
+/// can produce the same shape and feed it into `import_bucket`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportedDoc {
+    pub external_id: String,
+    pub text: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    #[serde(default)]
+    pub parent_doc_id: Option<String>,
+    #[serde(default)]
+    pub chunk_index: Option<usize>,
+    /// Raw embedding. Length must equal the target index's `dim()`.
+    pub vector: Vec<f32>,
+}
+
 /// Return of a successful `TextIndex::snapshot()`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SnapshotOutcome {
@@ -782,6 +802,92 @@ impl TextIndex {
             let _ = self.hnsw.delete(*id);
         }
         n
+    }
+
+    /// Snapshot every document in `bucket` as an `ExportedDoc`, with
+    /// the vector pulled directly from HNSW so a receiving node can
+    /// re-insert without calling the embedder again. Empty buckets
+    /// return an empty Vec — we don't error on absence since bucket
+    /// names are implicit.
+    ///
+    /// The result is a point-in-time snapshot: we hold the inner
+    /// read lock for the whole scan, so concurrent writes are
+    /// serialized behind the export. Export is primarily used by
+    /// the operator's rebalance coordinator; at that point writes
+    /// should already be routed elsewhere, so this contention
+    /// trade-off is acceptable.
+    pub fn export_bucket(&self, bucket: &str) -> Vec<ExportedDoc> {
+        let g = self.inner.read();
+        let mut out = Vec::new();
+        for (id, doc) in g.docs.iter() {
+            if doc.bucket != bucket {
+                continue;
+            }
+            // Re-fetch the vector from the HNSW arena. The in-memory
+            // `Document::vector` is populated on fresh writes but
+            // empty after snapshot restore — exporting from the HNSW
+            // is correct in both cases.
+            let vector = self.hnsw.get_vector(*id).unwrap_or_default();
+            out.push(ExportedDoc {
+                external_id: doc.external_id.clone(),
+                text: doc.text.clone(),
+                metadata: doc.metadata.clone(),
+                parent_doc_id: doc.parent_doc_id.clone(),
+                chunk_index: doc.chunk_index,
+                vector,
+            });
+        }
+        out
+    }
+
+    /// Import a batch of already-embedded documents into `bucket`.
+    /// Mirrors the semantics of `upsert_text` but skips the embedder
+    /// call, which is what makes it safe for rebalance handoff
+    /// (the vector bytes are authoritative — no drift from embedder
+    /// version differences between source and target).
+    ///
+    /// WAL-appended in full: replay recreates the imported state.
+    /// Vector dim is validated per item; mismatched vectors abort
+    /// the whole batch to avoid a half-imported bucket.
+    pub fn import_bucket(&self, bucket: &str, docs: &[ExportedDoc]) -> Result<usize> {
+        if bucket.is_empty() {
+            return Err(IndexError::Invalid("bucket must be non-empty".into()));
+        }
+        for d in docs {
+            if d.vector.len() != self.dim() {
+                return Err(IndexError::Embed(EmbedError::DimensionMismatch {
+                    expected: self.dim(),
+                    actual: d.vector.len(),
+                }));
+            }
+            if d.external_id.is_empty() {
+                return Err(IndexError::Invalid("exported doc has empty id".into()));
+            }
+        }
+        let mut inserted = 0;
+        for d in docs {
+            // WAL record + in-memory apply, one document at a time.
+            // A crash mid-import replays cleanly because each record
+            // is self-contained.
+            self.wal_append(&WalRecord::UpsertText {
+                bucket: bucket.to_string(),
+                external_id: d.external_id.clone(),
+                text: d.text.clone(),
+                vector: d.vector.clone(),
+                metadata_json: d.metadata.to_string(),
+            })?;
+            self.apply_upsert_single(
+                bucket,
+                &d.external_id,
+                &d.text,
+                d.vector.clone(),
+                d.metadata.clone(),
+                d.parent_doc_id.clone(),
+                d.chunk_index,
+            )?;
+            inserted += 1;
+        }
+        Ok(inserted)
     }
 
     /// One full-scan pass over the corpus. Cheap at demo scale

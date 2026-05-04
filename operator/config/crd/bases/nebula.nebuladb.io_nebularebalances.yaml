@@ -58,6 +58,9 @@ spec:
                     name: {type: string}
                     role: {type: string}
               targetFollowers: {type: integer}
+              buckets:
+                type: array
+                items: {type: string}
               snapshotBefore: {type: boolean, default: true}
               compactAfter: {type: boolean, default: true}
               timeoutSeconds: {type: integer, default: 1800}

@@ -332,6 +332,10 @@ func (in *NebulaRebalanceSpec) DeepCopyInto(out *NebulaRebalanceSpec) {
 		v := *in.TargetFollowers
 		out.TargetFollowers = &v
 	}
+	if in.Buckets != nil {
+		out.Buckets = make([]string, len(in.Buckets))
+		copy(out.Buckets, in.Buckets)
+	}
 }
 
 func (in *RebalanceStep) DeepCopyInto(out *RebalanceStep) {

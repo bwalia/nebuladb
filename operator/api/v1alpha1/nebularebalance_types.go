@@ -75,6 +75,12 @@ type NebulaRebalanceSpec struct {
 	// replication.followers value atomically.
 	TargetFollowers *int32 `json:"targetFollowers,omitempty"`
 
+	// Buckets, required for Type=Swap, lists the bucket names to migrate
+	// from the "old" node to the "new" node. Empty means all buckets.
+	// Each bucket is exported from the source, imported into the target,
+	// then emptied on the source once confirmed.
+	Buckets []string `json:"buckets,omitempty"`
+
 	// SnapshotBefore runs POST /admin/snapshot before mutating topology.
 	// +kubebuilder:default=true
 	SnapshotBefore bool `json:"snapshotBefore,omitempty"`
