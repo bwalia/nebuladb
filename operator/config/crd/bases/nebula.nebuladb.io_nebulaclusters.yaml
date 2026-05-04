@@ -143,6 +143,18 @@ spec:
                     topologySpreadConstraints:
                       type: array
                       x-kubernetes-preserve-unknown-fields: true
+                    crossRegion:
+                      type: object
+                      properties:
+                        enabled: {type: boolean, default: true}
+                        peers:
+                          type: array
+                          items:
+                            type: object
+                            required: [region, grpcURL]
+                            properties:
+                              region: {type: string}
+                              grpcURL: {type: string}
               upgradeStrategy:
                 type: string
                 enum: [Recreate, SwapRebalance]

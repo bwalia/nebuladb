@@ -220,3 +220,46 @@ async fn follower_rejects_delete() {
     assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     assert_eq!(err.message(), READ_ONLY_FOLLOWER);
 }
+
+/// gRPC DocumentService rejects writes to a bucket whose home is
+/// elsewhere, even on a leader node. Mirrors the REST 421 behaviour.
+#[tokio::test]
+async fn grpc_rejects_wrong_home_region_upsert() {
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    // Seed bucket with home=us-east-1.
+    index
+        .upsert_text(
+            "catalog",
+            "__nebuladb_operator_seed__",
+            "seed",
+            serde_json::json!({"home_region": "us-east-1", "home_epoch": 1u64}),
+        )
+        .await
+        .unwrap();
+    let chunker: Arc<dyn Chunker> = Arc::new(FixedSizeChunker::new(20, 0).unwrap());
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlm::default());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let state = GrpcState::new(index, llm, chunker);
+    let handle = tokio::spawn(async move {
+        // Serve with region=us-west-2 — different from the bucket's home.
+        nebula_grpc::serve_with_region(state, addr, Some("us-west-2".into())).await.unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let ch = channel(addr).await;
+    let mut docs = DocumentServiceClient::new(ch);
+    let err = docs
+        .upsert_document(UpsertDocumentRequest {
+            bucket: "catalog".into(),
+            doc_id: "x".into(),
+            text: "hi".into(),
+            metadata_json: "".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("wrong_home_region"), "got {err:?}");
+    handle.abort();
+}

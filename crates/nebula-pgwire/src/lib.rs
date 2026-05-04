@@ -60,9 +60,29 @@ pub async fn serve_with_role(
     addr: std::net::SocketAddr,
     role: NodeRole,
 ) -> std::io::Result<()> {
+    serve_with_role_and_region(engine, addr, role, None).await
+}
+
+/// Full multi-region variant. When `region` is `Some`, DML writes
+/// via pgwire are rejected with SQLSTATE 25006 and the detail
+/// `wrong_home_region` — pgwire doesn't do per-bucket routing today,
+/// and a cross-region pgwire write is almost always a misconfigured
+/// client. REST/gRPC are the recommended write paths for multi-region.
+pub async fn serve_with_role_and_region(
+    engine: Arc<SqlEngine>,
+    addr: std::net::SocketAddr,
+    role: NodeRole,
+    region: Option<String>,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    tracing::info!("nebula-pgwire listening on {addr} (role={role:?})");
-    let factory = Arc::new(NebulaHandlers { engine, role });
+    tracing::info!(
+        "nebula-pgwire listening on {addr} (role={role:?}, region={region:?})",
+    );
+    let factory = Arc::new(NebulaHandlers {
+        engine,
+        role,
+        region,
+    });
     loop {
         let (socket, peer) = listener.accept().await?;
         tracing::debug!(%peer, "pgwire: new connection");
@@ -85,6 +105,8 @@ pub async fn serve_with_role(
 struct NebulaHandlers {
     engine: Arc<SqlEngine>,
     role: NodeRole,
+    /// `Some` enables the multi-region write guard (see module doc).
+    region: Option<String>,
 }
 
 impl PgWireHandlerFactory for NebulaHandlers {
@@ -97,6 +119,7 @@ impl PgWireHandlerFactory for NebulaHandlers {
         Arc::new(NebulaQueryHandler {
             engine: Arc::clone(&self.engine),
             role: self.role,
+            region: self.region.clone(),
         })
     }
 
@@ -116,6 +139,10 @@ impl PgWireHandlerFactory for NebulaHandlers {
 pub struct NebulaQueryHandler {
     engine: Arc<SqlEngine>,
     role: NodeRole,
+    /// When set, DML is rejected with SQLSTATE 25006 + message
+    /// `wrong_home_region`. See `serve_with_role_and_region` for the
+    /// rationale (pgwire has no cheap per-bucket routing yet).
+    region: Option<String>,
 }
 
 /// Return true for SQL statements that mutate state. A best-effort
@@ -182,6 +209,21 @@ impl SimpleQueryHandler for NebulaQueryHandler {
                 "ERROR".to_string(),
                 "25006".to_string(),
                 "read_only_follower: this NebulaDB node is a follower and refuses writes".to_string(),
+            ))));
+        }
+
+        // Multi-region guard: pgwire doesn't route DML per-bucket,
+        // so a configured region means "this port is read-only for
+        // cross-region clients." Local tools that know they own the
+        // bucket can use REST/gRPC which does per-bucket checking.
+        if self.region.is_some() && is_mutating_statement(trimmed) {
+            return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                "ERROR".to_string(),
+                "25006".to_string(),
+                format!(
+                    "wrong_home_region: pgwire writes disabled on region={} — use REST or gRPC for per-bucket routing",
+                    self.region.as_deref().unwrap_or("?"),
+                ),
             ))));
         }
 

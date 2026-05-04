@@ -51,6 +51,10 @@ pub struct GrpcState {
     /// role is [`NodeRole::Follower`]. Parity with the REST
     /// `guard_writes_on_follower` middleware.
     pub role: NodeRole,
+    /// Optional region name; when set, DocumentService rejects writes
+    /// to buckets whose home_region is not this value. `None` disables
+    /// the check (single-region behaviour).
+    pub region: Option<String>,
 }
 
 impl GrpcState {
@@ -73,7 +77,15 @@ impl GrpcState {
             llm,
             chunker,
             role,
+            region: None,
         }
+    }
+
+    /// Bolt-on setter — keeps `with_role` signature compatible with
+    /// existing callers that don't care about multi-region yet.
+    pub fn with_region(mut self, region: Option<String>) -> Self {
+        self.region = region;
+        self
     }
 
     /// The WAL handle this state will replicate from, if any.
@@ -92,6 +104,41 @@ pub const READ_ONLY_FOLLOWER: &str = "read_only_follower";
 
 fn follower_write_error() -> Status {
     Status::failed_precondition(READ_ONLY_FOLLOWER)
+}
+
+/// Emitted when gRPC rejects a write because the bucket's home region
+/// is elsewhere. Mirrors the REST `wrong_home_region` contract so
+/// clients can branch on a single constant across transports.
+pub const WRONG_HOME_REGION: &str = "wrong_home_region";
+
+/// Check the home-region guard for a gRPC write. Returns `Ok(())` to
+/// proceed and `Err(Status::FailedPrecondition)` to reject. A `None`
+/// region on the state disables the check (single-region mode); an
+/// absent home on the bucket also lets the write through (implicit
+/// single-region bucket).
+///
+/// The error message embeds the expected region so that a typed
+/// client can parse and retry without re-reading the seed doc.
+fn check_home_region(state: &GrpcState, bucket: &str) -> Result<(), Status> {
+    let Some(my_region) = state.region.as_deref() else {
+        return Ok(());
+    };
+    let Some(doc) = state.index.get(bucket, __seed_doc_id()) else {
+        return Ok(());
+    };
+    let home = doc
+        .metadata
+        .as_object()
+        .and_then(|m| m.get("home_region"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    match home {
+        None => Ok(()),
+        Some(h) if h == my_region => Ok(()),
+        Some(h) => Err(Status::failed_precondition(format!(
+            "{WRONG_HOME_REGION}: bucket home is {h}"
+        ))),
+    }
 }
 
 // ---- Document ----
@@ -123,6 +170,7 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
         if r.text.trim().is_empty() {
             return Err(Status::invalid_argument("text required"));
         }
+        check_home_region(&self.state, &r.bucket)?;
         let metadata = parse_metadata(&r.metadata_json)?;
         let chunks = self
             .state
@@ -151,6 +199,7 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
             return Err(follower_write_error());
         }
         let r = req.into_inner();
+        check_home_region(&self.state, &r.bucket)?;
         let removed = self
             .state
             .index
@@ -662,6 +711,9 @@ pub async fn serve_with_region(
     addr: std::net::SocketAddr,
     source_region: Option<String>,
 ) -> Result<(), tonic::transport::Error> {
+    // Attach the region to GrpcState so DocumentService's home-region
+    // guard has something to compare against.
+    let state = state.with_region(source_region.clone());
     let wal = state.wal();
     let xr_index = state.index.clone();
     tonic::transport::Server::builder()

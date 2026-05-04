@@ -3,6 +3,7 @@ package controllers
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	nebulav1alpha1 "github.com/bwalia/nebuladb-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -170,11 +171,29 @@ func buildEnv(cluster *nebulav1alpha1.NebulaCluster, region nebulav1alpha1.Regio
 		{Name: "NEBULA_NODE_ROLE", Value: role},
 	}
 
+	// Multi-region identity. Set NEBULA_REGION so even single-region
+	// deployments get a stable name in status output.
+	if region.Name != "" {
+		env = append(env, corev1.EnvVar{Name: "NEBULA_REGION", Value: region.Name})
+	}
+
 	if role == ComponentLeader {
 		env = append(env,
 			corev1.EnvVar{Name: "NEBULA_GRPC_BIND", Value: "0.0.0.0:50051"},
 			corev1.EnvVar{Name: "NEBULA_PG_BIND", Value: "0.0.0.0:5432"},
 		)
+		// Cross-region peers: only leaders consume remote streams.
+		// Followers tail their local leader, not remote regions.
+		if region.CrossRegion != nil && region.CrossRegion.Enabled && len(region.CrossRegion.Peers) > 0 {
+			pairs := make([]string, 0, len(region.CrossRegion.Peers))
+			for _, p := range region.CrossRegion.Peers {
+				pairs = append(pairs, fmt.Sprintf("%s=%s", p.Region, p.GRPCURL))
+			}
+			env = append(env, corev1.EnvVar{
+				Name:  "NEBULA_CROSS_REGION_PEERS",
+				Value: strings.Join(pairs, ","),
+			})
+		}
 	}
 	if role == ComponentFollower {
 		env = append(env,

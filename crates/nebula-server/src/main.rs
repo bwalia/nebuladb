@@ -365,9 +365,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let pg_addr: SocketAddr = addr.parse()?;
             let engine = Arc::clone(&sql_engine);
             let pg_role = cluster.role;
-            tracing::info!("nebula-pgwire listening on {pg_addr} (role={pg_role:?})");
+            let pg_region = cluster.region.clone();
+            tracing::info!(
+                "nebula-pgwire listening on {pg_addr} (role={pg_role:?}, region={pg_region:?})",
+            );
             Some(tokio::spawn(async move {
-                if let Err(e) = nebula_pgwire::serve_with_role(engine, pg_addr, pg_role).await {
+                if let Err(e) = nebula_pgwire::serve_with_role_and_region(
+                    engine, pg_addr, pg_role, pg_region,
+                )
+                .await
+                {
                     tracing::error!(error = %e, "pgwire server exited");
                 }
             }))

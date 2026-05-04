@@ -97,6 +97,36 @@ type RegionSpec struct {
 
 	// TopologySpreadConstraints to pin pods to zones/racks within the region.
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+
+	// CrossRegion enables and configures the inbound WAL tail from
+	// other regions into this region's leader. Empty disables cross-
+	// region for this region — it still owns its own buckets but
+	// doesn't mirror buckets homed elsewhere.
+	CrossRegion *CrossRegionSpec `json:"crossRegion,omitempty"`
+}
+
+// CrossRegionSpec describes how one region participates in multi-region.
+type CrossRegionSpec struct {
+	// Enabled toggles the inbound consumer. When false the operator
+	// still sets NEBULA_REGION so the outbound service knows its
+	// own name; consumers simply aren't spawned.
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Peers is the list of remote regions whose leaders this region
+	// should tail. Each entry becomes one NEBULA_CROSS_REGION_PEERS
+	// entry in the leader pod's env.
+	Peers []CrossRegionPeerSpec `json:"peers,omitempty"`
+}
+
+// CrossRegionPeerSpec is one remote-region endpoint.
+type CrossRegionPeerSpec struct {
+	// +kubebuilder:validation:Required
+	// Region name, matches the remote's `regions[].name`.
+	Region string `json:"region"`
+	// +kubebuilder:validation:Required
+	// gRPC URL of the remote region's leader service.
+	GRPCURL string `json:"grpcURL"`
 }
 
 // AutoscalingSpec drives HPA-style follower scaling. Leader is always 1.

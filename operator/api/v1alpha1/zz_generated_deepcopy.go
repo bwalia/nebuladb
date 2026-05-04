@@ -74,7 +74,27 @@ func (in *RegionSpec) DeepCopyInto(out *RegionSpec) {
 			in.TopologySpreadConstraints[i].DeepCopyInto(&out.TopologySpreadConstraints[i])
 		}
 	}
+	if in.CrossRegion != nil {
+		out.CrossRegion = in.CrossRegion.DeepCopy()
+	}
 }
+
+func (in *CrossRegionSpec) DeepCopyInto(out *CrossRegionSpec) {
+	*out = *in
+	if in.Peers != nil {
+		out.Peers = make([]CrossRegionPeerSpec, len(in.Peers))
+		copy(out.Peers, in.Peers)
+	}
+}
+func (in *CrossRegionSpec) DeepCopy() *CrossRegionSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(CrossRegionSpec)
+	in.DeepCopyInto(out)
+	return out
+}
+func (in *CrossRegionPeerSpec) DeepCopyInto(out *CrossRegionPeerSpec) { *out = *in }
 
 // ---------- AutoscalingSpec ----------
 

@@ -84,6 +84,10 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
+            crate::middleware::guard_wrong_home_region,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             crate::middleware::audit_writes,
         ))
         .route_layer(axum::middleware::from_fn_with_state(
