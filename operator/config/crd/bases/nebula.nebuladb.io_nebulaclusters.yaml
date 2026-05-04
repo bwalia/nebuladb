@@ -1,0 +1,197 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nebulaclusters.nebula.nebuladb.io
+spec:
+  group: nebula.nebuladb.io
+  names:
+    kind: NebulaCluster
+    listKind: NebulaClusterList
+    plural: nebulaclusters
+    singular: nebulacluster
+    shortNames: [nc, nebcluster]
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    additionalPrinterColumns:
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Version
+      type: string
+      jsonPath: .status.currentVersion
+    - name: Ready
+      type: integer
+      jsonPath: .status.readyReplicas
+    - name: Desired
+      type: integer
+      jsonPath: .status.desiredReplicas
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          apiVersion: {type: string}
+          kind: {type: string}
+          metadata: {type: object}
+          spec:
+            type: object
+            required: [version]
+            properties:
+              version: {type: string}
+              image: {type: string, default: "ghcr.io/bwalia/nebuladb"}
+              imagePullPolicy: {type: string, default: "IfNotPresent"}
+              imagePullSecrets:
+                type: array
+                items:
+                  type: object
+                  properties: {name: {type: string}}
+              storage:
+                type: object
+                properties:
+                  size: {type: string, default: "10Gi"}
+                  storageClassName: {type: string}
+                  accessModes:
+                    type: array
+                    items: {type: string}
+              resources:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              replication:
+                type: object
+                properties:
+                  enabled: {type: boolean, default: false}
+                  followers: {type: integer, default: 1, minimum: 0}
+                  restartPolicyOnLag: {type: boolean, default: false}
+                  lagByteThreshold: {type: integer}
+              ai:
+                type: object
+                properties:
+                  enabled: {type: boolean, default: true}
+                  embeddingModel: {type: string}
+                  embeddingDim: {type: integer}
+                  ollamaURL: {type: string}
+                  llmModel: {type: string}
+                  openAIAPIKeySecretRef:
+                    type: object
+                    required: [name, key]
+                    properties:
+                      name: {type: string}
+                      key: {type: string}
+                  llmOpenAIKeySecretRef:
+                    type: object
+                    required: [name, key]
+                    properties:
+                      name: {type: string}
+                      key: {type: string}
+              autoscaling:
+                type: object
+                properties:
+                  enabled: {type: boolean, default: false}
+                  minFollowers: {type: integer, minimum: 1}
+                  maxFollowers: {type: integer, minimum: 1}
+                  targetCPUUtilization: {type: integer}
+                  targetQPS: {type: integer}
+                  targetStorageUtilization: {type: integer}
+              backup:
+                type: object
+                properties:
+                  enabled: {type: boolean, default: false}
+                  schedule: {type: string}
+                  retain: {type: integer, default: 14}
+                  targetVolumeClaimName: {type: string}
+              security:
+                type: object
+                properties:
+                  apiKeysSecretRef:
+                    type: object
+                    required: [name, key]
+                    properties:
+                      name: {type: string}
+                      key: {type: string}
+                  jwtSecretRef:
+                    type: object
+                    required: [name, key]
+                    properties:
+                      name: {type: string}
+                      key: {type: string}
+                  jwtIssuer: {type: string}
+                  jwtAudience: {type: string}
+                  tlsSecretRef:
+                    type: object
+                    properties: {name: {type: string}}
+              regions:
+                type: array
+                items:
+                  type: object
+                  required: [name]
+                  properties:
+                    name: {type: string}
+                    nodeSelector:
+                      type: object
+                      additionalProperties: {type: string}
+                    tolerations:
+                      type: array
+                      x-kubernetes-preserve-unknown-fields: true
+                    topologySpreadConstraints:
+                      type: array
+                      x-kubernetes-preserve-unknown-fields: true
+                    crossRegion:
+                      type: object
+                      properties:
+                        enabled: {type: boolean, default: true}
+                        peers:
+                          type: array
+                          items:
+                            type: object
+                            required: [region, grpcURL]
+                            properties:
+                              region: {type: string}
+                              grpcURL: {type: string}
+              upgradeStrategy:
+                type: string
+                enum: [Recreate, SwapRebalance]
+                default: Recreate
+              maxUnavailable:
+                x-kubernetes-int-or-string: true
+              extraEnv:
+                type: array
+                x-kubernetes-preserve-unknown-fields: true
+              serviceType:
+                type: string
+                default: ClusterIP
+              podAnnotations:
+                type: object
+                additionalProperties: {type: string}
+              podLabels:
+                type: object
+                additionalProperties: {type: string}
+          status:
+            type: object
+            properties:
+              phase: {type: string}
+              observedGeneration: {type: integer}
+              currentVersion: {type: string}
+              readyReplicas: {type: integer}
+              desiredReplicas: {type: integer}
+              lastSnapshotAt: {type: string, format: date-time}
+              lastSnapshotPath: {type: string}
+              leader:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              followers:
+                type: array
+                x-kubernetes-preserve-unknown-fields: true
+              rebalance:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              conditions:
+                type: array
+                x-kubernetes-preserve-unknown-fields: true

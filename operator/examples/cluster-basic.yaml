@@ -1,0 +1,20 @@
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaCluster
+metadata:
+  name: nebula-demo
+  namespace: nebuladb
+spec:
+  version: "0.1.0"
+  image: ghcr.io/bwalia/nebuladb
+  storage:
+    size: "20Gi"
+  resources:
+    requests: {cpu: 500m, memory: 512Mi}
+    limits:   {cpu: 2, memory: 2Gi}
+  ai:
+    enabled: true
+    embeddingModel: text-embedding-3-small
+    embeddingDim: 1536
+  replication:
+    enabled: false
+    followers: 0

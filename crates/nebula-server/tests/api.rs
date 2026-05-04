@@ -48,6 +48,27 @@ async fn healthz_is_public() {
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_string(res.into_body()).await;
     assert!(body.contains("\"status\":\"ok\""));
+    // Operator reads this to detect an upgrade took effect — guarantee
+    // the field is present and matches the crate version.
+    let expected = format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"));
+    assert!(body.contains(&expected), "body missing version: {body}");
+}
+
+#[tokio::test]
+async fn admin_version_reports_build_identity() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(Request::get("/api/v1/admin/version").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    // We don't assert the git sha (may be `"unknown"` in CI builds) but
+    // the fields must be present so clients can parse stably.
+    assert!(body.contains("\"version\""));
+    assert!(body.contains("\"git_commit\""));
+    assert!(body.contains("\"os\""));
+    assert!(body.contains("\"arch\""));
 }
 
 #[tokio::test]
@@ -1078,8 +1099,10 @@ fn app_state_with_role(role: NodeRole) -> AppState {
     let cluster = Arc::new(ClusterConfig {
         node_id: Some("node-under-test".into()),
         role,
+        region: None,
         leader_url: None,
         peers: Vec::new(),
+        cross_region_peers: Vec::new(),
     });
     let mut state = AppState::new(index, AppConfig::default()).with_cluster(cluster);
     if matches!(role, NodeRole::Follower) {
@@ -1347,4 +1370,358 @@ async fn admin_replication_reports_cursors() {
         "expected seeded cursor to be reported; got {body}"
     );
     assert!(body.contains("\"byte_offset\":4096"));
+}
+
+/// Source-of-truth test for the bucket export/import swap primitive.
+/// Seeds one bucket, exports it, spins up a *second* independent
+/// index, imports the export, and asserts the second index can serve
+/// identical reads. This is the shape the operator's rebalance
+/// coordinator drives across pods during a swap rebalance.
+#[tokio::test]
+async fn bucket_export_import_roundtrip() {
+    // Source index — populate via the normal upsert path so the
+    // HNSW, WAL-apply, and metadata code paths all get exercised.
+    let source = app_state(&[]);
+    let source_app = build_router(source.clone());
+    for (i, text) in [
+        "zero trust networking",
+        "dns failover strategies",
+        "kubernetes gitops",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let res = source_app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/bucket/migratable/doc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"id":"{i}","text":"{text}"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "insert {i} failed");
+    }
+
+    // Export from the source.
+    let res = source_app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/admin/bucket/migratable/export")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let export_body = body_string(res.into_body()).await;
+    // Sanity: body mentions all three ids and reports count:3.
+    assert!(export_body.contains("\"count\":3"), "got {export_body}");
+    for i in 0..3 {
+        assert!(
+            export_body.contains(&format!("\"external_id\":\"{i}\"")),
+            "missing id {i} in export: {export_body}"
+        );
+    }
+
+    // Fresh target index — different MockEmbedder instance, same dim.
+    // This is the important bit: imports must not call the embedder,
+    // so the target's embedder being distinct from the source's is
+    // exactly what we want to prove.
+    let target = app_state(&[]);
+    let target_app = build_router(target.clone());
+
+    // Drop the wrapper envelope and forward just `docs` into the
+    // import endpoint. We also drop `model` from the payload so the
+    // target isn't forced to match the source's embedder name.
+    let parsed: serde_json::Value = serde_json::from_str(&export_body).unwrap();
+    let docs = parsed.get("docs").cloned().unwrap();
+    let import_payload = serde_json::json!({
+        "dim": parsed["dim"],
+        "docs": docs,
+    });
+    let res = target_app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/admin/bucket/migratable/import")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&import_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let import_body = body_string(res.into_body()).await;
+    assert!(
+        import_body.contains("\"imported\":3"),
+        "import underreported: {import_body}"
+    );
+
+    // Prove the target now answers the same queries as the source.
+    for i in 0..3 {
+        let res = target_app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/bucket/migratable/doc/{i}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "target missing doc {i}");
+    }
+}
+
+/// REST wrong-home-region guard: writes to a bucket whose home is
+/// elsewhere return 421 with the expected region in the body. Reads
+/// are allowed anywhere.
+#[tokio::test]
+async fn rest_wrong_home_region_rejects_cross_region_writes() {
+    use nebula_server::ClusterConfig;
+    let state = {
+        let mut s = app_state(&[]);
+        let cluster = Arc::new(ClusterConfig {
+            region: Some("us-west-2".into()),
+            ..ClusterConfig::default()
+        });
+        s = s.with_cluster(cluster);
+        s
+    };
+    let app = build_router(state);
+
+    // Seed a bucket with home_region=us-east-1.
+    let seed = serde_json::json!({
+        "id": "__nebuladb_operator_seed__",
+        "text": "seed",
+        "metadata": {"home_region": "us-east-1", "home_epoch": 1}
+    });
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/catalog/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&seed).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Wait, that write itself should be rejected! The bucket has no
+    // home yet on the first upsert. Re-seed without the middleware
+    // being confused — upsert the seed doc first with no home, then
+    // set the home in a second pass by writing a different doc.
+    // Actually, first upsert creates the seed. Then immediately
+    // trying to write to bucket catalog from us-west-2 should fail.
+    // Let's check the behavior after the seed exists:
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/catalog/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"x","text":"hi"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::MISDIRECTED_REQUEST,
+        "cross-region write must 421"
+    );
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"code\":\"wrong_home_region\""), "got {body}");
+    assert!(body.contains("\"home_region\":\"us-east-1\""));
+
+    // Reads must still work.
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/bucket/catalog/home-region")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// When this node IS the home region, writes go through normally.
+#[tokio::test]
+async fn rest_wrong_home_region_allows_home_writes() {
+    use nebula_server::ClusterConfig;
+    let state = {
+        let mut s = app_state(&[]);
+        let cluster = Arc::new(ClusterConfig {
+            region: Some("us-east-1".into()),
+            ..ClusterConfig::default()
+        });
+        s = s.with_cluster(cluster);
+        s
+    };
+    let app = build_router(state);
+    // Seed with home=us-east-1, which matches this node.
+    let seed = serde_json::json!({
+        "id": "__nebuladb_operator_seed__",
+        "text": "seed",
+        "metadata": {"home_region": "us-east-1", "home_epoch": 1}
+    });
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/catalog/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&seed).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Another write should also go through.
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/bucket/catalog/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"x","text":"hi"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// /admin/replication exposes a per-remote-region view when the
+/// cross-region status hub has entries. Phase 2.2 populates the hub
+/// from a real consumer task; here we populate it manually to lock
+/// in the wire shape.
+#[tokio::test]
+async fn admin_replication_includes_cross_region_remotes() {
+    use nebula_server::ClusterConfig;
+    let state = {
+        let mut s = app_state(&[]);
+        let cluster = Arc::new(ClusterConfig {
+            region: Some("us-east-1".into()),
+            ..ClusterConfig::default()
+        });
+        s = s.with_cluster(cluster);
+        s.cross_region_status.register("us-west-2", "http://u:50051");
+        s.cross_region_status.record_apply("us-west-2", 2, 512);
+        s
+    };
+    let app = build_router(state);
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/replication")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"region\":\"us-east-1\""), "got {body}");
+    assert!(body.contains("\"remotes\""), "got {body}");
+    assert!(body.contains("\"us-west-2\""));
+    assert!(body.contains("\"applied_records\":1"));
+    assert!(body.contains("\"last_applied_segment\":2"));
+}
+
+/// home-region endpoint reports `has_home: false` when no seed doc
+/// is present, letting clients fall back gracefully.
+#[tokio::test]
+async fn home_region_reports_absence_when_unconfigured() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/bucket/anything/home-region")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"has_home\":false"), "got {body}");
+    assert!(body.contains("\"home_epoch\":0"));
+    // node_region falls back to "default" when not configured.
+    assert!(body.contains("\"node_region\":\"default\""));
+}
+
+/// With a seed doc carrying home_region metadata, the endpoint
+/// round-trips the stored values. This is the contract the operator's
+/// failover controller depends on.
+#[tokio::test]
+async fn home_region_round_trips_seed_doc() {
+    let state = app_state(&[]);
+    let app = build_router(state);
+    // Seed the bucket the same way the NebulaBucket controller does.
+    let seed_body = serde_json::json!({
+        "id": "__nebuladb_operator_seed__",
+        "text": "NebulaDB bucket test managed by nebuladb-operator",
+        "metadata": {
+            "kind": "nebuladb-operator-seed",
+            "bucket": "test",
+            "home_region": "us-east-1",
+            "home_epoch": 7,
+            "replicated_to": ["us-west-2"]
+        }
+    });
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/test/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&seed_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Now read back.
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/bucket/test/home-region")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"home_region\":\"us-east-1\""), "got {body}");
+    assert!(body.contains("\"home_epoch\":7"));
+    assert!(body.contains("\"has_home\":true"));
+    assert!(body.contains("us-west-2"));
+}
+
+/// Dim-mismatch guard: a client sending vectors of the wrong length
+/// should be rejected before any WAL append so the bucket never
+/// ends up partially imported.
+#[tokio::test]
+async fn bucket_import_rejects_wrong_dim() {
+    let state = app_state(&[]);
+    let app = build_router(state);
+    // MockEmbedder here uses dim=32 (per app_state). Send a vector of
+    // length 16 and expect a 400.
+    let payload = serde_json::json!({
+        "dim": 32,
+        "docs": [{
+            "external_id": "x",
+            "text": "hi",
+            "vector": vec![0.1_f32; 16],
+        }]
+    });
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/admin/bucket/b/import")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }

@@ -1,0 +1,12 @@
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaRebalance
+metadata:
+  name: scale-to-three
+  namespace: nebuladb
+spec:
+  clusterRef: nebula-prod
+  type: Standard
+  targetFollowers: 3
+  snapshotBefore: true
+  compactAfter: true
+  timeoutSeconds: 1800

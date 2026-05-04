@@ -142,6 +142,136 @@ pub async fn guard_writes_on_follower(
         .into_response()
 }
 
+/// Reject writes targeted at a bucket whose `home_region` is NOT this
+/// node's region. The nebula-client SDK reads the home-region map and
+/// routes writes to the right region; this middleware is the safety
+/// net for clients that skipped the cache or hit the wrong endpoint
+/// directly.
+///
+/// The response carries the expected region in the body so a
+/// retrying client can follow the redirect without a second lookup.
+/// Response code: HTTP 421 (Misdirected Request) — semantically
+/// exactly this situation, and distinct from the 409 the follower
+/// guard uses so clients can tell them apart without parsing bodies.
+///
+/// Scope: only requests matching `/api/v1/bucket/:bucket/...` or
+/// `/api/v1/admin/bucket/:bucket/...` — i.e., paths where the bucket
+/// is visible in the URL. Bulk endpoints that identify the bucket
+/// elsewhere (there aren't any today) would need a body inspection
+/// hook; for now the path-based filter matches the whole write
+/// surface.
+pub async fn guard_wrong_home_region(
+    axum::extract::State(state): axum::extract::State<crate::state::AppState>,
+    req: Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    // Only reject writes. Reads are allowed anywhere.
+    let is_write = !matches!(
+        req.method(),
+        &axum::http::Method::GET | &axum::http::Method::HEAD | &axum::http::Method::OPTIONS
+    );
+    if !is_write {
+        return next.run(req).await;
+    }
+
+    let Some(bucket) = extract_bucket_from_path(req.uri().path()) else {
+        return next.run(req).await;
+    };
+
+    // Look up this bucket's home. If no home is set (single-region
+    // or unconfigured bucket), let the write through — legacy behavior.
+    let hr = state
+        .index
+        .get(bucket, crate::home_region::SEED_DOC_ID)
+        .map(|d| crate::home_region::HomeRegion::from_metadata(&d.metadata))
+        .unwrap_or_default();
+    let Some(home) = hr.region.as_deref() else {
+        return next.run(req).await;
+    };
+
+    // Compare with this node's region. An absent NEBULA_REGION means
+    // the node hasn't opted into multi-region routing — treat as
+    // "don't enforce" rather than rejecting every write.
+    let Some(my_region) = state.cluster.region.as_deref() else {
+        return next.run(req).await;
+    };
+    if my_region == home {
+        return next.run(req).await;
+    }
+
+    // Wrong home. 421 with enough body for a client to re-route.
+    let body = format!(
+        r#"{{"code":"wrong_home_region","error":"bucket home is {home}","home_region":"{home}","home_epoch":{epoch},"node_region":"{my_region}"}}"#,
+        home = home,
+        epoch = hr.epoch,
+        my_region = my_region,
+    );
+    (
+        StatusCode::MISDIRECTED_REQUEST,
+        [(header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
+}
+
+/// Pull `<bucket>` out of the relevant prefixes. Middleware installed
+/// on the nested `/api/v1` router sees paths already stripped to the
+/// `/bucket/...` / `/admin/bucket/...` form, so we match both.
+fn extract_bucket_from_path(path: &str) -> Option<&str> {
+    // Normalize: strip optional /api/v1 so both nested and full-path
+    // callers (tests) work the same way.
+    let rest = path.strip_prefix("/api/v1").unwrap_or(path);
+    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    let rest = if let Some(r) = rest.strip_prefix("admin/bucket/") {
+        r
+    } else {
+        rest.strip_prefix("bucket/")?
+    };
+    let (bucket, _after) = rest.split_once('/').unwrap_or((rest, ""));
+    if bucket.is_empty() {
+        None
+    } else {
+        Some(bucket)
+    }
+}
+
+#[cfg(test)]
+mod bucket_path_tests {
+    use super::extract_bucket_from_path;
+
+    #[test]
+    fn extracts_from_bucket_path() {
+        // Full path (no nest) and nested path (after /api/v1 strip)
+        // both work.
+        assert_eq!(extract_bucket_from_path("/api/v1/bucket/catalog/doc"), Some("catalog"));
+        assert_eq!(extract_bucket_from_path("/bucket/catalog/doc"), Some("catalog"));
+        assert_eq!(extract_bucket_from_path("/bucket/catalog/docs/bulk"), Some("catalog"));
+        assert_eq!(
+            extract_bucket_from_path("/api/v1/admin/bucket/catalog/export"),
+            Some("catalog")
+        );
+        assert_eq!(
+            extract_bucket_from_path("/admin/bucket/catalog/export"),
+            Some("catalog")
+        );
+    }
+
+    #[test]
+    fn returns_none_for_non_bucket_paths() {
+        assert!(extract_bucket_from_path("/api/v1/ai/search").is_none());
+        assert!(extract_bucket_from_path("/ai/search").is_none());
+        assert!(extract_bucket_from_path("/api/v1/admin/snapshot").is_none());
+        assert!(extract_bucket_from_path("/admin/snapshot").is_none());
+        assert!(extract_bucket_from_path("/healthz").is_none());
+    }
+
+    #[test]
+    fn empty_bucket_is_none() {
+        assert!(extract_bucket_from_path("/api/v1/bucket//doc").is_none());
+        assert!(extract_bucket_from_path("/bucket//doc").is_none());
+    }
+}
+
 /// Write-path audit middleware.
 ///
 /// Records method + path + principal + response status after the

@@ -158,6 +158,10 @@ pub struct AppState {
     /// them out as SSE. Always present so the endpoint doesn't
     /// need to worry about None.
     pub log_bus: Arc<LogBus>,
+    /// Cross-region consumer status keyed by remote region name.
+    /// The background task (Phase 2.2) updates this; admin endpoints
+    /// read it. Always present — an empty hub means single-region.
+    pub cross_region_status: crate::cross_region_status::CrossRegionStatusHub,
 }
 
 impl AppState {
@@ -186,6 +190,7 @@ impl AppState {
             cluster: Arc::new(ClusterConfig::default()),
             follower_cursor: None,
             log_bus: Arc::new(LogBus::default()),
+            cross_region_status: crate::cross_region_status::CrossRegionStatusHub::new(),
         }
     }
 

@@ -14,8 +14,11 @@
 //! All handlers return structured JSON errors with stable `code` strings.
 
 pub mod audit;
+pub mod build_info;
 pub mod cluster;
+pub mod cross_region_status;
 pub mod error;
+pub mod home_region;
 pub mod jwt;
 pub mod log_stream;
 pub mod metrics;
@@ -26,7 +29,9 @@ pub mod slow_log;
 pub mod state;
 
 pub use audit::AuditLog;
-pub use cluster::{ClusterConfig, NodeRole, PeerInfo};
+pub use cluster::{ClusterConfig, CrossRegionPeer, NodeRole, PeerInfo};
+pub use cross_region_status::{CrossRegionStatusHub, RemoteRegionStatus};
+pub use home_region::{HomeRegion, SEED_DOC_ID};
 pub use jwt::JwtConfig;
 pub use log_stream::{CapturingSubscriber, LogBus, LogEvent, LogLevel};
 pub use ratelimit::{RateLimitConfig, RateLimiter};

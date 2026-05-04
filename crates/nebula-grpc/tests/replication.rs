@@ -398,3 +398,232 @@ async fn in_memory_leader_rejects_followers() {
         other => panic!("expected Rpc(FailedPrecondition), got {other:?}"),
     }
 }
+
+/// Spawn a gRPC server with a region name so the cross-region service
+/// is active. Used by the tests below that exercise TailCrossRegion.
+async fn spawn_leader_with_region(
+    index: Arc<TextIndex>,
+    region: &str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let chunker: Arc<dyn Chunker> = Arc::new(FixedSizeChunker::new(100, 0).unwrap());
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlm::default());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let state = GrpcState::new(index, llm, chunker);
+    let r = region.to_string();
+    let handle = tokio::spawn(async move {
+        nebula_grpc::serve_with_region(state, addr, Some(r)).await.unwrap();
+    });
+    sleep(Duration::from_millis(100)).await;
+    (addr, handle)
+}
+
+/// Cross-region subscriber receives entries tagged with source region
+/// and the bucket name. The caller's own buckets are filtered out.
+#[tokio::test]
+async fn cross_region_stream_filters_caller_buckets() {
+    use nebula_grpc::pb::{
+        cross_region_replication_service_client::CrossRegionReplicationServiceClient,
+        TailCrossRegionRequest,
+    };
+    use tokio_stream::StreamExt;
+
+    let leader_dir = tempdir().unwrap();
+    let leader = Arc::new(
+        TextIndex::open_persistent(
+            embedder(),
+            Metric::Cosine,
+            HnswConfig::default(),
+            leader_dir.path(),
+        )
+        .unwrap(),
+    );
+    // Two buckets on the source region: `local` (owned here) and
+    // `remote` (owned by the caller, should be filtered out on wire).
+    leader
+        .upsert_text("local", "a", "hello", serde_json::json!({}))
+        .await
+        .unwrap();
+    leader
+        .upsert_text("remote", "b", "world", serde_json::json!({}))
+        .await
+        .unwrap();
+
+    let (addr, _srv) = spawn_leader_with_region(leader, "us-east-1").await;
+    let ch = channel(addr).await;
+    let mut client = CrossRegionReplicationServiceClient::new(ch);
+
+    let resp = client
+        .tail_cross_region(TailCrossRegionRequest {
+            start: None,
+            caller_region: "us-west-2".into(),
+            // Caller owns the "remote" bucket, so those records
+            // should be filtered out on the wire.
+            buckets_owned_by_caller: vec!["remote".into()],
+        })
+        .await
+        .unwrap();
+    let mut stream = resp.into_inner();
+
+    // Collect up to two entries with a short ceiling — only the
+    // "local" record should come through.
+    let mut buckets = Vec::new();
+    let mut regions = Vec::new();
+    for _ in 0..5 {
+        match tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
+            Ok(Some(Ok(entry))) => {
+                buckets.push(entry.bucket);
+                regions.push(entry.source_region);
+            }
+            _ => break,
+        }
+    }
+    assert_eq!(buckets, vec!["local"], "only unowned records should stream");
+    assert_eq!(regions, vec!["us-east-1"]);
+}
+
+/// Full cross-region round trip: spawn source + consumer task, write
+/// on the source, assert the consumer applied it locally.
+#[tokio::test]
+async fn cross_region_consumer_mirrors_source_writes() {
+    use nebula_grpc::cross_region::{OwnedBuckets, RemotePeer, StatusSink};
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    // Source region (us-east-1) — owns "catalog".
+    let source_dir = tempdir().unwrap();
+    let source_idx = Arc::new(
+        TextIndex::open_persistent(
+            embedder(),
+            Metric::Cosine,
+            HnswConfig::default(),
+            source_dir.path(),
+        )
+        .unwrap(),
+    );
+    // Seed the source's view of the home map.
+    source_idx
+        .upsert_text(
+            "catalog",
+            "__nebuladb_operator_seed__",
+            "seed",
+            serde_json::json!({"home_region": "us-east-1", "home_epoch": 1u64}),
+        )
+        .await
+        .unwrap();
+    let (source_addr, _source_srv) =
+        spawn_leader_with_region(source_idx.clone(), "us-east-1").await;
+
+    // Consumer node (us-west-2) — empty index; owns nothing.
+    let consumer_idx = Arc::new(
+        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
+    );
+
+    // Trivial `StatusSink` that just counts applies so the test can
+    // assert progress without standing up nebula-server's hub.
+    struct TestSink {
+        applies: Arc<Mutex<u64>>,
+        errors: Arc<Mutex<Vec<String>>>,
+    }
+    impl StatusSink for TestSink {
+        fn register(&self, _r: &str, _u: &str) {}
+        fn record_apply(&self, _r: &str, _s: u64, _o: u64) {
+            *self.applies.lock().unwrap() += 1;
+        }
+        fn record_error(&self, _r: &str, e: &str) {
+            self.errors.lock().unwrap().push(e.to_string());
+        }
+    }
+    let applies = Arc::new(Mutex::new(0u64));
+    let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink: Arc<dyn StatusSink> = Arc::new(TestSink {
+        applies: applies.clone(),
+        errors: errors.clone(),
+    });
+
+    struct Nothing;
+    impl OwnedBuckets for Nothing {
+        fn snapshot(&self) -> HashSet<String> {
+            HashSet::new()
+        }
+    }
+    let owned: Arc<dyn OwnedBuckets> = Arc::new(Nothing);
+    let _consumer_handles = nebula_grpc::cross_region::spawn_all(
+        vec![RemotePeer {
+            region: "us-east-1".into(),
+            grpc_url: format!("http://{source_addr}"),
+        }],
+        consumer_idx.clone(),
+        owned,
+        sink,
+        "us-west-2".into(),
+    );
+
+    // Write on the source — the consumer should apply into its local index.
+    source_idx
+        .upsert_text(
+            "catalog",
+            "sku-001",
+            "authoritative item",
+            serde_json::json!({"price": 10}),
+        )
+        .await
+        .unwrap();
+
+    for _ in 0..50 {
+        if consumer_idx.get("catalog", "sku-001").is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    let applied = consumer_idx.get("catalog", "sku-001");
+    assert!(applied.is_some(), "consumer should have mirrored the write");
+    assert_eq!(applied.unwrap().text, "authoritative item");
+    assert!(*applies.lock().unwrap() >= 1);
+    assert!(errors.lock().unwrap().is_empty());
+}
+
+/// In-memory nodes can't replicate; the service must refuse politely.
+#[tokio::test]
+async fn cross_region_refuses_in_memory_leader() {
+    use nebula_grpc::pb::{
+        cross_region_replication_service_client::CrossRegionReplicationServiceClient,
+        TailCrossRegionRequest,
+    };
+    use tokio_stream::StreamExt;
+
+    let leader =
+        Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
+    let (addr, _srv) = spawn_leader_with_region(leader, "us-east-1").await;
+    let ch = channel(addr).await;
+    let mut client = CrossRegionReplicationServiceClient::new(ch);
+
+    // Tonic surfaces the immediate FAILED_PRECONDITION at the call
+    // site since we reject before even subscribing to the WAL. Either
+    // site is valid per spec; assert whichever fires.
+    let err = client
+        .tail_cross_region(TailCrossRegionRequest {
+            start: None,
+            caller_region: "us-west-2".into(),
+            buckets_owned_by_caller: vec![],
+        })
+        .await;
+    match err {
+        Err(s) => {
+            assert_eq!(s.code(), tonic::Code::FailedPrecondition);
+            assert!(s.message().contains("in-memory"));
+        }
+        Ok(resp) => {
+            // Some tonic builds put the error on the first stream poll.
+            let mut stream = resp.into_inner();
+            match stream.next().await {
+                Some(Err(s)) => {
+                    assert_eq!(s.code(), tonic::Code::FailedPrecondition);
+                }
+                other => panic!("expected FAILED_PRECONDITION, got {other:?}"),
+            }
+        }
+    }
+}

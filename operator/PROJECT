@@ -1,0 +1,35 @@
+domain: nebuladb.io
+layout:
+- go.kubebuilder.io/v4
+multigroup: false
+projectName: nebuladb-operator
+repo: github.com/bwalia/nebuladb-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: nebuladb.io
+  group: nebula
+  kind: NebulaCluster
+  path: github.com/bwalia/nebuladb-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: nebuladb.io
+  group: nebula
+  kind: NebulaBucket
+  path: github.com/bwalia/nebuladb-operator/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: nebuladb.io
+  group: nebula
+  kind: NebulaRebalance
+  path: github.com/bwalia/nebuladb-operator/api/v1alpha1
+  version: v1alpha1
+version: "3"

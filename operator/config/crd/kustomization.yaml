@@ -1,0 +1,5 @@
+resources:
+- bases/nebula.nebuladb.io_nebulaclusters.yaml
+- bases/nebula.nebuladb.io_nebulabuckets.yaml
+- bases/nebula.nebuladb.io_nebularebalances.yaml
+- bases/nebula.nebuladb.io_nebularegionfailovers.yaml

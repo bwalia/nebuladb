@@ -317,6 +317,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc_index = Arc::clone(&state.index);
     let grpc_llm = Arc::clone(&state.llm);
     let grpc_chunker = Arc::clone(&state.chunker);
+    // Status hub for cross-region: need a handle outside state before
+    // we move state into the router, so the consumer task can report
+    // progress into the same hub that /admin/replication reads.
+    let cross_region_status = state.cross_region_status.clone();
 
     let app = build_router(state);
 
@@ -327,10 +331,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc_fut: Option<_> = match std::env::var("NEBULA_GRPC_BIND").ok() {
         Some(addr) => {
             let grpc_addr: SocketAddr = addr.parse()?;
-            let grpc_state = GrpcState::new(grpc_index.clone(), grpc_llm, grpc_chunker);
-            tracing::info!("nebula-grpc listening on {grpc_addr}");
+            // Pass the cluster role through so DocumentService rejects
+            // writes on followers — symmetric with the REST guard.
+            let grpc_state = GrpcState::with_role(
+                grpc_index.clone(),
+                grpc_llm,
+                grpc_chunker,
+                cluster.role,
+            );
+            let source_region = cluster.region.clone();
+            tracing::info!(
+                "nebula-grpc listening on {grpc_addr} (role={:?}, region={:?})",
+                cluster.role,
+                source_region,
+            );
             Some(tokio::spawn(async move {
-                if let Err(e) = nebula_grpc::serve(grpc_state, grpc_addr).await {
+                if let Err(e) =
+                    nebula_grpc::serve_with_region(grpc_state, grpc_addr, source_region).await
+                {
                     tracing::error!(error = %e, "grpc server exited");
                 }
             }))
@@ -346,9 +364,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(addr) => {
             let pg_addr: SocketAddr = addr.parse()?;
             let engine = Arc::clone(&sql_engine);
-            tracing::info!("nebula-pgwire listening on {pg_addr}");
+            let pg_role = cluster.role;
+            let pg_region = cluster.region.clone();
+            tracing::info!(
+                "nebula-pgwire listening on {pg_addr} (role={pg_role:?}, region={pg_region:?})",
+            );
             Some(tokio::spawn(async move {
-                if let Err(e) = nebula_pgwire::serve(engine, pg_addr).await {
+                if let Err(e) = nebula_pgwire::serve_with_role_and_region(
+                    engine, pg_addr, pg_role, pg_region,
+                )
+                .await
+                {
                     tracing::error!(error = %e, "pgwire server exited");
                 }
             }))
@@ -457,6 +483,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => None,
         };
 
+    // Cross-region consumers. Only leader-role nodes subscribe to
+    // remote regions — followers already mirror their home region's
+    // leader and would double-apply if they tailed directly.
+    // Populated only when NEBULA_REGION + NEBULA_CROSS_REGION_PEERS
+    // are both set and role != follower.
+    let cross_region_handles: Vec<tokio::task::JoinHandle<()>> = if matches!(
+        cluster.role,
+        nebula_server::NodeRole::Leader | nebula_server::NodeRole::Standalone
+    ) && !cluster.cross_region_peers.is_empty()
+    {
+        let my_region = cluster.region_or_default().to_string();
+        let peers: Vec<_> = cluster
+            .cross_region_peers
+            .iter()
+            .map(|p| nebula_grpc::cross_region::RemotePeer {
+                region: p.region.clone(),
+                grpc_url: p.grpc_url.clone(),
+            })
+            .collect();
+        let owned: Arc<dyn nebula_grpc::cross_region::OwnedBuckets> =
+            Arc::new(nebula_grpc::cross_region::IndexOwnedBuckets {
+                index: Arc::clone(&grpc_index),
+                my_region: my_region.clone(),
+                seed_doc_id: nebula_server::SEED_DOC_ID,
+            });
+        let status: Arc<dyn nebula_grpc::cross_region::StatusSink> =
+            Arc::new(cross_region_status.clone());
+        tracing::info!(
+            "cross-region: tailing {} peers from {}",
+            peers.len(),
+            my_region,
+        );
+        nebula_grpc::cross_region::spawn_all(
+            peers,
+            Arc::clone(&grpc_index),
+            owned,
+            status,
+            my_region,
+        )
+    } else {
+        Vec::new()
+    };
+
     tracing::info!("nebula-server listening on {bind}");
     let listener = tokio::net::TcpListener::bind(bind).await?;
     // `into_make_service_with_connect_info` is what lets the
@@ -478,6 +547,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         h.abort();
     }
     if let Some(h) = pg_fut {
+        h.abort();
+    }
+    for h in cross_region_handles {
         h.abort();
     }
     if let Some(h) = follower_handle {

@@ -37,16 +37,51 @@ use pgwire::messages::data::DataRow;
 use pgwire::tokio::process_socket;
 use tokio::net::TcpListener;
 
+use nebula_core::NodeRole;
 use nebula_sql::SqlEngine;
 
 /// One entry point: hand it a `SqlEngine` and a bind address, it runs
 /// a pgwire-compatible server until it errors out. No graceful
 /// shutdown yet — the caller typically aborts the spawned task.
+///
+/// Legacy shim: boots in [`NodeRole::Standalone`] for callers that
+/// don't care about replication. Use [`serve_with_role`] when serving
+/// from a follower to enable the read-only guard.
 pub async fn serve(engine: Arc<SqlEngine>, addr: std::net::SocketAddr) -> std::io::Result<()> {
+    serve_with_role(engine, addr, NodeRole::default()).await
+}
+
+/// Bind a pgwire server with an explicit node role. Writes (any
+/// `INSERT`/`UPDATE`/`DELETE`) are rejected with SQLSTATE `25006`
+/// (`read_only_sql_transaction`) when the role is
+/// [`NodeRole::Follower`]. Mirrors the REST and gRPC guards.
+pub async fn serve_with_role(
+    engine: Arc<SqlEngine>,
+    addr: std::net::SocketAddr,
+    role: NodeRole,
+) -> std::io::Result<()> {
+    serve_with_role_and_region(engine, addr, role, None).await
+}
+
+/// Full multi-region variant. When `region` is `Some`, DML writes
+/// via pgwire are rejected with SQLSTATE 25006 and the detail
+/// `wrong_home_region` — pgwire doesn't do per-bucket routing today,
+/// and a cross-region pgwire write is almost always a misconfigured
+/// client. REST/gRPC are the recommended write paths for multi-region.
+pub async fn serve_with_role_and_region(
+    engine: Arc<SqlEngine>,
+    addr: std::net::SocketAddr,
+    role: NodeRole,
+    region: Option<String>,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    tracing::info!("nebula-pgwire listening on {addr}");
+    tracing::info!(
+        "nebula-pgwire listening on {addr} (role={role:?}, region={region:?})",
+    );
     let factory = Arc::new(NebulaHandlers {
         engine,
+        role,
+        region,
     });
     loop {
         let (socket, peer) = listener.accept().await?;
@@ -69,6 +104,9 @@ pub async fn serve(engine: Arc<SqlEngine>, addr: std::net::SocketAddr) -> std::i
 /// placeholder that returns a friendly error.
 struct NebulaHandlers {
     engine: Arc<SqlEngine>,
+    role: NodeRole,
+    /// `Some` enables the multi-region write guard (see module doc).
+    region: Option<String>,
 }
 
 impl PgWireHandlerFactory for NebulaHandlers {
@@ -80,6 +118,8 @@ impl PgWireHandlerFactory for NebulaHandlers {
     fn simple_query_handler(&self) -> Arc<Self::SimpleQueryHandler> {
         Arc::new(NebulaQueryHandler {
             engine: Arc::clone(&self.engine),
+            role: self.role,
+            region: self.region.clone(),
         })
     }
 
@@ -98,6 +138,46 @@ impl PgWireHandlerFactory for NebulaHandlers {
 
 pub struct NebulaQueryHandler {
     engine: Arc<SqlEngine>,
+    role: NodeRole,
+    /// When set, DML is rejected with SQLSTATE 25006 + message
+    /// `wrong_home_region`. See `serve_with_role_and_region` for the
+    /// rationale (pgwire has no cheap per-bucket routing yet).
+    region: Option<String>,
+}
+
+/// Return true for SQL statements that mutate state. A best-effort
+/// prefix check — the SqlEngine itself doesn't yet parse DML, so
+/// rejecting here gives us a symmetric guarantee with REST/gRPC
+/// without depending on an internal AST type that might change.
+fn is_mutating_statement(sql: &str) -> bool {
+    let trimmed = sql.trim_start();
+    // Skip leading comments (`/* ... */` and `-- ...`) before classifying.
+    let trimmed = strip_leading_comments(trimmed);
+    let head: String = trimmed.chars().take(16).collect::<String>().to_ascii_uppercase();
+    matches!(
+        head.split_whitespace().next().unwrap_or(""),
+        "INSERT" | "UPDATE" | "DELETE" | "UPSERT" | "MERGE"
+            | "TRUNCATE" | "COPY" | "DROP" | "CREATE" | "ALTER"
+    )
+}
+
+fn strip_leading_comments(mut s: &str) -> &str {
+    loop {
+        s = s.trim_start();
+        if let Some(rest) = s.strip_prefix("--") {
+            match rest.find('\n') {
+                Some(i) => s = &rest[i + 1..],
+                None => return "",
+            }
+        } else if let Some(rest) = s.strip_prefix("/*") {
+            match rest.find("*/") {
+                Some(i) => s = &rest[i + 2..],
+                None => return "",
+            }
+        } else {
+            return s;
+        }
+    }
 }
 
 #[async_trait]
@@ -120,6 +200,33 @@ impl SimpleQueryHandler for NebulaQueryHandler {
         //     with a harmless integer or string. Drivers only check
         //     that *something* parses back, not the value.
         let trimmed = query.trim().trim_end_matches(';').trim();
+
+        // Follower guard: refuse writes at the wire layer, matching the
+        // REST and gRPC behavior. SQLSTATE 25006 is
+        // `read_only_sql_transaction`, which psycopg/jdbc/etc. recognize.
+        if self.role.is_read_only() && is_mutating_statement(trimmed) {
+            return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                "ERROR".to_string(),
+                "25006".to_string(),
+                "read_only_follower: this NebulaDB node is a follower and refuses writes".to_string(),
+            ))));
+        }
+
+        // Multi-region guard: pgwire doesn't route DML per-bucket,
+        // so a configured region means "this port is read-only for
+        // cross-region clients." Local tools that know they own the
+        // bucket can use REST/gRPC which does per-bucket checking.
+        if self.region.is_some() && is_mutating_statement(trimmed) {
+            return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                "ERROR".to_string(),
+                "25006".to_string(),
+                format!(
+                    "wrong_home_region: pgwire writes disabled on region={} — use REST or gRPC for per-bucket routing",
+                    self.region.as_deref().unwrap_or("?"),
+                ),
+            ))));
+        }
+
         if is_noop_statement(trimmed) {
             let lower = trimmed.to_ascii_lowercase();
             let is_select = lower.starts_with("select");

@@ -1,0 +1,82 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nebularegionfailovers.nebula.nebuladb.io
+spec:
+  group: nebula.nebuladb.io
+  names:
+    kind: NebulaRegionFailover
+    listKind: NebulaRegionFailoverList
+    plural: nebularegionfailovers
+    singular: nebularegionfailover
+    shortNames: [nrf, nebfailover]
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    additionalPrinterColumns:
+    - name: Cluster
+      type: string
+      jsonPath: .spec.clusterRef
+    - name: Bucket
+      type: string
+      jsonPath: .spec.bucket
+    - name: From
+      type: string
+      jsonPath: .status.fromHomeRegion
+    - name: To
+      type: string
+      jsonPath: .spec.newHomeRegion
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          apiVersion: {type: string}
+          kind: {type: string}
+          metadata: {type: object}
+          spec:
+            type: object
+            required: [clusterRef, bucket, newHomeRegion]
+            properties:
+              clusterRef: {type: string}
+              bucket: {type: string}
+              newHomeRegion: {type: string}
+              force: {type: boolean}
+              drainTimeoutSeconds: {type: integer, default: 600}
+              timeoutSeconds: {type: integer, default: 1800}
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum:
+                - Pending
+                - Preflight
+                - Draining
+                - EpochBump
+                - Announce
+                - Completed
+                - Failed
+              observedGeneration: {type: integer}
+              message: {type: string}
+              startedAt: {type: string, format: date-time}
+              completedAt: {type: string, format: date-time}
+              fromHomeRegion: {type: string}
+              fromEpoch: {type: integer}
+              toEpoch: {type: integer}
+              steps:
+                type: array
+                x-kubernetes-preserve-unknown-fields: true
+              conditions:
+                type: array
+                x-kubernetes-preserve-unknown-fields: true

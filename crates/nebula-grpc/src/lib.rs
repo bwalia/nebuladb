@@ -27,6 +27,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use nebula_chunk::Chunker;
+use nebula_core::NodeRole;
 use nebula_index::TextIndex;
 use nebula_llm::{build_rag_prompt, LlmChunk, LlmClient};
 
@@ -45,6 +46,15 @@ pub struct GrpcState {
     pub index: Arc<TextIndex>,
     pub llm: Arc<dyn LlmClient>,
     pub chunker: Arc<dyn Chunker>,
+    /// Role the process booted with. Reads are always allowed; writes
+    /// are rejected with [`Status::failed_precondition`] when the
+    /// role is [`NodeRole::Follower`]. Parity with the REST
+    /// `guard_writes_on_follower` middleware.
+    pub role: NodeRole,
+    /// Optional region name; when set, DocumentService rejects writes
+    /// to buckets whose home_region is not this value. `None` disables
+    /// the check (single-region behaviour).
+    pub region: Option<String>,
 }
 
 impl GrpcState {
@@ -53,11 +63,29 @@ impl GrpcState {
         llm: Arc<dyn LlmClient>,
         chunker: Arc<dyn Chunker>,
     ) -> Self {
+        Self::with_role(index, llm, chunker, NodeRole::default())
+    }
+
+    pub fn with_role(
+        index: Arc<TextIndex>,
+        llm: Arc<dyn LlmClient>,
+        chunker: Arc<dyn Chunker>,
+        role: NodeRole,
+    ) -> Self {
         Self {
             index,
             llm,
             chunker,
+            role,
+            region: None,
         }
+    }
+
+    /// Bolt-on setter — keeps `with_role` signature compatible with
+    /// existing callers that don't care about multi-region yet.
+    pub fn with_region(mut self, region: Option<String>) -> Self {
+        self.region = region;
+        self
     }
 
     /// The WAL handle this state will replicate from, if any.
@@ -65,6 +93,51 @@ impl GrpcState {
     /// two can't disagree about persistence mode.
     pub fn wal(&self) -> Option<Arc<nebula_wal::Wal>> {
         self.index.wal()
+    }
+}
+
+/// Stable error detail string emitted when a follower refuses a write.
+/// REST returns `409 read_only_follower`; gRPC returns
+/// `FAILED_PRECONDITION` with this message so clients can pattern-match
+/// without parsing prose.
+pub const READ_ONLY_FOLLOWER: &str = "read_only_follower";
+
+fn follower_write_error() -> Status {
+    Status::failed_precondition(READ_ONLY_FOLLOWER)
+}
+
+/// Emitted when gRPC rejects a write because the bucket's home region
+/// is elsewhere. Mirrors the REST `wrong_home_region` contract so
+/// clients can branch on a single constant across transports.
+pub const WRONG_HOME_REGION: &str = "wrong_home_region";
+
+/// Check the home-region guard for a gRPC write. Returns `Ok(())` to
+/// proceed and `Err(Status::FailedPrecondition)` to reject. A `None`
+/// region on the state disables the check (single-region mode); an
+/// absent home on the bucket also lets the write through (implicit
+/// single-region bucket).
+///
+/// The error message embeds the expected region so that a typed
+/// client can parse and retry without re-reading the seed doc.
+fn check_home_region(state: &GrpcState, bucket: &str) -> Result<(), Status> {
+    let Some(my_region) = state.region.as_deref() else {
+        return Ok(());
+    };
+    let Some(doc) = state.index.get(bucket, __seed_doc_id()) else {
+        return Ok(());
+    };
+    let home = doc
+        .metadata
+        .as_object()
+        .and_then(|m| m.get("home_region"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    match home {
+        None => Ok(()),
+        Some(h) if h == my_region => Ok(()),
+        Some(h) => Err(Status::failed_precondition(format!(
+            "{WRONG_HOME_REGION}: bucket home is {h}"
+        ))),
     }
 }
 
@@ -87,6 +160,9 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
         &self,
         req: Request<pb::UpsertDocumentRequest>,
     ) -> Result<Response<pb::UpsertDocumentResponse>, Status> {
+        if self.state.role.is_read_only() {
+            return Err(follower_write_error());
+        }
         let r = req.into_inner();
         if r.bucket.is_empty() || r.doc_id.is_empty() {
             return Err(Status::invalid_argument("bucket and doc_id required"));
@@ -94,6 +170,7 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
         if r.text.trim().is_empty() {
             return Err(Status::invalid_argument("text required"));
         }
+        check_home_region(&self.state, &r.bucket)?;
         let metadata = parse_metadata(&r.metadata_json)?;
         let chunks = self
             .state
@@ -118,7 +195,11 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
         &self,
         req: Request<pb::DeleteDocumentRequest>,
     ) -> Result<Response<pb::DeleteDocumentResponse>, Status> {
+        if self.state.role.is_read_only() {
+            return Err(follower_write_error());
+        }
         let r = req.into_inner();
+        check_home_region(&self.state, &r.bucket)?;
         let removed = self
             .state
             .index
@@ -293,6 +374,7 @@ impl pb::ai_service_server::AiService for AiSvc {
     }
 }
 
+pub mod cross_region;
 pub mod follower;
 
 // ---- Replication (follower-mode WAL tail) ----
@@ -411,6 +493,162 @@ impl pb::replication_service_server::ReplicationService for ReplicationSvc {
     }
 }
 
+// ---- CrossRegionReplicationService ----
+
+/// Server impl for cross-region WAL fan-out.
+///
+/// Shape mirrors `ReplicationSvc`: subscribes to the local WAL and
+/// forwards entries until the client drops. The differences are:
+///
+/// - **Bucket filter**: the caller sends the buckets it already owns,
+///   and we skip those records on the wire. No point shipping a record
+///   that the caller would just reject locally.
+/// - **Home-epoch tagging**: each entry carries the home_epoch of the
+///   bucket at send time (read from the seed doc). Receivers that see
+///   an epoch lower than their locally-known one reject the record —
+///   this is the safety net against a deposed region's writes leaking
+///   back in after it comes online post-failover.
+///
+/// We deliberately do not require the caller to authenticate — in-cluster
+/// gRPC is expected behind an identity-aware mesh. The public surface
+/// is gRPC-typed error codes for transport issues; application-level
+/// "don't trust this record" decisions live at the receiving node.
+#[derive(Clone)]
+pub struct CrossRegionReplicationSvc {
+    wal: Option<std::sync::Arc<nebula_wal::Wal>>,
+    index: std::sync::Arc<TextIndex>,
+    /// This region's canonical name, stamped onto each outgoing entry.
+    /// `None` disables the service outright — single-region nodes
+    /// have nothing to fan out.
+    source_region: Option<String>,
+}
+
+impl CrossRegionReplicationSvc {
+    pub fn new(
+        wal: Option<std::sync::Arc<nebula_wal::Wal>>,
+        index: std::sync::Arc<TextIndex>,
+        source_region: Option<String>,
+    ) -> Self {
+        Self {
+            wal,
+            index,
+            source_region,
+        }
+    }
+
+    /// Look up the `home_epoch` for a bucket from its seed doc.
+    /// Returns 0 when absent, which is strictly less than any valid
+    /// epoch — a receiver with a configured home will then reject the
+    /// record, which is the right thing for "the source doesn't know
+    /// this bucket has a home."
+    fn home_epoch_for(&self, bucket: &str) -> u64 {
+        self.index
+            .get(bucket, crate::__seed_doc_id())
+            .and_then(|d| {
+                d.metadata
+                    .as_object()
+                    .and_then(|m| m.get("home_epoch"))
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(0)
+    }
+}
+
+#[async_trait]
+impl pb::cross_region_replication_service_server::CrossRegionReplicationService
+    for CrossRegionReplicationSvc
+{
+    type TailCrossRegionStream = ReceiverStream<Result<pb::CrossRegionEntry, Status>>;
+
+    async fn tail_cross_region(
+        &self,
+        req: Request<pb::TailCrossRegionRequest>,
+    ) -> Result<Response<Self::TailCrossRegionStream>, Status> {
+        let wal = self.wal.clone().ok_or_else(|| {
+            Status::failed_precondition(
+                "leader has no WAL (running in-memory); cross-region requires NEBULA_DATA_DIR",
+            )
+        })?;
+        let source_region = self.source_region.clone().ok_or_else(|| {
+            Status::failed_precondition("NEBULA_REGION is not set; cross-region disabled")
+        })?;
+
+        let r = req.into_inner();
+        let start = match r.start {
+            Some(c) => nebula_wal::WalCursor {
+                segment_seq: c.segment_seq,
+                byte_offset: c.byte_offset,
+            },
+            None => nebula_wal::WalCursor::BEGIN,
+        };
+        let owned_by_caller: std::collections::HashSet<String> =
+            r.buckets_owned_by_caller.into_iter().collect();
+
+        let mut sub = wal
+            .subscribe(start)
+            .map_err(|e| Status::internal(format!("wal subscribe: {e}")))?;
+
+        let (tx, rx) = mpsc::channel::<Result<pb::CrossRegionEntry, Status>>(64);
+        let this = self.clone();
+        tokio::spawn(async move {
+            while let Some(item) = sub.next().await {
+                let send_result = match item {
+                    Ok(entry) => {
+                        let bucket = entry.record.bucket().to_string();
+                        // Skip buckets the caller is already authoritative
+                        // for — they wrote it, we must not echo back.
+                        if owned_by_caller.contains(&bucket) {
+                            continue;
+                        }
+                        let home_epoch = this.home_epoch_for(&bucket);
+                        let body = match bincode::serialize(&entry.record) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                let _ = tx
+                                    .send(Err(Status::internal(format!(
+                                        "bincode encode: {e}"
+                                    ))))
+                                    .await;
+                                break;
+                            }
+                        };
+                        tx.send(Ok(pb::CrossRegionEntry {
+                            cursor: Some(pb::WalCursor {
+                                segment_seq: entry.cursor.segment_seq,
+                                byte_offset: entry.cursor.byte_offset,
+                            }),
+                            next_cursor: Some(pb::WalCursor {
+                                segment_seq: entry.next_cursor.segment_seq,
+                                byte_offset: entry.next_cursor.byte_offset,
+                            }),
+                            record_bincode: body,
+                            bucket,
+                            source_region: source_region.clone(),
+                            home_epoch,
+                        }))
+                        .await
+                    }
+                    Err(e) => tx
+                        .send(Err(Status::failed_precondition(e.to_string())))
+                        .await,
+                };
+                if send_result.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+/// Seed doc id — kept private to this crate to avoid adding a full
+/// nebula-server dep. Must stay in sync with
+/// `nebula_server::home_region::SEED_DOC_ID`.
+fn __seed_doc_id() -> &'static str {
+    "__nebuladb_operator_seed__"
+}
+
 // ---- helpers ----
 
 fn validate_top_k(top_k: u32) -> Result<usize, Status> {
@@ -461,7 +699,23 @@ pub async fn serve(
     state: GrpcState,
     addr: std::net::SocketAddr,
 ) -> Result<(), tonic::transport::Error> {
+    serve_with_region(state, addr, None).await
+}
+
+/// Like `serve` but also mounts the CrossRegionReplicationService
+/// stamped with this node's region name. Legacy `serve` calls into
+/// this with `None`, which produces the same behavior as before
+/// (cross-region service returns FAILED_PRECONDITION on any request).
+pub async fn serve_with_region(
+    state: GrpcState,
+    addr: std::net::SocketAddr,
+    source_region: Option<String>,
+) -> Result<(), tonic::transport::Error> {
+    // Attach the region to GrpcState so DocumentService's home-region
+    // guard has something to compare against.
+    let state = state.with_region(source_region.clone());
     let wal = state.wal();
+    let xr_index = state.index.clone();
     tonic::transport::Server::builder()
         .add_service(pb::document_service_server::DocumentServiceServer::new(
             DocumentSvc::new(state.clone()),
@@ -474,8 +728,15 @@ pub async fn serve(
         // respond with FAILED_PRECONDITION, which is the right
         // signal for a follower ("this node can't serve me").
         .add_service(pb::replication_service_server::ReplicationServiceServer::new(
-            ReplicationSvc::new(wal),
+            ReplicationSvc::new(wal.clone()),
         ))
+        // CrossRegionReplicationService is always mounted too; when
+        // this node isn't multi-region it refuses politely.
+        .add_service(
+            pb::cross_region_replication_service_server::CrossRegionReplicationServiceServer::new(
+                CrossRegionReplicationSvc::new(wal, xr_index, source_region),
+            ),
+        )
         .serve(addr)
         .await
 }

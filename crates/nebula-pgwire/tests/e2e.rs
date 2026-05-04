@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use nebula_core::NodeRole;
 use nebula_embed::{Embedder, MockEmbedder};
 use nebula_index::TextIndex;
 use nebula_sql::SqlEngine;
@@ -140,4 +141,109 @@ async fn aggregate_query_runs_over_pgwire() {
         let n = r.get("n").unwrap();
         assert!(n.parse::<i64>().unwrap() >= 1);
     }
+}
+
+/// Follower-role pgwire servers must reject DML at the wire layer with
+/// SQLSTATE 25006 (`read_only_sql_transaction`). Mirrors the REST and
+/// gRPC guards — a follower pod reachable over any protocol cannot
+/// cause local divergence.
+async fn boot_follower() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    let engine = Arc::new(SqlEngine::new(index));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let handle = tokio::spawn(async move {
+        if let Err(e) = nebula_pgwire::serve_with_role(engine, addr, NodeRole::Follower).await {
+            eprintln!("pgwire follower exited: {e}");
+        }
+    });
+    sleep(Duration::from_millis(100)).await;
+    (addr, handle)
+}
+
+#[tokio::test]
+async fn follower_rejects_insert() {
+    let (addr, _handle) = boot_follower().await;
+    let client = connect(addr).await;
+    let err = client
+        .simple_query("INSERT INTO docs (id, text) VALUES ('x', 'y')")
+        .await
+        .unwrap_err();
+    // `Display` for tokio-postgres errors just says "db error"; the
+    // interesting bit is the wrapped `DbError` we peek at via `as_db_error`.
+    let db = err.as_db_error().expect("expected DbError");
+    assert_eq!(db.code().code(), "25006", "wrong SQLSTATE: {db:?}");
+    assert!(
+        db.message().contains("read_only_follower"),
+        "unexpected message: {}",
+        db.message()
+    );
+}
+
+/// A region-configured pgwire server refuses DML. Reads still work.
+#[tokio::test]
+async fn region_configured_pgwire_refuses_writes() {
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    let engine = Arc::new(SqlEngine::new(index));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let handle = tokio::spawn(async move {
+        nebula_pgwire::serve_with_role_and_region(
+            engine,
+            addr,
+            NodeRole::Leader,
+            Some("us-east-1".into()),
+        )
+        .await
+        .ok();
+    });
+    sleep(Duration::from_millis(100)).await;
+    let client = connect(addr).await;
+
+    let err = client
+        .simple_query("INSERT INTO docs (id) VALUES ('x')")
+        .await
+        .unwrap_err();
+    let db = err.as_db_error().expect("DbError");
+    assert_eq!(db.code().code(), "25006");
+    assert!(
+        db.message().contains("wrong_home_region"),
+        "got: {}",
+        db.message()
+    );
+
+    // Reads must still work.
+    let msgs = client.simple_query("SELECT 1").await.unwrap();
+    let rows: Vec<_> = msgs
+        .into_iter()
+        .filter_map(|m| match m {
+            tokio_postgres::SimpleQueryMessage::Row(r) => Some(r),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows.len(), 1);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn follower_allows_select() {
+    let (addr, _handle) = boot_follower().await;
+    let client = connect(addr).await;
+    // Reads must stay open. SELECT 1 is a no-op that returns one row.
+    let msgs = client.simple_query("SELECT 1").await.unwrap();
+    let rows: Vec<_> = msgs
+        .into_iter()
+        .filter_map(|m| match m {
+            tokio_postgres::SimpleQueryMessage::Row(r) => Some(r),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows.len(), 1);
 }

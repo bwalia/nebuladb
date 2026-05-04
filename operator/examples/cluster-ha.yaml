@@ -1,0 +1,41 @@
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaCluster
+metadata:
+  name: nebula-prod
+  namespace: nebuladb
+spec:
+  version: "0.1.0"
+  storage:
+    size: "100Gi"
+    storageClassName: fast-ssd
+  resources:
+    requests: {cpu: "2", memory: "4Gi"}
+    limits:   {cpu: "4", memory: "8Gi"}
+  ai:
+    enabled: true
+    embeddingModel: text-embedding-3-small
+    embeddingDim: 1536
+    openAIAPIKeySecretRef: {name: nebula-openai, key: api_key}
+  replication:
+    enabled: true
+    followers: 2
+    lagByteThreshold: 104857600   # 100 MiB
+  autoscaling:
+    enabled: true
+    minFollowers: 2
+    maxFollowers: 5
+    targetCPUUtilization: 70
+  backup:
+    enabled: true
+    schedule: "0 */6 * * *"
+    retain: 14
+  security:
+    apiKeysSecretRef: {name: nebula-auth, key: api_keys}
+    jwtSecretRef:     {name: nebula-auth, key: jwt_secret}
+    jwtIssuer: "nebuladb.example.com"
+  upgradeStrategy: Recreate
+  regions:
+  - name: us-east-1
+    nodeSelector: {topology.kubernetes.io/zone: us-east-1a}
+  - name: us-west-2
+    nodeSelector: {topology.kubernetes.io/zone: us-west-2a}

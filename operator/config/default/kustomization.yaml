@@ -1,0 +1,5 @@
+namespace: nebuladb-system
+resources:
+- ../crd
+- ../rbac
+- ../manager

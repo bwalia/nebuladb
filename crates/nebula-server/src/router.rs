@@ -56,9 +56,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/stats", get(admin_stats))
         .route("/admin/slow", get(admin_slow))
         .route("/admin/durability", get(admin_durability))
+        .route("/admin/version", get(admin_version))
         .route("/admin/snapshot", post(admin_snapshot))
         .route("/admin/wal/compact", post(admin_wal_compact))
         .route("/admin/bucket/:bucket/empty", post(admin_empty_bucket))
+        .route("/admin/bucket/:bucket/export", get(admin_export_bucket))
+        .route("/admin/bucket/:bucket/import", post(admin_import_bucket))
+        .route("/admin/bucket/:bucket/home-region", get(admin_home_region))
         .route("/admin/cluster/nodes", get(admin_cluster_nodes))
         .route("/admin/replication", get(admin_replication))
         .route("/admin/logs/stream", get(admin_logs_stream))
@@ -77,6 +81,10 @@ pub fn build_router(state: AppState) -> Router {
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::guard_writes_on_follower,
+        ))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::guard_wrong_home_region,
         ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -104,6 +112,13 @@ struct Health {
     docs: usize,
     dim: usize,
     model: String,
+    /// Server crate version from Cargo. Stable across restarts; the
+    /// operator uses this to detect an upgrade has taken effect without
+    /// having to shell into the pod.
+    version: &'static str,
+    /// Git sha at build time when exposed via the `NEBULADB_GIT_SHA`
+    /// environment variable during `cargo build`. `"unknown"` otherwise.
+    git_commit: &'static str,
 }
 
 async fn healthz(State(s): State<AppState>) -> Json<Health> {
@@ -112,6 +127,8 @@ async fn healthz(State(s): State<AppState>) -> Json<Health> {
         docs: s.index.len(),
         dim: s.index.dim(),
         model: s.index.embedder_model().to_string(),
+        version: crate::build_info::VERSION,
+        git_commit: crate::build_info::GIT_COMMIT,
     })
 }
 
@@ -685,6 +702,32 @@ async fn admin_durability(State(s): State<AppState>) -> Json<DurabilityInfo> {
     })
 }
 
+#[derive(Serialize)]
+struct VersionInfo {
+    /// Cargo package version — matches the git tag on releases.
+    version: &'static str,
+    /// Short git sha when baked in at build time, `"unknown"` otherwise.
+    git_commit: &'static str,
+    /// Build date when baked in at build time.
+    build_date: &'static str,
+    /// Target OS / architecture the binary was compiled for.
+    os: &'static str,
+    arch: &'static str,
+}
+
+/// Full build identity. Used by the Kubernetes operator to verify an
+/// upgrade has taken effect inside the pod, and by `nebula-ctl`-style
+/// tooling for version-compatibility checks before issuing admin calls.
+async fn admin_version() -> Json<VersionInfo> {
+    Json(VersionInfo {
+        version: crate::build_info::VERSION,
+        git_commit: crate::build_info::GIT_COMMIT,
+        build_date: crate::build_info::BUILD_DATE,
+        os: crate::build_info::OS,
+        arch: crate::build_info::ARCH,
+    })
+}
+
 async fn admin_snapshot(
     State(s): State<AppState>,
 ) -> Result<Json<nebula_index::SnapshotOutcome>, ApiError> {
@@ -844,6 +887,17 @@ struct ReplicationInfo {
     /// Whether the follower is trailing the probed leader tip.
     /// `None` on a leader, standalone, or when probe fails.
     behind: Option<bool>,
+    /// This node's own region name, if multi-region is configured.
+    /// Included in the top-level view (rather than under `remotes`)
+    /// so dashboards can label the local entry without a second API
+    /// call to `/healthz`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+    /// Per-remote-region view. Empty for single-region deployments.
+    /// Each entry is the consumer task's self-reported state for that
+    /// remote's stream.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    remotes: Vec<crate::cross_region_status::RemoteRegionStatus>,
 }
 
 #[derive(Serialize)]
@@ -897,6 +951,8 @@ async fn admin_replication(State(s): State<AppState>) -> Json<ReplicationInfo> {
         _ => (None, None, None),
     };
 
+    let remotes = s.cross_region_status.snapshot();
+    let region = s.cluster.region.clone();
     Json(ReplicationInfo {
         role: s.cluster.role,
         local_newest,
@@ -904,6 +960,8 @@ async fn admin_replication(State(s): State<AppState>) -> Json<ReplicationInfo> {
         leader_newest_probed,
         lag_bytes,
         behind,
+        region,
+        remotes,
     })
 }
 
@@ -1095,6 +1153,139 @@ async fn admin_empty_bucket(
     let removed = s.index.empty_bucket(&bucket);
     s.metrics.inc_delete();
     Ok(Json(EmptyBucketResponse { bucket, removed }))
+}
+
+/// Response shape for bucket export. Carries the full pre-embedded
+/// document payload so a target node can ingest without its own
+/// embedder. The wire format is stable JSON — `nebula-ctl` and the
+/// operator's rebalance coordinator both consume it.
+#[derive(Serialize)]
+struct ExportBucketResponse {
+    bucket: String,
+    dim: usize,
+    model: String,
+    count: usize,
+    docs: Vec<nebula_index::ExportedDoc>,
+}
+
+/// Streaming-style (but in one JSON blob for now) bucket export.
+/// Holding the whole payload in memory is fine at current scale
+/// — a future revision should chunked-encode for very large buckets.
+async fn admin_export_bucket(
+    State(s): State<AppState>,
+    axum::extract::Path(bucket): axum::extract::Path<String>,
+) -> Result<Json<ExportBucketResponse>, ApiError> {
+    if bucket.is_empty() {
+        return Err(ApiError::BadRequest("bucket name required".into()));
+    }
+    let docs = s.index.export_bucket(&bucket);
+    Ok(Json(ExportBucketResponse {
+        bucket,
+        dim: s.index.dim(),
+        model: s.index.embedder_model().to_string(),
+        count: docs.len(),
+        docs,
+    }))
+}
+
+/// Request body for bucket import. The `dim` field is informational
+/// (already implied by the vectors) but included so mistakes fail
+/// loudly before we touch the WAL.
+#[derive(Deserialize)]
+struct ImportBucketRequest {
+    #[serde(default)]
+    dim: Option<usize>,
+    docs: Vec<nebula_index::ExportedDoc>,
+}
+
+#[derive(Serialize)]
+struct ImportBucketResponse {
+    bucket: String,
+    imported: usize,
+    requested: usize,
+}
+
+/// Ingest a batch of pre-embedded documents into a bucket. The target
+/// index's `dim()` must match every vector in the payload; mismatches
+/// abort the batch up-front so the bucket never ends up in a mixed-dim
+/// state. Designed to pair with `GET /admin/bucket/:b/export` —
+/// together they form the rebalance-swap primitive.
+/// Response body for `GET /admin/bucket/:b/home-region`.
+///
+/// Stable shape — consumed by the `nebula-client` SDK for routing
+/// writes to the correct region, and by the operator's failover
+/// controller to read the current epoch before bumping it.
+///
+/// `node_region` is included so a caller on the wrong region gets
+/// both "where does this bucket live?" and "where am I?" in one hop,
+/// avoiding a follow-up `/healthz` probe.
+#[derive(Serialize)]
+struct HomeRegionResponse {
+    bucket: String,
+    home_region: Option<String>,
+    home_epoch: u64,
+    replicated_to: Vec<String>,
+    node_region: String,
+    has_home: bool,
+}
+
+/// Report the cross-region coordination state for `bucket`. Reads the
+/// seed doc's metadata — a cheap local lookup, no peer traffic. When
+/// the seed doc doesn't exist or doesn't have a home set, returns
+/// `has_home: false` so callers can fall back to local routing.
+async fn admin_home_region(
+    State(s): State<AppState>,
+    axum::extract::Path(bucket): axum::extract::Path<String>,
+) -> Result<Json<HomeRegionResponse>, ApiError> {
+    if bucket.is_empty() {
+        return Err(ApiError::BadRequest("bucket name required".into()));
+    }
+    let hr = s
+        .index
+        .get(&bucket, crate::home_region::SEED_DOC_ID)
+        .map(|doc| crate::home_region::HomeRegion::from_metadata(&doc.metadata))
+        .unwrap_or_default();
+    Ok(Json(HomeRegionResponse {
+        bucket,
+        has_home: hr.has_home(),
+        home_region: hr.region,
+        home_epoch: hr.epoch,
+        replicated_to: hr.replicated_to,
+        node_region: s.cluster.region_or_default().to_string(),
+    }))
+}
+
+async fn admin_import_bucket(
+    State(s): State<AppState>,
+    axum::extract::Path(bucket): axum::extract::Path<String>,
+    Json(body): Json<ImportBucketRequest>,
+) -> Result<Json<ImportBucketResponse>, ApiError> {
+    if bucket.is_empty() {
+        return Err(ApiError::BadRequest("bucket name required".into()));
+    }
+    if body.docs.is_empty() {
+        return Err(ApiError::BadRequest("docs must be non-empty".into()));
+    }
+    if let Some(claimed) = body.dim {
+        if claimed != s.index.dim() {
+            return Err(ApiError::BadRequest(format!(
+                "dim mismatch: payload claims {}, target index is {}",
+                claimed,
+                s.index.dim()
+            )));
+        }
+    }
+    let requested = body.docs.len();
+    let imported = s
+        .index
+        .import_bucket(&bucket, &body.docs)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    s.metrics.inc_insert();
+    Ok(Json(ImportBucketResponse {
+        bucket,
+        imported,
+        requested,
+    }))
 }
 
 async fn admin_stats(State(s): State<AppState>) -> Json<StatsResponse> {

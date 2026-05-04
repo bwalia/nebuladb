@@ -1,0 +1,22 @@
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaRebalance
+metadata:
+  name: swap-pod-0-to-pod-1
+  namespace: nebuladb
+spec:
+  clusterRef: nebula-prod
+  type: Swap
+  # Source pod = "old"; target pod = "new". If roles are omitted,
+  # nodes[0] is source and nodes[1] is target.
+  nodes:
+    - name: nebula-prod-us-east-1-leader-0
+      role: old
+    - name: nebula-prod-us-east-1-leader-1
+      role: new
+  # Leave empty to migrate every bucket on the source.
+  buckets:
+    - catalog
+    - logs
+  snapshotBefore: true
+  compactAfter: true
+  timeoutSeconds: 3600
