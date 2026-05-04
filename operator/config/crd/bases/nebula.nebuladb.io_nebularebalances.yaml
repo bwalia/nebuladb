@@ -86,7 +86,11 @@ spec:
               progressPct: {type: integer}
               steps:
                 type: array
-                x-kubernetes-preserve-unknown-fields: true
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
               conditions:
                 type: array
-                x-kubernetes-preserve-unknown-fields: true
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
