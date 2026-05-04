@@ -325,6 +325,7 @@ impl pb::ai_service_server::AiService for AiSvc {
     }
 }
 
+pub mod cross_region;
 pub mod follower;
 
 // ---- Replication (follower-mode WAL tail) ----
@@ -443,6 +444,162 @@ impl pb::replication_service_server::ReplicationService for ReplicationSvc {
     }
 }
 
+// ---- CrossRegionReplicationService ----
+
+/// Server impl for cross-region WAL fan-out.
+///
+/// Shape mirrors `ReplicationSvc`: subscribes to the local WAL and
+/// forwards entries until the client drops. The differences are:
+///
+/// - **Bucket filter**: the caller sends the buckets it already owns,
+///   and we skip those records on the wire. No point shipping a record
+///   that the caller would just reject locally.
+/// - **Home-epoch tagging**: each entry carries the home_epoch of the
+///   bucket at send time (read from the seed doc). Receivers that see
+///   an epoch lower than their locally-known one reject the record —
+///   this is the safety net against a deposed region's writes leaking
+///   back in after it comes online post-failover.
+///
+/// We deliberately do not require the caller to authenticate — in-cluster
+/// gRPC is expected behind an identity-aware mesh. The public surface
+/// is gRPC-typed error codes for transport issues; application-level
+/// "don't trust this record" decisions live at the receiving node.
+#[derive(Clone)]
+pub struct CrossRegionReplicationSvc {
+    wal: Option<std::sync::Arc<nebula_wal::Wal>>,
+    index: std::sync::Arc<TextIndex>,
+    /// This region's canonical name, stamped onto each outgoing entry.
+    /// `None` disables the service outright — single-region nodes
+    /// have nothing to fan out.
+    source_region: Option<String>,
+}
+
+impl CrossRegionReplicationSvc {
+    pub fn new(
+        wal: Option<std::sync::Arc<nebula_wal::Wal>>,
+        index: std::sync::Arc<TextIndex>,
+        source_region: Option<String>,
+    ) -> Self {
+        Self {
+            wal,
+            index,
+            source_region,
+        }
+    }
+
+    /// Look up the `home_epoch` for a bucket from its seed doc.
+    /// Returns 0 when absent, which is strictly less than any valid
+    /// epoch — a receiver with a configured home will then reject the
+    /// record, which is the right thing for "the source doesn't know
+    /// this bucket has a home."
+    fn home_epoch_for(&self, bucket: &str) -> u64 {
+        self.index
+            .get(bucket, crate::__seed_doc_id())
+            .and_then(|d| {
+                d.metadata
+                    .as_object()
+                    .and_then(|m| m.get("home_epoch"))
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(0)
+    }
+}
+
+#[async_trait]
+impl pb::cross_region_replication_service_server::CrossRegionReplicationService
+    for CrossRegionReplicationSvc
+{
+    type TailCrossRegionStream = ReceiverStream<Result<pb::CrossRegionEntry, Status>>;
+
+    async fn tail_cross_region(
+        &self,
+        req: Request<pb::TailCrossRegionRequest>,
+    ) -> Result<Response<Self::TailCrossRegionStream>, Status> {
+        let wal = self.wal.clone().ok_or_else(|| {
+            Status::failed_precondition(
+                "leader has no WAL (running in-memory); cross-region requires NEBULA_DATA_DIR",
+            )
+        })?;
+        let source_region = self.source_region.clone().ok_or_else(|| {
+            Status::failed_precondition("NEBULA_REGION is not set; cross-region disabled")
+        })?;
+
+        let r = req.into_inner();
+        let start = match r.start {
+            Some(c) => nebula_wal::WalCursor {
+                segment_seq: c.segment_seq,
+                byte_offset: c.byte_offset,
+            },
+            None => nebula_wal::WalCursor::BEGIN,
+        };
+        let owned_by_caller: std::collections::HashSet<String> =
+            r.buckets_owned_by_caller.into_iter().collect();
+
+        let mut sub = wal
+            .subscribe(start)
+            .map_err(|e| Status::internal(format!("wal subscribe: {e}")))?;
+
+        let (tx, rx) = mpsc::channel::<Result<pb::CrossRegionEntry, Status>>(64);
+        let this = self.clone();
+        tokio::spawn(async move {
+            while let Some(item) = sub.next().await {
+                let send_result = match item {
+                    Ok(entry) => {
+                        let bucket = entry.record.bucket().to_string();
+                        // Skip buckets the caller is already authoritative
+                        // for — they wrote it, we must not echo back.
+                        if owned_by_caller.contains(&bucket) {
+                            continue;
+                        }
+                        let home_epoch = this.home_epoch_for(&bucket);
+                        let body = match bincode::serialize(&entry.record) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                let _ = tx
+                                    .send(Err(Status::internal(format!(
+                                        "bincode encode: {e}"
+                                    ))))
+                                    .await;
+                                break;
+                            }
+                        };
+                        tx.send(Ok(pb::CrossRegionEntry {
+                            cursor: Some(pb::WalCursor {
+                                segment_seq: entry.cursor.segment_seq,
+                                byte_offset: entry.cursor.byte_offset,
+                            }),
+                            next_cursor: Some(pb::WalCursor {
+                                segment_seq: entry.next_cursor.segment_seq,
+                                byte_offset: entry.next_cursor.byte_offset,
+                            }),
+                            record_bincode: body,
+                            bucket,
+                            source_region: source_region.clone(),
+                            home_epoch,
+                        }))
+                        .await
+                    }
+                    Err(e) => tx
+                        .send(Err(Status::failed_precondition(e.to_string())))
+                        .await,
+                };
+                if send_result.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+/// Seed doc id — kept private to this crate to avoid adding a full
+/// nebula-server dep. Must stay in sync with
+/// `nebula_server::home_region::SEED_DOC_ID`.
+fn __seed_doc_id() -> &'static str {
+    "__nebuladb_operator_seed__"
+}
+
 // ---- helpers ----
 
 fn validate_top_k(top_k: u32) -> Result<usize, Status> {
@@ -493,7 +650,20 @@ pub async fn serve(
     state: GrpcState,
     addr: std::net::SocketAddr,
 ) -> Result<(), tonic::transport::Error> {
+    serve_with_region(state, addr, None).await
+}
+
+/// Like `serve` but also mounts the CrossRegionReplicationService
+/// stamped with this node's region name. Legacy `serve` calls into
+/// this with `None`, which produces the same behavior as before
+/// (cross-region service returns FAILED_PRECONDITION on any request).
+pub async fn serve_with_region(
+    state: GrpcState,
+    addr: std::net::SocketAddr,
+    source_region: Option<String>,
+) -> Result<(), tonic::transport::Error> {
     let wal = state.wal();
+    let xr_index = state.index.clone();
     tonic::transport::Server::builder()
         .add_service(pb::document_service_server::DocumentServiceServer::new(
             DocumentSvc::new(state.clone()),
@@ -506,8 +676,15 @@ pub async fn serve(
         // respond with FAILED_PRECONDITION, which is the right
         // signal for a follower ("this node can't serve me").
         .add_service(pb::replication_service_server::ReplicationServiceServer::new(
-            ReplicationSvc::new(wal),
+            ReplicationSvc::new(wal.clone()),
         ))
+        // CrossRegionReplicationService is always mounted too; when
+        // this node isn't multi-region it refuses politely.
+        .add_service(
+            pb::cross_region_replication_service_server::CrossRegionReplicationServiceServer::new(
+                CrossRegionReplicationSvc::new(wal, xr_index, source_region),
+            ),
+        )
         .serve(addr)
         .await
 }

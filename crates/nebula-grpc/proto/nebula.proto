@@ -170,3 +170,53 @@ message WalTailEntry {
   // it with the same crate the leader wrote it with.
   bytes record_bincode = 3;
 }
+
+// ---- CrossRegionReplicationService ----
+//
+// Cross-region WAL streaming with an additional bucket filter. Used
+// by a non-home region to tail a home region's writes without
+// receiving records it has no business applying (buckets owned by
+// other regions, or by itself).
+//
+// Shape is intentionally very similar to ReplicationService — an
+// equivalent tail with a region label + bucket allowlist. We keep
+// them as separate services so future enforcement (auth, per-region
+// rate limiting) can treat cross-region as its own surface.
+service CrossRegionReplicationService {
+  // Server-streams every WAL record whose bucket is in
+  // `buckets_owned_here` (the caller's "I am home for these buckets"
+  // declaration is inverted into "give me what I DON'T own"). Empty
+  // allowlist means "send everything, I'll filter locally" — useful
+  // for bootstrap scans.
+  rpc TailCrossRegion(TailCrossRegionRequest) returns (stream CrossRegionEntry);
+}
+
+message TailCrossRegionRequest {
+  // Resume point (same semantics as TailWal's start).
+  WalCursor start = 1;
+  // Caller's canonical region name, for server-side observability.
+  string caller_region = 2;
+  // Bucket names whose home region is the caller (i.e., records for
+  // these buckets should NOT be sent — caller already has them). An
+  // empty list disables filtering.
+  repeated string buckets_owned_by_caller = 3;
+}
+
+message CrossRegionEntry {
+  // Cursor of this record on the sending region's WAL.
+  WalCursor cursor = 1;
+  // Cursor past this record.
+  WalCursor next_cursor = 2;
+  // Bincode-serialized nebula_wal::WalRecord — same format as TailWal.
+  bytes record_bincode = 3;
+  // Bucket extracted from the record, so the receiver can route it
+  // to the right dedupe/apply path without re-decoding bincode.
+  string bucket = 4;
+  // Sender's region name. Echo'd back so the receiver can label the
+  // apply in metrics.
+  string source_region = 5;
+  // Home epoch at the time of the write. Receivers reject any record
+  // whose `home_epoch` is lower than their locally-known epoch for
+  // the bucket (failover-came-back-late guard).
+  uint64 home_epoch = 6;
+}

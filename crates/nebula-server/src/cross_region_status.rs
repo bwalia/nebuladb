@@ -78,6 +78,21 @@ pub struct CrossRegionStatusHub {
     inner: Arc<RwLock<HashMap<String, RemoteRegionStatus>>>,
 }
 
+/// Implement `nebula_grpc::cross_region::StatusSink` on the hub so
+/// the consumer task can report progress without taking a dep on
+/// this crate's internals.
+impl nebula_grpc::cross_region::StatusSink for CrossRegionStatusHub {
+    fn register(&self, region: &str, grpc_url: &str) {
+        CrossRegionStatusHub::register(self, region, grpc_url);
+    }
+    fn record_apply(&self, region: &str, segment: u64, byte_offset: u64) {
+        CrossRegionStatusHub::record_apply(self, region, segment, byte_offset);
+    }
+    fn record_error(&self, region: &str, err: &str) {
+        CrossRegionStatusHub::record_error(self, region, err);
+    }
+}
+
 impl CrossRegionStatusHub {
     pub fn new() -> Self {
         Self::default()

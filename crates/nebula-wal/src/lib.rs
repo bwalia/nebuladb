@@ -133,6 +133,21 @@ pub enum WalRecord {
     },
 }
 
+impl WalRecord {
+    /// Bucket name the record targets. Every variant is bucket-scoped,
+    /// so this is infallible — used by the cross-region consumer to
+    /// decide whether to apply or skip based on the home-region map.
+    pub fn bucket(&self) -> &str {
+        match self {
+            WalRecord::UpsertText { bucket, .. }
+            | WalRecord::UpsertDocument { bucket, .. }
+            | WalRecord::Delete { bucket, .. }
+            | WalRecord::DeleteDocument { bucket, .. }
+            | WalRecord::EmptyBucket { bucket } => bucket,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WalChunk {
     pub index: usize,
