@@ -107,9 +107,9 @@ impl CrossRegionStatusHub {
             .or_insert_with(|| RemoteRegionStatus::new(region.to_string(), grpc_url.to_string()));
     }
 
-    /// Called after each successfully-applied record. Updates cursor
-    /// + increments the applied count + clears any previous error
-    /// state so the admin view reflects recovery.
+    /// Called after each successfully-applied record. Updates the
+    /// cursor, increments the applied count, and clears any previous
+    /// error state so the admin view reflects recovery.
     pub fn record_apply(&self, region: &str, segment: u64, byte_offset: u64) {
         if let Ok(mut g) = self.inner.write() {
             if let Some(s) = g.get_mut(region) {

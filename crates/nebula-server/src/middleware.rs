@@ -235,43 +235,6 @@ fn extract_bucket_from_path(path: &str) -> Option<&str> {
     }
 }
 
-#[cfg(test)]
-mod bucket_path_tests {
-    use super::extract_bucket_from_path;
-
-    #[test]
-    fn extracts_from_bucket_path() {
-        // Full path (no nest) and nested path (after /api/v1 strip)
-        // both work.
-        assert_eq!(extract_bucket_from_path("/api/v1/bucket/catalog/doc"), Some("catalog"));
-        assert_eq!(extract_bucket_from_path("/bucket/catalog/doc"), Some("catalog"));
-        assert_eq!(extract_bucket_from_path("/bucket/catalog/docs/bulk"), Some("catalog"));
-        assert_eq!(
-            extract_bucket_from_path("/api/v1/admin/bucket/catalog/export"),
-            Some("catalog")
-        );
-        assert_eq!(
-            extract_bucket_from_path("/admin/bucket/catalog/export"),
-            Some("catalog")
-        );
-    }
-
-    #[test]
-    fn returns_none_for_non_bucket_paths() {
-        assert!(extract_bucket_from_path("/api/v1/ai/search").is_none());
-        assert!(extract_bucket_from_path("/ai/search").is_none());
-        assert!(extract_bucket_from_path("/api/v1/admin/snapshot").is_none());
-        assert!(extract_bucket_from_path("/admin/snapshot").is_none());
-        assert!(extract_bucket_from_path("/healthz").is_none());
-    }
-
-    #[test]
-    fn empty_bucket_is_none() {
-        assert!(extract_bucket_from_path("/api/v1/bucket//doc").is_none());
-        assert!(extract_bucket_from_path("/bucket//doc").is_none());
-    }
-}
-
 /// Write-path audit middleware.
 ///
 /// Records method + path + principal + response status after the
@@ -320,4 +283,41 @@ pub async fn audit_writes(
         });
     }
     resp
+}
+
+#[cfg(test)]
+mod bucket_path_tests {
+    use super::extract_bucket_from_path;
+
+    #[test]
+    fn extracts_from_bucket_path() {
+        // Full path (no nest) and nested path (after /api/v1 strip)
+        // both work.
+        assert_eq!(extract_bucket_from_path("/api/v1/bucket/catalog/doc"), Some("catalog"));
+        assert_eq!(extract_bucket_from_path("/bucket/catalog/doc"), Some("catalog"));
+        assert_eq!(extract_bucket_from_path("/bucket/catalog/docs/bulk"), Some("catalog"));
+        assert_eq!(
+            extract_bucket_from_path("/api/v1/admin/bucket/catalog/export"),
+            Some("catalog")
+        );
+        assert_eq!(
+            extract_bucket_from_path("/admin/bucket/catalog/export"),
+            Some("catalog")
+        );
+    }
+
+    #[test]
+    fn returns_none_for_non_bucket_paths() {
+        assert!(extract_bucket_from_path("/api/v1/ai/search").is_none());
+        assert!(extract_bucket_from_path("/ai/search").is_none());
+        assert!(extract_bucket_from_path("/api/v1/admin/snapshot").is_none());
+        assert!(extract_bucket_from_path("/admin/snapshot").is_none());
+        assert!(extract_bucket_from_path("/healthz").is_none());
+    }
+
+    #[test]
+    fn empty_bucket_is_none() {
+        assert!(extract_bucket_from_path("/api/v1/bucket//doc").is_none());
+        assert!(extract_bucket_from_path("/bucket//doc").is_none());
+    }
 }
