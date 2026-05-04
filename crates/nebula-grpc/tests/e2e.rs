@@ -16,7 +16,9 @@ use nebula_grpc::pb::{
     rag_chunk, search_service_client::SearchServiceClient, RagRequest, SemanticSearchRequest,
     UpsertDocumentRequest,
 };
-use nebula_grpc::{serve, GrpcState};
+use nebula_core::NodeRole;
+use nebula_grpc::{serve, GrpcState, READ_ONLY_FOLLOWER};
+use nebula_grpc::pb::DeleteDocumentRequest;
 use nebula_index::TextIndex;
 use nebula_llm::{LlmClient, MockLlm};
 use nebula_vector::{HnswConfig, Metric};
@@ -165,4 +167,56 @@ async fn grpc_semantic_search_validates_empty_query() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+/// Spawn a server running as a follower. Writes on DocumentService
+/// must be rejected with FAILED_PRECONDITION before any index mutation.
+async fn spawn_follower() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    let chunker: Arc<dyn Chunker> = Arc::new(FixedSizeChunker::new(20, 0).unwrap());
+    let llm: Arc<dyn LlmClient> = Arc::new(MockLlm::default());
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let state = GrpcState::with_role(index, llm, chunker, NodeRole::Follower);
+    let handle = tokio::spawn(async move { serve(state, addr).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    (addr, handle)
+}
+
+#[tokio::test]
+async fn follower_rejects_upsert() {
+    let (addr, _srv) = spawn_follower().await;
+    let ch = channel(addr).await;
+    let mut docs = DocumentServiceClient::new(ch);
+    let err = docs
+        .upsert_document(UpsertDocumentRequest {
+            bucket: "b".into(),
+            doc_id: "d".into(),
+            text: "anything".into(),
+            metadata_json: "".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(err.message(), READ_ONLY_FOLLOWER);
+}
+
+#[tokio::test]
+async fn follower_rejects_delete() {
+    let (addr, _srv) = spawn_follower().await;
+    let ch = channel(addr).await;
+    let mut docs = DocumentServiceClient::new(ch);
+    let err = docs
+        .delete_document(DeleteDocumentRequest {
+            bucket: "b".into(),
+            doc_id: "d".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert_eq!(err.message(), READ_ONLY_FOLLOWER);
 }

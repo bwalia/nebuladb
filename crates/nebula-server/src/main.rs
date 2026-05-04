@@ -327,8 +327,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc_fut: Option<_> = match std::env::var("NEBULA_GRPC_BIND").ok() {
         Some(addr) => {
             let grpc_addr: SocketAddr = addr.parse()?;
-            let grpc_state = GrpcState::new(grpc_index.clone(), grpc_llm, grpc_chunker);
-            tracing::info!("nebula-grpc listening on {grpc_addr}");
+            // Pass the cluster role through so DocumentService rejects
+            // writes on followers — symmetric with the REST guard.
+            let grpc_state = GrpcState::with_role(
+                grpc_index.clone(),
+                grpc_llm,
+                grpc_chunker,
+                cluster.role,
+            );
+            tracing::info!("nebula-grpc listening on {grpc_addr} (role={:?})", cluster.role);
             Some(tokio::spawn(async move {
                 if let Err(e) = nebula_grpc::serve(grpc_state, grpc_addr).await {
                     tracing::error!(error = %e, "grpc server exited");
@@ -346,9 +353,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(addr) => {
             let pg_addr: SocketAddr = addr.parse()?;
             let engine = Arc::clone(&sql_engine);
-            tracing::info!("nebula-pgwire listening on {pg_addr}");
+            let pg_role = cluster.role;
+            tracing::info!("nebula-pgwire listening on {pg_addr} (role={pg_role:?})");
             Some(tokio::spawn(async move {
-                if let Err(e) = nebula_pgwire::serve(engine, pg_addr).await {
+                if let Err(e) = nebula_pgwire::serve_with_role(engine, pg_addr, pg_role).await {
                     tracing::error!(error = %e, "pgwire server exited");
                 }
             }))

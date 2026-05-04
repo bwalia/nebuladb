@@ -28,36 +28,11 @@
 //! resolution in `main.rs` — the role is descriptive, the leader
 //! URL is the operational contract.
 
-use std::str::FromStr;
-
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NodeRole {
-    /// One-process deployment with no replication. Default when
-    /// nothing is configured — preserves legacy behavior.
-    #[default]
-    Standalone,
-    /// Accepts writes, serves its WAL to followers via
-    /// [`nebula_grpc::ReplicationService`].
-    Leader,
-    /// Mirrors a leader's WAL. Refuses writes at the router layer
-    /// to prevent local divergence.
-    Follower,
-}
-
-impl FromStr for NodeRole {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "" | "standalone" => Ok(Self::Standalone),
-            "leader" => Ok(Self::Leader),
-            "follower" => Ok(Self::Follower),
-            other => Err(format!("unknown NEBULA_NODE_ROLE={other}")),
-        }
-    }
-}
+// NodeRole moved to `nebula-core` so nebula-grpc and nebula-pgwire can
+// refuse writes on followers without depending on this crate.
+pub use nebula_core::NodeRole;
 
 /// One entry in the node registry. Peers carry just enough info to
 /// be reachable — authoritative details (role, durability state,

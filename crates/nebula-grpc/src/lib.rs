@@ -27,6 +27,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use nebula_chunk::Chunker;
+use nebula_core::NodeRole;
 use nebula_index::TextIndex;
 use nebula_llm::{build_rag_prompt, LlmChunk, LlmClient};
 
@@ -45,6 +46,11 @@ pub struct GrpcState {
     pub index: Arc<TextIndex>,
     pub llm: Arc<dyn LlmClient>,
     pub chunker: Arc<dyn Chunker>,
+    /// Role the process booted with. Reads are always allowed; writes
+    /// are rejected with [`Status::failed_precondition`] when the
+    /// role is [`NodeRole::Follower`]. Parity with the REST
+    /// `guard_writes_on_follower` middleware.
+    pub role: NodeRole,
 }
 
 impl GrpcState {
@@ -53,10 +59,20 @@ impl GrpcState {
         llm: Arc<dyn LlmClient>,
         chunker: Arc<dyn Chunker>,
     ) -> Self {
+        Self::with_role(index, llm, chunker, NodeRole::default())
+    }
+
+    pub fn with_role(
+        index: Arc<TextIndex>,
+        llm: Arc<dyn LlmClient>,
+        chunker: Arc<dyn Chunker>,
+        role: NodeRole,
+    ) -> Self {
         Self {
             index,
             llm,
             chunker,
+            role,
         }
     }
 
@@ -66,6 +82,16 @@ impl GrpcState {
     pub fn wal(&self) -> Option<Arc<nebula_wal::Wal>> {
         self.index.wal()
     }
+}
+
+/// Stable error detail string emitted when a follower refuses a write.
+/// REST returns `409 read_only_follower`; gRPC returns
+/// `FAILED_PRECONDITION` with this message so clients can pattern-match
+/// without parsing prose.
+pub const READ_ONLY_FOLLOWER: &str = "read_only_follower";
+
+fn follower_write_error() -> Status {
+    Status::failed_precondition(READ_ONLY_FOLLOWER)
 }
 
 // ---- Document ----
@@ -87,6 +113,9 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
         &self,
         req: Request<pb::UpsertDocumentRequest>,
     ) -> Result<Response<pb::UpsertDocumentResponse>, Status> {
+        if self.state.role.is_read_only() {
+            return Err(follower_write_error());
+        }
         let r = req.into_inner();
         if r.bucket.is_empty() || r.doc_id.is_empty() {
             return Err(Status::invalid_argument("bucket and doc_id required"));
@@ -118,6 +147,9 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
         &self,
         req: Request<pb::DeleteDocumentRequest>,
     ) -> Result<Response<pb::DeleteDocumentResponse>, Status> {
+        if self.state.role.is_read_only() {
+            return Err(follower_write_error());
+        }
         let r = req.into_inner();
         let removed = self
             .state

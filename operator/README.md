@@ -55,7 +55,7 @@ database catches up.
 | Swap rebalance engine              | **Not implemented** | `NebulaRebalance` Type=Swap moves to `NotImplemented` |
 | Cross-region active-active         | **Not supported**   | Regions are app-side routed; CR provisions per-region |
 | Version introspection API          | Supported (0.1.1+)  | Operator probes `/healthz.version` + `/admin/version` |
-| gRPC / pgwire follower write guard | **Missing**         | Operator omits GRPC_BIND/PG_BIND on follower pods     |
+| gRPC / pgwire follower write guard | Supported (0.1.1+)  | gRPC returns FAILED_PRECONDITION, pgwire SQLSTATE 25006 |
 
 ## Quick start
 
