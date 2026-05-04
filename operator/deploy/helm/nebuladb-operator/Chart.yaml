@@ -1,0 +1,11 @@
+apiVersion: v2
+name: nebuladb-operator
+description: Kubernetes operator that manages the full lifecycle of NebulaDB clusters.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.24.0-0"
+keywords: [nebuladb, operator, ai, rag, vector-database]
+home: https://github.com/bwalia/nebuladb
+maintainers:
+- name: NebulaDB Authors

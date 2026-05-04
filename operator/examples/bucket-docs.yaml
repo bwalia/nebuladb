@@ -1,0 +1,16 @@
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaBucket
+metadata:
+  name: product-catalog
+  namespace: nebuladb
+spec:
+  clusterRef: nebula-demo
+  type: Hybrid
+  indexing:
+    chunkChars: 500
+    chunkOverlap: 50
+    metric: cosine
+  deletePolicy: Retain
+  labels:
+    tier: gold
+    team: search

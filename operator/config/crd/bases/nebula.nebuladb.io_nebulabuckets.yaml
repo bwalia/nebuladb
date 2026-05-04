@@ -1,0 +1,91 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nebulabuckets.nebula.nebuladb.io
+spec:
+  group: nebula.nebuladb.io
+  names:
+    kind: NebulaBucket
+    listKind: NebulaBucketList
+    plural: nebulabuckets
+    singular: nebulabucket
+    shortNames: [nb, nebbucket]
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    additionalPrinterColumns:
+    - name: Cluster
+      type: string
+      jsonPath: .spec.clusterRef
+    - name: Type
+      type: string
+      jsonPath: .spec.type
+    - name: Docs
+      type: integer
+      jsonPath: .status.docCount
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          apiVersion: {type: string}
+          kind: {type: string}
+          metadata: {type: object}
+          spec:
+            type: object
+            required: [clusterRef]
+            properties:
+              clusterRef: {type: string}
+              name: {type: string}
+              type:
+                type: string
+                enum: [SQL, JSON, Hybrid, Vector]
+                default: Hybrid
+              replication:
+                type: object
+                properties:
+                  mode:
+                    type: string
+                    enum: [cluster-wide, local]
+                    default: cluster-wide
+                  minReplicas: {type: integer}
+              indexing:
+                type: object
+                properties:
+                  chunkChars: {type: integer}
+                  chunkOverlap: {type: integer}
+                  metric:
+                    type: string
+                    enum: [cosine, dot, l2]
+                    default: cosine
+              deletePolicy:
+                type: string
+                enum: [Retain, Empty]
+                default: Retain
+              labels:
+                type: object
+                additionalProperties: {type: string}
+          status:
+            type: object
+            properties:
+              phase: {type: string}
+              observedGeneration: {type: integer}
+              docCount: {type: integer}
+              parentDocs: {type: integer}
+              topKeys:
+                type: array
+                items: {type: string}
+              lastSeeded: {type: string, format: date-time}
+              conditions:
+                type: array
+                x-kubernetes-preserve-unknown-fields: true

@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nebuladb-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "nebuladb-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "nebuladb-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "nebuladb-operator.selectorLabels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.metrics.port | quote }}
+    spec:
+      serviceAccountName: {{ include "nebuladb-operator.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: {type: RuntimeDefault}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: manager
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args:
+        - --leader-elect={{ .Values.leaderElection.enabled }}
+        - --metrics-bind-address=:{{ .Values.metrics.port }}
+        - --health-probe-bind-address=:8081
+        - --enable-webhooks={{ .Values.webhooks.enabled }}
+        ports:
+        - {name: metrics, containerPort: {{ .Values.metrics.port }}}
+        - {name: healthz, containerPort: 8081}
+        {{- if .Values.webhooks.enabled }}
+        - {name: webhook, containerPort: 9443}
+        {{- end }}
+        env:
+        {{- if .Values.nebulaOperatorBearerSecretRef.name }}
+        - name: NEBULA_OPERATOR_BEARER
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.nebulaOperatorBearerSecretRef.name }}
+              key: {{ .Values.nebulaOperatorBearerSecretRef.key }}
+        {{- end }}
+        resources: {{- toYaml .Values.resources | nindent 10 }}
+        livenessProbe:
+          httpGet: {path: /healthz, port: healthz}
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        readinessProbe:
+          httpGet: {path: /readyz, port: healthz}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

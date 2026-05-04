@@ -1,0 +1,16 @@
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaRebalance
+metadata:
+  name: promote-follower-0
+  namespace: nebuladb
+spec:
+  clusterRef: nebula-prod
+  type: Failover
+  nodes:
+  - name: nebula-prod-us-east-1-leader-0
+    role: leader
+  - name: nebula-prod-us-east-1-follower-0
+    role: follower
+  snapshotBefore: false
+  compactAfter: false
+  timeoutSeconds: 600

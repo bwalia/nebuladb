@@ -1,0 +1,47 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "nebuladb-operator.fullname" . }}-manager
+  labels: {{- include "nebuladb-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: [events]
+  verbs: [create, patch]
+- apiGroups: [""]
+  resources: [services, configmaps, persistentvolumeclaims]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch, delete]
+- apiGroups: [apps]
+  resources: [statefulsets]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [autoscaling]
+  resources: [horizontalpodautoscalers]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [nebula.nebuladb.io]
+  resources: [nebulaclusters, nebulabuckets, nebularebalances]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [nebula.nebuladb.io]
+  resources: [nebulaclusters/status, nebulabuckets/status, nebularebalances/status]
+  verbs: [get, update, patch]
+- apiGroups: [nebula.nebuladb.io]
+  resources: [nebulaclusters/finalizers, nebulabuckets/finalizers, nebularebalances/finalizers]
+  verbs: [update]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "nebuladb-operator.fullname" . }}-manager
+  labels: {{- include "nebuladb-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "nebuladb-operator.fullname" . }}-manager
+subjects:
+- kind: ServiceAccount
+  name: {{ include "nebuladb-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}

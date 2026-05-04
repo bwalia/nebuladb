@@ -1,0 +1,29 @@
+{{- if and .Values.metrics.enabled .Values.serviceMonitor.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nebuladb-operator.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "nebuladb-operator.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "nebuladb-operator.selectorLabels" . | nindent 4 }}
+  ports:
+  - {name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "nebuladb-operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nebuladb-operator.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels: {{- include "nebuladb-operator.selectorLabels" . | nindent 6 }}
+  endpoints:
+  - port: metrics
+    interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

@@ -1,0 +1,51 @@
+# Default values for the nebuladb-operator chart.
+# These values are rendered into the manager Deployment and RBAC.
+
+image:
+  repository: ghcr.io/bwalia/nebuladb-operator
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 1
+
+leaderElection:
+  enabled: true
+
+webhooks:
+  # When true, the operator serves a validating webhook for NebulaCluster.
+  # cert-manager (or a pre-created secret) is required when enabled.
+  enabled: false
+  certManager:
+    enabled: false
+    issuerRef:
+      name: selfsigned
+      kind: ClusterIssuer
+
+# Bearer token used by the operator to authenticate against NebulaDB's admin
+# API (when NEBULA_API_KEYS is set on the cluster). Leave empty for dev mode.
+nebulaOperatorBearerSecretRef:
+  name: ""
+  key: "bearer"
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits:   {cpu: 500m, memory: 512Mi}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+serviceAccount:
+  create: true
+  name: nebuladb-operator
+  annotations: {}
+
+metrics:
+  enabled: true
+  port: 8080
+
+serviceMonitor:
+  enabled: false
+  labels: {}
+  interval: 30s
