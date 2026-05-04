@@ -83,6 +83,19 @@ func (r *NebulaBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		name = bucket.Name
 	}
 
+	// Preserve any existing home_epoch — the failover controller owns
+	// the bump, not the bucket controller. First-time seeding gets
+	// epoch 1 when a home_region is configured, epoch 0 otherwise.
+	existingEpoch, existingHome := uint64(0), ""
+	if existing, err := nc.HomeRegion(ctx, name); err == nil {
+		existingEpoch = existing.HomeEpoch
+		existingHome = existing.HomeRegion
+	}
+	epoch := existingEpoch
+	if bucket.Spec.HomeRegion != "" && epoch == 0 {
+		epoch = 1
+	}
+
 	// Seed the bucket by upserting the operator marker document. Idempotent.
 	md := map[string]interface{}{
 		"kind":       "nebuladb-operator-seed",
@@ -103,6 +116,28 @@ func (r *NebulaBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	for k, v := range bucket.Spec.Labels {
 		md["label_"+k] = v
 	}
+	// Cross-region coordination state. When the spec doesn't set a
+	// home_region, we deliberately omit the field so the server's
+	// HomeRegion::from_metadata returns has_home=false and legacy
+	// single-region behavior is preserved.
+	if bucket.Spec.HomeRegion != "" {
+		// Don't clobber an in-progress failover. If the server
+		// reports a different home than spec, the failover
+		// controller is mid-flight — skip seeding this pass and
+		// requeue. This is the safety gate against a well-meaning
+		// bucket controller reconcile racing a failover.
+		if existingHome != "" && existingHome != bucket.Spec.HomeRegion && existingEpoch > 0 {
+			r.Recorder.Eventf(&bucket, "Warning", "HomeRegionDivergence",
+				"spec.homeRegion=%s but live home=%s (epoch %d); skipping seed until reconciled",
+				bucket.Spec.HomeRegion, existingHome, existingEpoch)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		md["home_region"] = bucket.Spec.HomeRegion
+		md["home_epoch"] = epoch
+		if len(bucket.Spec.ReplicatedTo) > 0 {
+			md["replicated_to"] = bucket.Spec.ReplicatedTo
+		}
+	}
 	err := nc.UpsertDoc(ctx, name, nebulaclient.UpsertDocRequest{
 		ID:       bucketSeedDocID,
 		Text:     fmt.Sprintf("NebulaDB bucket %q managed by %s", name, ManagedBy),
@@ -115,16 +150,21 @@ func (r *NebulaBucketReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			r.Recorder.Eventf(&bucket, "Warning", "WriteToFollower", "leader service routed to follower: %v", err)
 		}
 		lg.Error(err, "seeding bucket failed")
-		r.patchBucketStatus(ctx, &bucket, "Failed", 0, 0, nil, err.Error())
+		r.patchBucketStatus(ctx, &bucket, "Failed", 0, 0, nil, "", 0, err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	// Refresh stats.
+	// Refresh stats + home-region state for status.
 	docCount, parents, top, err := r.fetchBucketStats(ctx, nc, name)
 	if err != nil {
 		lg.V(1).Info("bucket stats probe failed", "err", err)
 	}
-	r.patchBucketStatus(ctx, &bucket, "Ready", docCount, parents, top, "")
+	currentHome, currentEpoch := "", int64(0)
+	if hr, err := nc.HomeRegion(ctx, name); err == nil {
+		currentHome = hr.HomeRegion
+		currentEpoch = int64(hr.HomeEpoch)
+	}
+	r.patchBucketStatus(ctx, &bucket, "Ready", docCount, parents, top, currentHome, currentEpoch, "")
 	return ctrl.Result{RequeueAfter: 1 * time.Minute}, nil
 }
 
@@ -161,12 +201,14 @@ func (r *NebulaBucketReconciler) fetchBucketStats(ctx context.Context, nc *nebul
 	return 0, 0, nil, nil
 }
 
-func (r *NebulaBucketReconciler) patchBucketStatus(ctx context.Context, bucket *nebulav1alpha1.NebulaBucket, phase string, docs, parents int64, top []string, msg string) {
+func (r *NebulaBucketReconciler) patchBucketStatus(ctx context.Context, bucket *nebulav1alpha1.NebulaBucket, phase string, docs, parents int64, top []string, currentHome string, currentEpoch int64, msg string) {
 	latest := bucket.DeepCopy()
 	latest.Status.Phase = phase
 	latest.Status.DocCount = docs
 	latest.Status.ParentDocs = parents
 	latest.Status.TopKeys = top
+	latest.Status.CurrentHomeRegion = currentHome
+	latest.Status.HomeEpoch = currentEpoch
 	latest.Status.ObservedGeneration = bucket.Generation
 	now := metav1.Now()
 	latest.Status.LastSeeded = &now

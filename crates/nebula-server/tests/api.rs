@@ -1099,8 +1099,10 @@ fn app_state_with_role(role: NodeRole) -> AppState {
     let cluster = Arc::new(ClusterConfig {
         node_id: Some("node-under-test".into()),
         role,
+        region: None,
         leader_url: None,
         peers: Vec::new(),
+        cross_region_peers: Vec::new(),
     });
     let mut state = AppState::new(index, AppConfig::default()).with_cluster(cluster);
     if matches!(role, NodeRole::Follower) {
@@ -1471,6 +1473,111 @@ async fn bucket_export_import_roundtrip() {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK, "target missing doc {i}");
     }
+}
+
+/// /admin/replication exposes a per-remote-region view when the
+/// cross-region status hub has entries. Phase 2.2 populates the hub
+/// from a real consumer task; here we populate it manually to lock
+/// in the wire shape.
+#[tokio::test]
+async fn admin_replication_includes_cross_region_remotes() {
+    use nebula_server::ClusterConfig;
+    let state = {
+        let mut s = app_state(&[]);
+        let cluster = Arc::new(ClusterConfig {
+            region: Some("us-east-1".into()),
+            ..ClusterConfig::default()
+        });
+        s = s.with_cluster(cluster);
+        s.cross_region_status.register("us-west-2", "http://u:50051");
+        s.cross_region_status.record_apply("us-west-2", 2, 512);
+        s
+    };
+    let app = build_router(state);
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/replication")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"region\":\"us-east-1\""), "got {body}");
+    assert!(body.contains("\"remotes\""), "got {body}");
+    assert!(body.contains("\"us-west-2\""));
+    assert!(body.contains("\"applied_records\":1"));
+    assert!(body.contains("\"last_applied_segment\":2"));
+}
+
+/// home-region endpoint reports `has_home: false` when no seed doc
+/// is present, letting clients fall back gracefully.
+#[tokio::test]
+async fn home_region_reports_absence_when_unconfigured() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/bucket/anything/home-region")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"has_home\":false"), "got {body}");
+    assert!(body.contains("\"home_epoch\":0"));
+    // node_region falls back to "default" when not configured.
+    assert!(body.contains("\"node_region\":\"default\""));
+}
+
+/// With a seed doc carrying home_region metadata, the endpoint
+/// round-trips the stored values. This is the contract the operator's
+/// failover controller depends on.
+#[tokio::test]
+async fn home_region_round_trips_seed_doc() {
+    let state = app_state(&[]);
+    let app = build_router(state);
+    // Seed the bucket the same way the NebulaBucket controller does.
+    let seed_body = serde_json::json!({
+        "id": "__nebuladb_operator_seed__",
+        "text": "NebulaDB bucket test managed by nebuladb-operator",
+        "metadata": {
+            "kind": "nebuladb-operator-seed",
+            "bucket": "test",
+            "home_region": "us-east-1",
+            "home_epoch": 7,
+            "replicated_to": ["us-west-2"]
+        }
+    });
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/test/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&seed_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Now read back.
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/bucket/test/home-region")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"home_region\":\"us-east-1\""), "got {body}");
+    assert!(body.contains("\"home_epoch\":7"));
+    assert!(body.contains("\"has_home\":true"));
+    assert!(body.contains("us-west-2"));
 }
 
 /// Dim-mismatch guard: a client sending vectors of the wrong length

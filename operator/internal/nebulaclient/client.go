@@ -135,6 +135,32 @@ func (c *Client) EmptyBucket(ctx context.Context, bucket string) error {
 	return c.do(ctx, http.MethodPost, path, nil, nil)
 }
 
+// HomeRegionResponse mirrors the JSON body from
+// GET /api/v1/admin/bucket/:b/home-region. Empty home_region means
+// the bucket has no home assigned and falls back to local routing.
+type HomeRegionResponse struct {
+	Bucket       string   `json:"bucket"`
+	HomeRegion   string   `json:"home_region,omitempty"`
+	HomeEpoch    uint64   `json:"home_epoch"`
+	ReplicatedTo []string `json:"replicated_to,omitempty"`
+	NodeRegion   string   `json:"node_region"`
+	HasHome      bool     `json:"has_home"`
+}
+
+// HomeRegion reads the cross-region coordination state for a bucket.
+// Cheap local lookup — no peer traffic, safe to call on every reconcile.
+func (c *Client) HomeRegion(ctx context.Context, bucket string) (*HomeRegionResponse, error) {
+	if bucket == "" {
+		return nil, errors.New("bucket required")
+	}
+	path := fmt.Sprintf("/api/v1/admin/bucket/%s/home-region", url.PathEscape(bucket))
+	var out HomeRegionResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // BucketStats is one entry from GET /api/v1/admin/buckets.
 type BucketStats struct {
 	Name       string   `json:"name"`

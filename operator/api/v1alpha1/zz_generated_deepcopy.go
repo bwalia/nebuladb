@@ -260,6 +260,10 @@ func (in *NebulaBucketSpec) DeepCopyInto(out *NebulaBucketSpec) {
 			out.Labels[k] = v
 		}
 	}
+	if in.ReplicatedTo != nil {
+		out.ReplicatedTo = make([]string, len(in.ReplicatedTo))
+		copy(out.ReplicatedTo, in.ReplicatedTo)
+	}
 }
 
 func (in *NebulaBucketStatus) DeepCopyInto(out *NebulaBucketStatus) {

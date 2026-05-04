@@ -75,6 +75,10 @@ spec:
               labels:
                 type: object
                 additionalProperties: {type: string}
+              homeRegion: {type: string}
+              replicatedTo:
+                type: array
+                items: {type: string}
           status:
             type: object
             properties:
@@ -86,6 +90,8 @@ spec:
                 type: array
                 items: {type: string}
               lastSeeded: {type: string, format: date-time}
+              currentHomeRegion: {type: string}
+              homeEpoch: {type: integer}
               conditions:
                 type: array
                 x-kubernetes-preserve-unknown-fields: true

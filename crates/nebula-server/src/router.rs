@@ -62,6 +62,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/bucket/:bucket/empty", post(admin_empty_bucket))
         .route("/admin/bucket/:bucket/export", get(admin_export_bucket))
         .route("/admin/bucket/:bucket/import", post(admin_import_bucket))
+        .route("/admin/bucket/:bucket/home-region", get(admin_home_region))
         .route("/admin/cluster/nodes", get(admin_cluster_nodes))
         .route("/admin/replication", get(admin_replication))
         .route("/admin/logs/stream", get(admin_logs_stream))
@@ -882,6 +883,17 @@ struct ReplicationInfo {
     /// Whether the follower is trailing the probed leader tip.
     /// `None` on a leader, standalone, or when probe fails.
     behind: Option<bool>,
+    /// This node's own region name, if multi-region is configured.
+    /// Included in the top-level view (rather than under `remotes`)
+    /// so dashboards can label the local entry without a second API
+    /// call to `/healthz`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+    /// Per-remote-region view. Empty for single-region deployments.
+    /// Each entry is the consumer task's self-reported state for that
+    /// remote's stream.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    remotes: Vec<crate::cross_region_status::RemoteRegionStatus>,
 }
 
 #[derive(Serialize)]
@@ -935,6 +947,8 @@ async fn admin_replication(State(s): State<AppState>) -> Json<ReplicationInfo> {
         _ => (None, None, None),
     };
 
+    let remotes = s.cross_region_status.snapshot();
+    let region = s.cluster.region.clone();
     Json(ReplicationInfo {
         role: s.cluster.role,
         local_newest,
@@ -942,6 +956,8 @@ async fn admin_replication(State(s): State<AppState>) -> Json<ReplicationInfo> {
         leader_newest_probed,
         lag_bytes,
         behind,
+        region,
+        remotes,
     })
 }
 
@@ -1190,6 +1206,51 @@ struct ImportBucketResponse {
 /// abort the batch up-front so the bucket never ends up in a mixed-dim
 /// state. Designed to pair with `GET /admin/bucket/:b/export` —
 /// together they form the rebalance-swap primitive.
+/// Response body for `GET /admin/bucket/:b/home-region`.
+///
+/// Stable shape — consumed by the `nebula-client` SDK for routing
+/// writes to the correct region, and by the operator's failover
+/// controller to read the current epoch before bumping it.
+///
+/// `node_region` is included so a caller on the wrong region gets
+/// both "where does this bucket live?" and "where am I?" in one hop,
+/// avoiding a follow-up `/healthz` probe.
+#[derive(Serialize)]
+struct HomeRegionResponse {
+    bucket: String,
+    home_region: Option<String>,
+    home_epoch: u64,
+    replicated_to: Vec<String>,
+    node_region: String,
+    has_home: bool,
+}
+
+/// Report the cross-region coordination state for `bucket`. Reads the
+/// seed doc's metadata — a cheap local lookup, no peer traffic. When
+/// the seed doc doesn't exist or doesn't have a home set, returns
+/// `has_home: false` so callers can fall back to local routing.
+async fn admin_home_region(
+    State(s): State<AppState>,
+    axum::extract::Path(bucket): axum::extract::Path<String>,
+) -> Result<Json<HomeRegionResponse>, ApiError> {
+    if bucket.is_empty() {
+        return Err(ApiError::BadRequest("bucket name required".into()));
+    }
+    let hr = s
+        .index
+        .get(&bucket, crate::home_region::SEED_DOC_ID)
+        .map(|doc| crate::home_region::HomeRegion::from_metadata(&doc.metadata))
+        .unwrap_or_default();
+    Ok(Json(HomeRegionResponse {
+        bucket,
+        has_home: hr.has_home(),
+        home_region: hr.region,
+        home_epoch: hr.epoch,
+        replicated_to: hr.replicated_to,
+        node_region: s.cluster.region_or_default().to_string(),
+    }))
+}
+
 async fn admin_import_bucket(
     State(s): State<AppState>,
     axum::extract::Path(bucket): axum::extract::Path<String>,

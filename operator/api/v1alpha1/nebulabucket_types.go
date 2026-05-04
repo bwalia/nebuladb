@@ -77,17 +77,38 @@ type NebulaBucketSpec struct {
 
 	// Labels recorded in the seed document's metadata.
 	Labels map[string]string `json:"labels,omitempty"`
+
+	// HomeRegion is the region that authoritatively accepts writes for
+	// this bucket. When unset, the bucket has no home and writes land
+	// wherever the client hits (the legacy behavior). The bucket
+	// controller writes this to the seed doc's home_region field.
+	HomeRegion string `json:"homeRegion,omitempty"`
+
+	// ReplicatedTo is the list of non-home regions that receive
+	// cross-region WAL tail for this bucket. Informational — the
+	// cross-region plumbing is driven by the cluster's crossRegion
+	// peers, not this field, but having it in the seed doc lets the
+	// nebula-client SDK surface "where can I safely read?".
+	ReplicatedTo []string `json:"replicatedTo,omitempty"`
 }
 
 // NebulaBucketStatus tracks the live state of a bucket.
 type NebulaBucketStatus struct {
-	Phase              string             `json:"phase,omitempty"`
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	DocCount           int64              `json:"docCount,omitempty"`
-	ParentDocs         int64              `json:"parentDocs,omitempty"`
-	TopKeys            []string           `json:"topKeys,omitempty"`
-	LastSeeded         *metav1.Time       `json:"lastSeeded,omitempty"`
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	Phase              string       `json:"phase,omitempty"`
+	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
+	DocCount           int64        `json:"docCount,omitempty"`
+	ParentDocs         int64        `json:"parentDocs,omitempty"`
+	TopKeys            []string     `json:"topKeys,omitempty"`
+	LastSeeded         *metav1.Time `json:"lastSeeded,omitempty"`
+	// CurrentHomeRegion is the region currently serving writes for
+	// this bucket — usually equals spec.homeRegion but can diverge
+	// during an in-progress failover.
+	CurrentHomeRegion string `json:"currentHomeRegion,omitempty"`
+	// HomeEpoch is the last epoch the controller observed. Only the
+	// NebulaRegionFailover controller bumps this — creation seeds
+	// it to 1.
+	HomeEpoch  int64              `json:"homeEpoch,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
