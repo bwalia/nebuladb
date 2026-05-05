@@ -426,6 +426,24 @@ impl Wal {
         &self.dir
     }
 
+    /// Enumerate segment files whose seq is >= `start_seq`, sorted
+    /// ascending. Each entry is `(seq, absolute_path)`.
+    ///
+    /// Used by the backup engine to bundle exactly the WAL slice
+    /// that postdates the snapshot it just took. Reads are racy —
+    /// a concurrent rotate may add a new segment after the listing —
+    /// so callers that need a stable view should call this *after*
+    /// the snapshot they're attaching it to.
+    pub fn segments_since(&self, start_seq: u64) -> Result<Vec<(u64, PathBuf)>> {
+        let mut segs: Vec<(u64, PathBuf)> = list_segments(&self.dir)?
+            .into_iter()
+            .filter(|s| s.seq >= start_seq)
+            .map(|s| (s.seq, s.path))
+            .collect();
+        segs.sort_by_key(|(s, _)| *s);
+        Ok(segs)
+    }
+
     /// Cursor pointing at where the next record will land. On a
     /// fresh WAL this is `(0, MAGIC.len())` — past the header, at
     /// the first append slot. Used by /admin/replication to report
@@ -651,6 +669,42 @@ mod tests {
                 _ => panic!(),
             }
         }
+    }
+
+    #[test]
+    fn segments_since_returns_at_or_after() {
+        let dir = tempdir().unwrap();
+        // Force tiny segments so a few appends roll multiple files.
+        let wal = Wal::open(
+            dir.path(),
+            WalConfig {
+                segment_size_bytes: 256,
+                fsync_on_append: false,
+            },
+        )
+        .unwrap();
+        // Write enough to roll past at least 2 segments.
+        for i in 0..30 {
+            wal.append(&mk_rec(i)).unwrap();
+        }
+        wal.flush().unwrap();
+
+        let all = wal.segments_since(0).unwrap();
+        assert!(all.len() >= 2, "expected multiple segments, got {}", all.len());
+        // Sorted ascending.
+        for w in all.windows(2) {
+            assert!(w[0].0 < w[1].0, "segments_since must be sorted");
+        }
+
+        // start_seq filtering: asking for the second segment onward
+        // returns the same list minus the first entry.
+        let from_second = wal.segments_since(all[1].0).unwrap();
+        assert_eq!(from_second.len(), all.len() - 1);
+        assert_eq!(from_second[0].0, all[1].0);
+
+        // start_seq past the end is the empty set.
+        let beyond = wal.segments_since(all.last().unwrap().0 + 100).unwrap();
+        assert!(beyond.is_empty());
     }
 
     #[test]

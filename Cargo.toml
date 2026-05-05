@@ -15,6 +15,7 @@ members = [
     "crates/nebula-pgwire",
     "crates/nebula-server",
     "crates/nebula-client",
+    "crates/nebula-backup",
 ]
 
 [workspace.package]
