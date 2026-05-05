@@ -22,6 +22,10 @@ nebula-wal = { path = "../nebula-wal" }
 nebula-sql = { path = "../nebula-sql" }
 nebula-grpc = { path = "../nebula-grpc" }
 nebula-pgwire = { path = "../nebula-pgwire" }
+nebula-backup = { path = "../nebula-backup" }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+aws-credential-types = "1"
 
 axum.workspace = true
 tower.workspace = true
@@ -52,3 +56,4 @@ nebula-chunk = { path = "../nebula-chunk" }
 nebula-cache = { path = "../nebula-cache" }
 nebula-embed = { path = "../nebula-embed" }
 jsonwebtoken.workspace = true
+tempfile = "3"

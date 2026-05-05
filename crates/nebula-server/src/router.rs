@@ -63,6 +63,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/bucket/:bucket/export", get(admin_export_bucket))
         .route("/admin/bucket/:bucket/import", post(admin_import_bucket))
         .route("/admin/bucket/:bucket/home-region", get(admin_home_region))
+        .route("/admin/backup", post(crate::backup_routes::admin_backup_start))
+        .route("/admin/backup/:id", get(crate::backup_routes::admin_backup_status))
+        .route("/admin/backups", get(crate::backup_routes::admin_backups_list))
+        .route(
+            "/admin/backup/manifest",
+            post(crate::backup_routes::admin_backup_manifest),
+        )
+        .route("/admin/restore", post(crate::backup_routes::admin_restore_start))
+        .route("/admin/restore/:id", get(crate::backup_routes::admin_restore_status))
         .route("/admin/cluster/nodes", get(admin_cluster_nodes))
         .route("/admin/replication", get(admin_replication))
         .route("/admin/logs/stream", get(admin_logs_stream))

@@ -1372,6 +1372,97 @@ async fn admin_replication_reports_cursors() {
     assert!(body.contains("\"byte_offset\":4096"));
 }
 
+/// /admin/backup kicks off a backup against a Local target and the
+/// status endpoint reports completion. Source-of-truth test for the
+/// REST surface that the operator's CronJob will hit in production —
+/// the only thing not exercised vs S3 is the wire format.
+#[tokio::test]
+async fn admin_backup_round_trip_via_local_target() {
+    use nebula_index::TextIndex;
+    use nebula_vector::{HnswConfig, Metric};
+    use std::sync::Arc;
+
+    // Spin up a persistent index on disk — backup needs WAL.
+    let data_dir = tempfile::tempdir().unwrap();
+    let storage_dir = tempfile::tempdir().unwrap();
+    let staging_dir = tempfile::tempdir().unwrap();
+
+    let emb: Arc<dyn nebula_embed::Embedder> = Arc::new(nebula_embed::MockEmbedder::new(8));
+    let index = Arc::new(
+        TextIndex::open_persistent(emb, Metric::Cosine, HnswConfig::default(), data_dir.path())
+            .unwrap(),
+    );
+    index
+        .upsert_text("docs", "1", "hello", serde_json::json!({}))
+        .await
+        .unwrap();
+
+    let state = AppState::new(index, AppConfig::default());
+    let app = build_router(state.clone());
+
+    // Kick off the backup.
+    let body = serde_json::json!({
+        "cluster_name": "test-cluster",
+        "staging_dir": staging_dir.path().to_str().unwrap(),
+        "storage": {
+            "type": "local",
+            "path": storage_dir.path().to_str().unwrap(),
+        }
+    });
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/admin/backup")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let resp: serde_json::Value = serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+    let job_id = resp["backup_id"].as_str().unwrap().to_string();
+
+    // Poll for completion. The actual run is async; allow a few hundred ms.
+    let mut completed = false;
+    for _ in 0..40 {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/admin/backup/{job_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_string(res.into_body()).await;
+        if body.contains("\"phase\":\"completed\"") {
+            completed = true;
+            assert!(body.contains("\"manifest_url\""), "expected manifest_url in body: {body}");
+            break;
+        }
+        if body.contains("\"phase\":\"failed\"") {
+            panic!("backup failed: {body}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(completed, "backup did not complete in time");
+
+    // Listing endpoint should show the job too.
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/backups")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains(&job_id), "list missing our job_id: {body}");
+}
+
 /// Source-of-truth test for the bucket export/import swap primitive.
 /// Seeds one bucket, exports it, spins up a *second* independent
 /// index, imports the export, and asserts the second index can serve
