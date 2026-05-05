@@ -189,13 +189,14 @@ jobs:
         run: kind load docker-image ghcr.io/bwalia/nebuladb-operator:ci --name nebula-operator-e2e
 
       - name: Install operator
-        # Apply CRDs + RBAC + manager via kustomize, patching the
-        # manager image to the local tag we just loaded.
+        # Apply the default overlay, which bundles CRDs + RBAC + manager
+        # in one kustomization. Kustomize sorts by kind so the Namespace
+        # is created before the ServiceAccount that references it
+        # (applying rbac before manager directly hits "namespaces
+        # nebuladb-system not found"). Then patch the manager image to
+        # the local tag we just loaded.
         run: |
-          kubectl apply -k operator/config/crd
-          kubectl apply -k operator/config/rbac
-          # Patch the manager Deployment to use the CI image.
-          kubectl apply -k operator/config/manager
+          kubectl apply -k operator/config/default
           kubectl -n nebuladb-system set image deployment/nebuladb-operator \
             manager=ghcr.io/bwalia/nebuladb-operator:ci
           kubectl -n nebuladb-system rollout status deployment/nebuladb-operator --timeout=180s
