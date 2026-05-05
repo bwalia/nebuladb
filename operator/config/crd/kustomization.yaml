@@ -3,3 +3,6 @@ resources:
 - bases/nebula.nebuladb.io_nebulabuckets.yaml
 - bases/nebula.nebuladb.io_nebularebalances.yaml
 - bases/nebula.nebuladb.io_nebularegionfailovers.yaml
+- bases/nebula.nebuladb.io_nebulabackupschedules.yaml
+- bases/nebula.nebuladb.io_nebulabackups.yaml
+- bases/nebula.nebuladb.io_nebularestores.yaml

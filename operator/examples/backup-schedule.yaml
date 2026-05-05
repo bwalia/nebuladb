@@ -1,0 +1,48 @@
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaBackupSchedule
+metadata:
+  name: nightly-prod
+  namespace: nebuladb
+spec:
+  clusterRef: nebula-prod
+  # Every day at 02:00 cluster-local.
+  schedule: "0 2 * * *"
+  # Suspend without deletion when you want to pause.
+  suspend: false
+  storage:
+    s3:
+      bucket: my-nebuladb-backups
+      prefix: nebula-prod
+      region: us-east-1
+      credentialsSecretRef:
+        # Secret must contain AWS_ACCESS_KEY_ID and
+        # AWS_SECRET_ACCESS_KEY keys exactly.
+        name: nebuladb-s3-creds
+        key: AWS_ACCESS_KEY_ID  # informational; both keys are read
+  retention:
+    keepLast: 14
+    keepDailyDays: 30
+    keepWeeklyWeeks: 12
+    keepMonthlyMonths: 12
+  # Override the default nebulactl image for the CronJob.
+  # image: ghcr.io/bwalia/nebulactl:0.1.1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits:   {cpu: 500m, memory: 256Mi}
+---
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaRestore
+metadata:
+  name: restore-prod-to-staging
+  namespace: nebuladb
+spec:
+  sourceBackupId: "01HV6ABCDEF"
+  targetClusterRef: nebula-staging
+  storage:
+    s3:
+      bucket: my-nebuladb-backups
+      prefix: nebula-prod
+      region: us-east-1
+      credentialsSecretRef:
+        name: nebuladb-s3-creds
+        key: AWS_ACCESS_KEY_ID

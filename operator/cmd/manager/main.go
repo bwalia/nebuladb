@@ -99,6 +99,23 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NebulaRegionFailover")
 		os.Exit(1)
 	}
+	if err := (&controllers.NebulaBackupScheduleReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("nebulabackupschedule-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "NebulaBackupSchedule")
+		os.Exit(1)
+	}
+	if err := (&controllers.NebulaRestoreReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Recorder:      mgr.GetEventRecorderFor("nebularestore-controller"),
+		NebulaFactory: factory,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "NebulaRestore")
+		os.Exit(1)
+	}
 
 	if enableWebhooks {
 		if err := webhooks.SetupWithManager(mgr); err != nil {
