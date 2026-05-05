@@ -1,0 +1,43 @@
+[package]
+name = "nebula-backup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+nebula-core = { path = "../nebula-core" }
+nebula-index = { path = "../nebula-index" }
+nebula-wal = { path = "../nebula-wal" }
+
+# I/O + storage
+async-trait.workspace = true
+tokio = { workspace = true, features = ["fs", "rt", "rt-multi-thread", "macros", "io-util", "sync"] }
+futures.workspace = true
+bytes.workspace = true
+
+# tar + zstd: build the bundle in a streaming pipeline
+tar = "0.4"
+zstd = { version = "0.13", default-features = false }
+tempfile = "3"
+
+# Object storage. The aws-sdk-s3 client speaks every S3-compatible
+# endpoint we care about (AWS, MinIO, R2, Wasabi, B2, GCS via S3 interop).
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+aws-credential-types = "1"
+aws-smithy-types = "1"
+
+# Manifest + checksums
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2 = "0.10"
+hex = "0.4"
+ulid = { version = "1", features = ["serde"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
+nebula-embed = { path = "../nebula-embed" }
+nebula-vector = { path = "../nebula-vector" }

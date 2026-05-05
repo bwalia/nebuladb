@@ -1,0 +1,88 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nebulabackupschedules.nebula.nebuladb.io
+spec:
+  group: nebula.nebuladb.io
+  names:
+    kind: NebulaBackupSchedule
+    listKind: NebulaBackupScheduleList
+    plural: nebulabackupschedules
+    singular: nebulabackupschedule
+    shortNames: [nbs, nebbackupschedule]
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources: {status: {}}
+    additionalPrinterColumns:
+    - {name: Cluster, type: string, jsonPath: .spec.clusterRef}
+    - {name: Schedule, type: string, jsonPath: .spec.schedule}
+    - {name: LastBackup, type: date, jsonPath: .status.lastBackupAt}
+    - {name: Suspended, type: boolean, jsonPath: .spec.suspend}
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          apiVersion: {type: string}
+          kind: {type: string}
+          metadata: {type: object}
+          spec:
+            type: object
+            required: [clusterRef, schedule, storage]
+            properties:
+              clusterRef: {type: string}
+              schedule: {type: string}
+              suspend: {type: boolean}
+              image: {type: string}
+              storage:
+                type: object
+                properties:
+                  s3:
+                    type: object
+                    required: [bucket]
+                    properties:
+                      bucket: {type: string}
+                      prefix: {type: string}
+                      region: {type: string}
+                      endpoint: {type: string}
+                      credentialsSecretRef:
+                        type: object
+                        required: [name, key]
+                        properties:
+                          name: {type: string}
+                          key: {type: string}
+                  local:
+                    type: object
+                    required: [path]
+                    properties:
+                      path: {type: string}
+              retention:
+                type: object
+                properties:
+                  keepLast: {type: integer}
+                  keepDailyDays: {type: integer}
+                  keepWeeklyWeeks: {type: integer}
+                  keepMonthlyMonths: {type: integer}
+              throttle:
+                type: object
+                properties:
+                  maxBandwidthMbps: {type: integer}
+              resources:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+          status:
+            type: object
+            properties:
+              observedGeneration: {type: integer}
+              lastBackupId: {type: string}
+              lastBackupAt: {type: string, format: date-time}
+              nextScheduledAt: {type: string, format: date-time}
+              cronJobName: {type: string}
+              conditions:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true

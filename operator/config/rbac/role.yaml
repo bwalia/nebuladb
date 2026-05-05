@@ -19,14 +19,38 @@ rules:
   resources: [horizontalpodautoscalers]
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [nebula.nebuladb.io]
-  resources: [nebulaclusters, nebulabuckets, nebularebalances, nebularegionfailovers]
+  resources:
+    - nebulaclusters
+    - nebulabuckets
+    - nebularebalances
+    - nebularegionfailovers
+    - nebulabackupschedules
+    - nebulabackups
+    - nebularestores
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [nebula.nebuladb.io]
-  resources: [nebulaclusters/status, nebulabuckets/status, nebularebalances/status, nebularegionfailovers/status]
+  resources:
+    - nebulaclusters/status
+    - nebulabuckets/status
+    - nebularebalances/status
+    - nebularegionfailovers/status
+    - nebulabackupschedules/status
+    - nebulabackups/status
+    - nebularestores/status
   verbs: [get, update, patch]
 - apiGroups: [nebula.nebuladb.io]
-  resources: [nebulaclusters/finalizers, nebulabuckets/finalizers, nebularebalances/finalizers, nebularegionfailovers/finalizers]
+  resources:
+    - nebulaclusters/finalizers
+    - nebulabuckets/finalizers
+    - nebularebalances/finalizers
+    - nebularegionfailovers/finalizers
+    - nebulabackupschedules/finalizers
+    - nebulabackups/finalizers
+    - nebularestores/finalizers
   verbs: [update]
+- apiGroups: [batch]
+  resources: [cronjobs, jobs]
+  verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [coordination.k8s.io]
   resources: [leases]
   verbs: [get, list, watch, create, update, patch, delete]

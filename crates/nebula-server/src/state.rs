@@ -162,6 +162,10 @@ pub struct AppState {
     /// The background task (Phase 2.2) updates this; admin endpoints
     /// read it. Always present — an empty hub means single-region.
     pub cross_region_status: crate::cross_region_status::CrossRegionStatusHub,
+    /// In-process status ring for /admin/backup and /admin/restore
+    /// jobs. Capacity is fixed at 50 in `JobRing`; production
+    /// historical view comes from object storage, not this ring.
+    pub backup_jobs: Arc<crate::backup_routes::JobRing>,
 }
 
 impl AppState {
@@ -191,6 +195,7 @@ impl AppState {
             follower_cursor: None,
             log_bus: Arc::new(LogBus::default()),
             cross_region_status: crate::cross_region_status::CrossRegionStatusHub::new(),
+            backup_jobs: Arc::new(crate::backup_routes::JobRing::new()),
         }
     }
 

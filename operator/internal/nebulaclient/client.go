@@ -151,6 +151,58 @@ func (c *Client) EmptyBucket(ctx context.Context, bucket string) error {
 	return c.do(ctx, http.MethodPost, path, nil, nil)
 }
 
+// StartRestoreResponse mirrors POST /admin/restore.
+type StartRestoreResponse struct {
+	RestoreID string `json:"restore_id"`
+	StatusURL string `json:"status_url"`
+}
+
+// RestoreStatusResponse mirrors GET /admin/restore/:id.
+type RestoreStatusResponse struct {
+	ID    string `json:"id"`
+	Phase string `json:"phase"`
+	Error string `json:"error,omitempty"`
+}
+
+// StartRestore POSTs /admin/restore with the operator-supplied
+// payload and returns the assigned restore_id.
+func (c *Client) StartRestore(ctx context.Context, body map[string]interface{}) (*StartRestoreResponse, error) {
+	var out StartRestoreResponse
+	if err := c.do(ctx, http.MethodPost, "/api/v1/admin/restore", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) RestoreStatus(ctx context.Context, id string) (*RestoreStatusResponse, error) {
+	var out RestoreStatusResponse
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/admin/restore/%s", url.PathEscape(id)), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// StorageSpecJSON renders a `storage` payload from the operator's
+// CRD shape. Either s3 or local is non-nil — the other is nil.
+// Returns the map suitable for embedding in a request body.
+func StorageSpecJSON(s3 map[string]interface{}, local map[string]interface{}) (map[string]interface{}, error) {
+	if local != nil {
+		out := map[string]interface{}{"type": "local"}
+		for k, v := range local {
+			out[k] = v
+		}
+		return out, nil
+	}
+	if s3 != nil {
+		out := map[string]interface{}{"type": "s3"}
+		for k, v := range s3 {
+			out[k] = v
+		}
+		return out, nil
+	}
+	return nil, errors.New("storage requires .s3 or .local")
+}
+
 // HomeRegionResponse mirrors the JSON body from
 // GET /api/v1/admin/bucket/:b/home-region. Empty home_region means
 // the bucket has no home assigned and falls back to local routing.

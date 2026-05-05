@@ -1,0 +1,57 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nebulabackups.nebula.nebuladb.io
+spec:
+  group: nebula.nebuladb.io
+  names:
+    kind: NebulaBackup
+    listKind: NebulaBackupList
+    plural: nebulabackups
+    singular: nebulabackup
+    shortNames: [nbk, nebbackup]
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    subresources: {status: {}}
+    additionalPrinterColumns:
+    - {name: Cluster, type: string, jsonPath: .spec.clusterRef}
+    - {name: Schedule, type: string, jsonPath: .spec.scheduleRef}
+    - {name: Phase, type: string, jsonPath: .status.phase}
+    - {name: Size, type: integer, jsonPath: .status.sizeBytes}
+    - {name: Age, type: date, jsonPath: .metadata.creationTimestamp}
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          apiVersion: {type: string}
+          kind: {type: string}
+          metadata: {type: object}
+          spec:
+            type: object
+            required: [clusterRef, storage]
+            properties:
+              clusterRef: {type: string}
+              scheduleRef: {type: string}
+              storage:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+          status:
+            type: object
+            properties:
+              phase: {type: string}
+              observedGeneration: {type: integer}
+              backupId: {type: string}
+              startedAt: {type: string, format: date-time}
+              completedAt: {type: string, format: date-time}
+              manifestURL: {type: string}
+              sizeBytes: {type: integer}
+              durationSeconds: {type: integer}
+              conditions:
+                type: array
+                items:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
