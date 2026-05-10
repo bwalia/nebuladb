@@ -1092,6 +1092,49 @@ impl TextIndex {
         let qv = self.embedder.embed_one(query).await?;
         self.search_vector(&qv, bucket, k, ef)
     }
+
+    /// Async wrapper around [`search_vector`] that runs the
+    /// synchronous HNSW work on tokio's blocking pool.
+    ///
+    /// Why this exists: [`search_vector`] takes a `parking_lot::RwLock`
+    /// read and does HNSW traversal under it — both fully synchronous.
+    /// Calling it directly inside an async future pins a tokio worker
+    /// for the duration of the search. With a small worker pool
+    /// (e.g. when `available_parallelism` returns a low number under
+    /// a CPU cgroup cap), a handful of concurrent searches saturate
+    /// the runtime; new requests including `/healthz` queue with no
+    /// worker free, and the docker healthcheck flips the container
+    /// to unhealthy. Moving the work to the dedicated blocking pool
+    /// fixes that — tokio's async workers stay free to drive other
+    /// futures.
+    pub async fn search_vector_blocking(
+        self: std::sync::Arc<Self>,
+        vector: Vec<f32>,
+        bucket: Option<String>,
+        k: usize,
+        ef: Option<usize>,
+    ) -> Result<Vec<Hit>> {
+        tokio::task::spawn_blocking(move || {
+            self.search_vector(&vector, bucket.as_deref(), k, ef)
+        })
+        .await
+        .map_err(|e| IndexError::Invalid(format!("blocking search task failed: {e}")))?
+    }
+
+    /// Async wrapper around [`search_text`] with the same blocking-pool
+    /// hand-off as [`search_vector_blocking`]. The embed step still
+    /// runs on the async worker — it's network-bound and yields at
+    /// every `.await` — so only the synchronous index lookup moves.
+    pub async fn search_text_blocking(
+        self: std::sync::Arc<Self>,
+        query: String,
+        bucket: Option<String>,
+        k: usize,
+        ef: Option<usize>,
+    ) -> Result<Vec<Hit>> {
+        let qv = self.embedder.embed_one(&query).await?;
+        self.search_vector_blocking(qv, bucket, k, ef).await
+    }
 }
 
 #[cfg(test)]
