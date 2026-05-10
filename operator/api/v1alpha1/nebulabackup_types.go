@@ -9,9 +9,9 @@ import (
 // Credentials live in a Secret so the CR never carries them.
 type S3StorageSpec struct {
 	// +kubebuilder:validation:Required
-	Bucket   string `json:"bucket"`
-	Prefix   string `json:"prefix,omitempty"`
-	Region   string `json:"region,omitempty"`
+	Bucket string `json:"bucket"`
+	Prefix string `json:"prefix,omitempty"`
+	Region string `json:"region,omitempty"`
 	// Endpoint override for non-AWS targets (MinIO, R2, etc).
 	Endpoint string `json:"endpoint,omitempty"`
 	// CredentialsSecretRef points at a Secret with two keys —
@@ -81,9 +81,9 @@ type NebulaBackupScheduleSpec struct {
 	ClusterRef string `json:"clusterRef"`
 	// Cron expression in the cluster's local timezone.
 	// +kubebuilder:validation:Required
-	Schedule  string             `json:"schedule"`
-	Storage   BackupStorageSpec  `json:"storage"`
-	Retention RetentionPolicy    `json:"retention,omitempty"`
+	Schedule  string            `json:"schedule"`
+	Storage   BackupStorageSpec `json:"storage"`
+	Retention RetentionPolicy   `json:"retention,omitempty"`
 	// Throttle reserved for future use; today it's documentation.
 	Throttle *BackupThrottle `json:"throttle,omitempty"`
 	// Suspend pauses the schedule without deleting the CR. Mirrors
@@ -193,8 +193,8 @@ type NebulaRestoreSpec struct {
 	// +kubebuilder:validation:Required
 	SourceBackupID string `json:"sourceBackupId"`
 	// +kubebuilder:validation:Required
-	TargetClusterRef string             `json:"targetClusterRef"`
-	Storage          BackupStorageSpec  `json:"storage"`
+	TargetClusterRef string            `json:"targetClusterRef"`
+	Storage          BackupStorageSpec `json:"storage"`
 	// PITR target — optional; v1 only honors target_time at WAL
 	// segment-rotation granularity.
 	PITR *RestorePITR `json:"pitr,omitempty"`

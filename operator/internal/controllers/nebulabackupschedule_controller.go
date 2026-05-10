@@ -157,9 +157,9 @@ func (r *NebulaBackupScheduleReconciler) buildCronJob(
 			Name:      fmt.Sprintf("%s-backup", sched.Name),
 			Namespace: sched.Namespace,
 			Labels: map[string]string{
-				LabelAppName:      "nebuladb-backup",
-				LabelAppManagedBy: ManagedBy,
-				LabelClusterName:  sched.Spec.ClusterRef,
+				LabelAppName:                  "nebuladb-backup",
+				LabelAppManagedBy:             ManagedBy,
+				LabelClusterName:              sched.Spec.ClusterRef,
 				"nebula.nebuladb.io/schedule": sched.Name,
 			},
 		},
@@ -176,10 +176,10 @@ func (r *NebulaBackupScheduleReconciler) buildCronJob(
 						Spec: corev1.PodSpec{
 							RestartPolicy: corev1.RestartPolicyOnFailure,
 							Containers: []corev1.Container{{
-								Name:    "nebulactl",
-								Image:   image,
-								Args:    args,
-								Env:     append([]corev1.EnvVar{{Name: "NEBULA_URL", Value: clusterURL}}, env...),
+								Name:      "nebulactl",
+								Image:     image,
+								Args:      args,
+								Env:       append([]corev1.EnvVar{{Name: "NEBULA_URL", Value: clusterURL}}, env...),
 								Resources: resources,
 							}},
 						},
@@ -376,4 +376,3 @@ func (r *NebulaBackupScheduleReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		Owns(&batchv1.CronJob{}).
 		Complete(r)
 }
-
