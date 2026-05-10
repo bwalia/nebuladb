@@ -234,8 +234,12 @@ services:
       timeout: 3s
       retries: 10
       # Give the build + initial boot a generous window before health
-      # checks start failing the container.
-      start_period: 30s
+      # checks start failing the container. Cold WAL recovery on a
+      # large data dir (tens of MB of WAL, tens of thousands of HNSW
+      # inserts) can take minutes under the 2-CPU cap below — keep
+      # the start window above that worst case so a heavy ingest
+      # session doesn't lock the operator out at the next deploy.
+      start_period: 300s
     deploy:
       resources:
         limits:
