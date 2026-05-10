@@ -19,6 +19,7 @@ use axum::{
 use futures::stream::{self, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use nebula_llm::{build_rag_prompt, LlmChunk};
@@ -28,6 +29,7 @@ use crate::state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
     let limit = state.config.max_body_bytes;
+    let request_timeout = state.config.request_timeout;
 
     // Auth + rate limit apply to the domain API only. Ops endpoints
     // (/healthz, /metrics) stay unthrottled so a scrape still works
@@ -37,7 +39,16 @@ pub fn build_router(state: AppState) -> Router {
     //   rate_limit -> auth -> body_limit -> trace -> handler
     // Rate limit runs first so a flood of unauthenticated requests
     // can't burn the auth middleware's CPU budget.
-    let api = Router::new()
+
+    // Streaming endpoints (SSE) opt out of the request timeout —
+    // they're long-lived by design and a 30s cutoff would kill
+    // the live log tail and the RAG token stream.
+    let api_streaming = Router::new()
+        .route("/admin/logs/stream", get(admin_logs_stream))
+        .route("/ai/rag", post(ai_rag));
+
+    // Everything else gets the optional per-request timeout.
+    let api_normal = Router::new()
         .route("/bucket/:bucket/doc", post(upsert_doc))
         .route("/bucket/:bucket/doc/:id", get(get_doc).delete(delete_doc))
         .route("/bucket/:bucket/docs/bulk", post(upsert_docs_bulk))
@@ -48,7 +59,6 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/vector/search", post(vector_search))
         .route("/ai/search", post(ai_search))
-        .route("/ai/rag", post(ai_rag))
         .route("/query", post(sql_query))
         .route("/query/explain", post(sql_explain))
         .route("/admin/buckets", get(admin_buckets))
@@ -73,8 +83,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/restore", post(crate::backup_routes::admin_restore_start))
         .route("/admin/restore/:id", get(crate::backup_routes::admin_restore_status))
         .route("/admin/cluster/nodes", get(admin_cluster_nodes))
-        .route("/admin/replication", get(admin_replication))
-        .route("/admin/logs/stream", get(admin_logs_stream))
+        .route("/admin/replication", get(admin_replication));
+    let api_normal = if let Some(t) = request_timeout {
+        api_normal.layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            t,
+        ))
+    } else {
+        api_normal
+    };
+
+    let api = api_normal
+        .merge(api_streaming)
         // Layer order (innermost last; request flows top-to-bottom,
         // response bottom-to-top):
         //   rate_limit → follower_guard → audit → auth → handler

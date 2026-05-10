@@ -5,6 +5,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use ahash::AHashSet;
 
@@ -99,6 +100,10 @@ pub struct AppConfig {
     /// Token-bucket parameters applied by the rate-limit layer when
     /// `AppState::rate_limiter` is `Some`.
     pub rate_limit: RateLimitConfig,
+    /// Optional per-request timeout applied to non-streaming routes.
+    /// `None` keeps the historical "let it run" behavior. SSE streams
+    /// (`/ai/rag`, `/admin/logs/stream`) bypass this regardless.
+    pub request_timeout: Option<Duration>,
 }
 
 impl Default for AppConfig {
@@ -113,6 +118,7 @@ impl Default for AppConfig {
             default_ef_search: 64,
             max_top_k: 100,
             rate_limit: RateLimitConfig::default(),
+            request_timeout: None,
         }
     }
 }
