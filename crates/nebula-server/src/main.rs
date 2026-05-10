@@ -12,14 +12,12 @@ use std::time::Duration;
 
 use ahash::AHashSet;
 use nebula_cache::{CacheStats, CachingEmbedder};
-use nebula_redis_cache::{RedisCacheConfig, RedisEmbedCache};
 use nebula_chunk::{Chunker, FixedSizeChunker};
 use nebula_embed::{Embedder, MockEmbedder, OpenAiEmbedder, OpenAiEmbedderConfig};
-use nebula_index::TextIndex;
-use nebula_llm::{
-    LlmClient, MockLlm, OllamaConfig, OllamaLlm, OpenAiChatConfig, OpenAiChatLlm,
-};
 use nebula_grpc::GrpcState;
+use nebula_index::TextIndex;
+use nebula_llm::{LlmClient, MockLlm, OllamaConfig, OllamaLlm, OpenAiChatConfig, OpenAiChatLlm};
+use nebula_redis_cache::{RedisCacheConfig, RedisEmbedCache};
 use nebula_server::state::{FollowerCursor, TeeCursorStore};
 use nebula_server::{
     build_router, AppConfig, AppState, CapturingSubscriber, ClusterConfig, JwtConfig, LogBus,
@@ -28,17 +26,43 @@ use nebula_server::{
 use nebula_sql::{cache::SemanticCacheConfig, SemanticCache, SqlEngine};
 use nebula_vector::{HnswConfig, Metric};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Runtime is built explicitly so worker_threads is operator-tunable.
+    // Default = `available_parallelism` (respects cgroup CPU caps).
+    // The previous `#[tokio::main]` default was supposed to do the
+    // same but in some container topologies came up with only 2
+    // workers, which let a handful of slow tasks pin the entire
+    // runtime — the symptom that motivated this change.
+    let workers: usize = std::env::var("NEBULA_WORKER_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .or_else(|| std::thread::available_parallelism().ok().map(|n| n.get()))
+        .unwrap_or(4)
+        .max(2);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
+        .enable_all()
+        .thread_name("tokio-rt-worker")
+        .build()?;
+    runtime.block_on(async_main(workers))
+}
+
+async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     // LogBus created before the subscriber so the same Arc winds up
     // on AppState later. Anything logged from this point on is
-    // captured and served via /admin/logs/stream.
+    // captured and served via /admin/logs/stream — and, when
+    // `NEBULA_LOG_STDERR=on` (the default), also to stderr so
+    // `docker logs` has breadcrumbs even if the runtime is wedged.
     let min_level = std::env::var("NEBULA_LOG_LEVEL")
         .ok()
         .and_then(|s| LogLevel::parse(&s))
         .unwrap_or(LogLevel::Info);
     let log_bus = Arc::new(LogBus::new(256, min_level));
-    tracing_subscriber_init(Arc::clone(&log_bus));
+    let stderr = std::env::var("NEBULA_LOG_STDERR")
+        .map(|v| v != "off")
+        .unwrap_or(true);
+    tracing_subscriber_init(Arc::clone(&log_bus), stderr);
+    tracing::info!(workers, stderr, "nebula-server starting");
 
     let bind: SocketAddr = std::env::var("NEBULA_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
@@ -281,14 +305,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // rather than silently degrading. The follower_cursor atomic
     // is only created when we're actually a follower — leaders
     // and standalones never need it.
-    let cluster = Arc::new(ClusterConfig::from_env().map_err(|e| -> Box<dyn std::error::Error> {
-        format!("cluster config: {e}").into()
-    })?);
+    let cluster = Arc::new(
+        ClusterConfig::from_env()
+            .map_err(|e| -> Box<dyn std::error::Error> { format!("cluster config: {e}").into() })?,
+    );
     let follower_cursor: Option<Arc<FollowerCursor>> = if cluster.is_follower() {
         Some(Arc::new(FollowerCursor::default()))
     } else {
         None
     };
+
+    // Per-request timeout for non-streaming routes. Off by default
+    // so existing slow ingestions (bulk upsert with cold embedder)
+    // aren't cut short. Set NEBULA_REQUEST_TIMEOUT_SECS=30 in dev to
+    // surface a stuck handler quickly.
+    let request_timeout = std::env::var("NEBULA_REQUEST_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .map(Duration::from_secs);
 
     let mut state = AppState::new(
         index,
@@ -296,6 +331,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             api_keys,
             jwt,
             rate_limit: rate_limit_cfg,
+            request_timeout,
             ..AppConfig::default()
         },
     )
@@ -351,12 +387,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let grpc_addr: SocketAddr = addr.parse()?;
             // Pass the cluster role through so DocumentService rejects
             // writes on followers — symmetric with the REST guard.
-            let grpc_state = GrpcState::with_role(
-                grpc_index.clone(),
-                grpc_llm,
-                grpc_chunker,
-                cluster.role,
-            );
+            let grpc_state =
+                GrpcState::with_role(grpc_index.clone(), grpc_llm, grpc_chunker, cluster.role);
             let source_region = cluster.region.clone();
             tracing::info!(
                 "nebula-grpc listening on {grpc_addr} (role={:?}, region={:?})",
@@ -388,10 +420,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "nebula-pgwire listening on {pg_addr} (role={pg_role:?}, region={pg_region:?})",
             );
             Some(tokio::spawn(async move {
-                if let Err(e) = nebula_pgwire::serve_with_role_and_region(
-                    engine, pg_addr, pg_role, pg_region,
-                )
-                .await
+                if let Err(e) =
+                    nebula_pgwire::serve_with_role_and_region(engine, pg_addr, pg_role, pg_region)
+                        .await
                 {
                     tracing::error!(error = %e, "pgwire server exited");
                 }
@@ -453,12 +484,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // touching the file system.
                 let store: Option<Arc<dyn nebula_grpc::follower::CursorStore>> =
                     match (durable, follower_cursor.as_ref()) {
-                        (Some(durable), Some(snapshot)) => {
-                            Some(Arc::new(TeeCursorStore {
-                                durable,
-                                snapshot: Arc::clone(snapshot),
-                            }))
-                        }
+                        (Some(durable), Some(snapshot)) => Some(Arc::new(TeeCursorStore {
+                            durable,
+                            snapshot: Arc::clone(snapshot),
+                        })),
                         // Snapshot-only (RAM) or durable-only
                         // (role misconfigured but data dir set) —
                         // both are edge cases; keep whichever we
@@ -478,10 +507,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 fn save(
                                     &self,
                                     c: nebula_wal::WalCursor,
-                                ) -> Result<
-                                    (),
-                                    nebula_grpc::follower::CursorStoreError,
-                                > {
+                                ) -> Result<(), nebula_grpc::follower::CursorStoreError>
+                                {
                                     self.0.store(c.segment_seq, c.byte_offset);
                                     Ok(())
                                 }
@@ -506,43 +533,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // leader and would double-apply if they tailed directly.
     // Populated only when NEBULA_REGION + NEBULA_CROSS_REGION_PEERS
     // are both set and role != follower.
-    let cross_region_handles: Vec<tokio::task::JoinHandle<()>> = if matches!(
-        cluster.role,
-        nebula_server::NodeRole::Leader | nebula_server::NodeRole::Standalone
-    ) && !cluster.cross_region_peers.is_empty()
-    {
-        let my_region = cluster.region_or_default().to_string();
-        let peers: Vec<_> = cluster
-            .cross_region_peers
-            .iter()
-            .map(|p| nebula_grpc::cross_region::RemotePeer {
-                region: p.region.clone(),
-                grpc_url: p.grpc_url.clone(),
-            })
-            .collect();
-        let owned: Arc<dyn nebula_grpc::cross_region::OwnedBuckets> =
-            Arc::new(nebula_grpc::cross_region::IndexOwnedBuckets {
-                index: Arc::clone(&grpc_index),
-                my_region: my_region.clone(),
-                seed_doc_id: nebula_server::SEED_DOC_ID,
-            });
-        let status: Arc<dyn nebula_grpc::cross_region::StatusSink> =
-            Arc::new(cross_region_status.clone());
-        tracing::info!(
-            "cross-region: tailing {} peers from {}",
-            peers.len(),
-            my_region,
-        );
-        nebula_grpc::cross_region::spawn_all(
-            peers,
-            Arc::clone(&grpc_index),
-            owned,
-            status,
-            my_region,
-        )
-    } else {
-        Vec::new()
-    };
+    let cross_region_handles: Vec<tokio::task::JoinHandle<()>> =
+        if matches!(
+            cluster.role,
+            nebula_server::NodeRole::Leader | nebula_server::NodeRole::Standalone
+        ) && !cluster.cross_region_peers.is_empty()
+        {
+            let my_region = cluster.region_or_default().to_string();
+            let peers: Vec<_> = cluster
+                .cross_region_peers
+                .iter()
+                .map(|p| nebula_grpc::cross_region::RemotePeer {
+                    region: p.region.clone(),
+                    grpc_url: p.grpc_url.clone(),
+                })
+                .collect();
+            let owned: Arc<dyn nebula_grpc::cross_region::OwnedBuckets> =
+                Arc::new(nebula_grpc::cross_region::IndexOwnedBuckets {
+                    index: Arc::clone(&grpc_index),
+                    my_region: my_region.clone(),
+                    seed_doc_id: nebula_server::SEED_DOC_ID,
+                });
+            let status: Arc<dyn nebula_grpc::cross_region::StatusSink> =
+                Arc::new(cross_region_status.clone());
+            tracing::info!(
+                "cross-region: tailing {} peers from {}",
+                peers.len(),
+                my_region,
+            );
+            nebula_grpc::cross_region::spawn_all(
+                peers,
+                Arc::clone(&grpc_index),
+                owned,
+                status,
+                my_region,
+            )
+        } else {
+            Vec::new()
+        };
 
     tracing::info!("nebula-server listening on {bind}");
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -581,13 +609,20 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received");
 }
 
-fn tracing_subscriber_init(bus: Arc<LogBus>) {
+fn tracing_subscriber_init(bus: Arc<LogBus>, stderr: bool) {
     // Capturing subscriber replaces the former noop. Every
     // `tracing::info!` / `warn!` / `error!` on a server task
     // flows through `bus` and out to SSE subscribers.
     //
+    // When `stderr` is true the same events also go to the process's
+    // stderr, so `docker logs` / journald operators see the recent
+    // history without going through `/admin/logs/stream`. That
+    // matters during runtime wedges — when the SSE endpoint isn't
+    // reachable, the in-memory log is unhelpful by definition.
+    //
     // Best-effort: if another subscriber was already installed
     // (tests can do this), swallow the error — the library has
     // always been tolerant of that and we keep booting.
-    let _ = tracing::subscriber::set_global_default(CapturingSubscriber::new(bus));
+    let _ =
+        tracing::subscriber::set_global_default(CapturingSubscriber::new(bus).with_stderr(stderr));
 }

@@ -211,13 +211,24 @@ impl LogBus {
 /// that dep (see `main.rs`). The trait surface is small; spans
 /// are accepted (to keep child `tracing::info_span!` calls from
 /// panicking) but carry no state.
+///
+/// Optionally also writes one line per event to stderr, so that
+/// `docker logs` / journald see the same events the in-memory bus
+/// does. That matters when the runtime wedges and `/admin/logs/stream`
+/// (which feeds off the bus) is itself unreachable.
 pub struct CapturingSubscriber {
     bus: Arc<LogBus>,
+    stderr: bool,
 }
 
 impl CapturingSubscriber {
     pub fn new(bus: Arc<LogBus>) -> Self {
-        Self { bus }
+        Self { bus, stderr: false }
+    }
+
+    pub fn with_stderr(mut self, on: bool) -> Self {
+        self.stderr = on;
+        self
     }
 }
 
@@ -266,6 +277,22 @@ impl Subscriber for CapturingSubscriber {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
+        if self.stderr {
+            // Plain stderr line — operators reading `docker logs` get
+            // breadcrumbs even when the in-memory log stream is
+            // unreachable (e.g. when the runtime is wedged).
+            // Write through `std::io::stderr` directly, not `eprintln!`,
+            // so a single write call is atomic per line.
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr(),
+                "{} {:>5} {}: {}",
+                ts_ms,
+                format!("{level:?}").to_lowercase(),
+                meta.target(),
+                message,
+            );
+        }
         self.bus.push(LogEvent {
             ts_ms,
             level,
