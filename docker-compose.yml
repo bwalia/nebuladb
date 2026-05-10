@@ -220,6 +220,18 @@ services:
       NEBULA_RATE_LIMIT: "${NEBULA_RATE_LIMIT:-on}"
       NEBULA_RATE_LIMIT_BURST: "${NEBULA_RATE_LIMIT_BURST:-120}"
       NEBULA_RATE_LIMIT_RPS: "${NEBULA_RATE_LIMIT_RPS:-20}"
+      # Trust X-Forwarded-For from these peers so per-IP buckets
+      # aren't shared across browsers proxied via showcase nginx.
+      NEBULA_TRUSTED_PROXIES: "${NEBULA_TRUSTED_PROXIES:-}"
+      # Tokio worker count. The container is capped at cpus: 2.0
+      # below, which makes available_parallelism() return 2 — too
+      # few to absorb a slow request without wedging the runtime.
+      # Override here so the runtime has buffer.
+      NEBULA_WORKER_THREADS: "${NEBULA_WORKER_THREADS:-8}"
+      # Per-request timeout for non-streaming routes. Without this,
+      # a stuck handler pins a worker forever; with it, the worker
+      # frees after the deadline and the request returns 408.
+      NEBULA_REQUEST_TIMEOUT_SECS: "${NEBULA_REQUEST_TIMEOUT_SECS:-30}"
       # Slow-query log: set to 0 to capture every SQL query (demo
       # mode — the Admin tab's Slow queries panel populates
       # instantly). Raise in production to keep the log focused on
