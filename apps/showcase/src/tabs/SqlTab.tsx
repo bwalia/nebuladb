@@ -5,20 +5,36 @@ import { downloadBlob, recordHistory, rowsToCsv } from "../utils";
 
 const EXAMPLES: Array<{ label: string; sql: string }> = [
   {
-    label: "Semantic search",
-    sql: "SELECT id, text FROM docs WHERE semantic_match(content, 'zero trust networking') LIMIT 5",
+    label: "leads — semantic search",
+    sql: "SELECT id, company_name, city FROM leads\n WHERE semantic_match(text, 'engineering services')\n LIMIT 10",
   },
   {
-    label: "Residual filter",
-    sql: "SELECT id, region FROM docs\n WHERE semantic_match(content, 'dns failover') AND region = 'eu'\n LIMIT 10",
+    label: "leads — semantic + city filter",
+    sql: "SELECT id, company_name, city FROM leads\n WHERE semantic_match(text, 'flowers') AND city = 'London'\n LIMIT 5",
   },
   {
-    label: "GROUP BY + COUNT",
-    sql: "SELECT region, COUNT(*) AS n FROM docs\n WHERE semantic_match(content, 'incident')\n GROUP BY region\n ORDER BY n DESC",
+    label: "leads — status filter",
+    sql: "SELECT id, company_name, city FROM leads\n WHERE semantic_match(text, 'engineering') AND status = '1'\n LIMIT 10",
   },
   {
-    label: "INNER JOIN",
-    sql: "SELECT u.id, o.id FROM users AS u\n JOIN orders AS o ON u.region = o.region\n WHERE semantic_match(u.content, 'developer')\n   AND semantic_match(o.content, 'subscription')",
+    label: "leads — IN over cities",
+    sql: "SELECT id, company_name, city FROM leads\n WHERE semantic_match(text, 'food')\n   AND city IN ('London', 'Birmingham', 'Manchester', 'Leeds', 'Bristol')\n LIMIT 10",
+  },
+  {
+    label: "leads — order by similarity",
+    sql: "SELECT id, company_name, city FROM leads\n WHERE semantic_match(text, 'motor parts')\n ORDER BY score\n LIMIT 10",
+  },
+  {
+    label: "leads — full row",
+    sql: "SELECT * FROM leads\n WHERE semantic_match(text, 'training')\n LIMIT 5",
+  },
+  {
+    label: "leads — wider candidate net (filter starvation fix)",
+    sql: "SELECT id, company_name FROM leads\n WHERE semantic_match(text, 'training') AND city = 'London'\n LIMIT 50",
+  },
+  {
+    label: "leads — discover values for a field",
+    sql: "SELECT city FROM leads\n WHERE semantic_match(text, 'london')\n LIMIT 20",
   },
 ];
 
