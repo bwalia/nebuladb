@@ -129,12 +129,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index = match std::env::var("NEBULA_DATA_DIR").ok() {
         Some(dir) if !dir.is_empty() => {
             let start = std::time::Instant::now();
-            let idx = Arc::new(TextIndex::open_persistent(
-                embedder,
-                Metric::Cosine,
-                HnswConfig::default(),
-                &dir,
-            )?);
+            // open_persistent is synchronous and CPU-heavy: it
+            // deserializes the WAL and inserts every record into
+            // HNSW. With a large WAL (tens of MB) and a tight CPU
+            // cap that can take minutes. Running it on a tokio
+            // worker stalls every other future on the runtime —
+            // including the healthcheck handler — so docker marks
+            // the container unhealthy and tears it down before
+            // recovery completes. spawn_blocking moves it to the
+            // dedicated blocking pool where stalling is fine.
+            let dir_owned = dir.clone();
+            let embedder_for_open = Arc::clone(&embedder);
+            let idx_inner = tokio::task::spawn_blocking(move || {
+                TextIndex::open_persistent(
+                    embedder_for_open,
+                    Metric::Cosine,
+                    HnswConfig::default(),
+                    &dir_owned,
+                )
+            })
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error> {
+                format!("recovery task panicked: {e}").into()
+            })??;
+            let idx = Arc::new(idx_inner);
             tracing::info!(
                 data_dir = %dir,
                 docs = idx.len(),
