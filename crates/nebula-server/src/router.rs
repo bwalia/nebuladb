@@ -423,9 +423,14 @@ async fn vector_search(
         )));
     }
     let started = std::time::Instant::now();
-    let hits = s
-        .index
-        .search_vector(&req.vector, req.bucket.as_deref(), top_k, req.ef)?;
+    // search_vector_blocking moves the HNSW traversal onto tokio's
+    // blocking pool. Calling the synchronous variant from an async
+    // handler pins a worker for the duration of the search; a burst
+    // of concurrent searches then starves /healthz and wedges the
+    // runtime — the symptom that motivated this change.
+    let hits = std::sync::Arc::clone(&s.index)
+        .search_vector_blocking(req.vector, req.bucket, top_k, req.ef)
+        .await?;
     s.metrics.inc_vector_search();
     Ok(Json(SearchResponse {
         hits,
@@ -442,9 +447,8 @@ async fn ai_search(
     }
     let top_k = validate_top_k(req.top_k, s.config.max_top_k)?;
     let started = std::time::Instant::now();
-    let hits = s
-        .index
-        .search_text(&req.query, req.bucket.as_deref(), top_k, req.ef)
+    let hits = std::sync::Arc::clone(&s.index)
+        .search_text_blocking(req.query, req.bucket, top_k, req.ef)
         .await?;
     s.metrics.inc_semantic_search();
     Ok(Json(SearchResponse {
