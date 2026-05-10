@@ -23,7 +23,7 @@ use nebula_grpc::GrpcState;
 use nebula_server::state::{FollowerCursor, TeeCursorStore};
 use nebula_server::{
     build_router, AppConfig, AppState, CapturingSubscriber, ClusterConfig, JwtConfig, LogBus,
-    LogLevel, RateLimitConfig, RateLimiter, SlowQueryLog,
+    LogLevel, RateLimitConfig, RateLimiter, SlowQueryLog, TrustedProxies,
 };
 use nebula_sql::{cache::SemanticCacheConfig, SemanticCache, SqlEngine};
 use nebula_vector::{HnswConfig, Metric};
@@ -207,7 +207,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Rate limit: on by default with generous dev limits.
     // NEBULA_RATE_LIMIT=off disables; otherwise capacity / rate come
-    // from two env vars.
+    // from two env vars. NEBULA_TRUSTED_PROXIES enables honoring
+    // X-Forwarded-For from listed peers (or "*" for all) so the
+    // showcase nginx proxy doesn't lump every browser into one bucket.
     let rl_mode = std::env::var("NEBULA_RATE_LIMIT").unwrap_or_else(|_| "on".into());
     let (rate_limit_cfg, rate_limiter) = if rl_mode == "off" {
         (RateLimitConfig::default(), None)
@@ -220,10 +222,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(20.0);
+        let trusted_proxies = match std::env::var("NEBULA_TRUSTED_PROXIES").ok().as_deref() {
+            None | Some("") => TrustedProxies::None,
+            Some("*") => TrustedProxies::All,
+            Some(list) => {
+                let ips: Vec<_> = list
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if ips.is_empty() {
+                    TrustedProxies::None
+                } else {
+                    TrustedProxies::Only(ips)
+                }
+            }
+        };
         (
             RateLimitConfig {
                 capacity,
                 refill_per_sec: refill,
+                trusted_proxies,
             },
             Some(RateLimiter::new()),
         )
