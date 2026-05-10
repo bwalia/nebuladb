@@ -35,7 +35,7 @@ pub use cross_region_status::{CrossRegionStatusHub, RemoteRegionStatus};
 pub use home_region::{HomeRegion, SEED_DOC_ID};
 pub use jwt::JwtConfig;
 pub use log_stream::{CapturingSubscriber, LogBus, LogEvent, LogLevel};
-pub use ratelimit::{RateLimitConfig, RateLimiter};
+pub use ratelimit::{RateLimitConfig, RateLimiter, TrustedProxies};
 pub use router::build_router;
 pub use slow_log::SlowQueryLog;
 pub use state::{AppConfig, AppState};

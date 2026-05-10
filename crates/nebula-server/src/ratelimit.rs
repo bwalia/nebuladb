@@ -23,6 +23,12 @@
 //! address. `/healthz` and `/metrics` are mounted outside this layer
 //! and are never throttled; ops scraping must keep working during an
 //! abuse event.
+//!
+//! When the immediate peer is a configured trusted proxy (e.g. the
+//! showcase nginx in front of us, or an L7 load balancer), we read
+//! the leftmost `X-Forwarded-For` / `X-Real-IP` entry instead so
+//! every browser visitor gets its own bucket rather than sharing
+//! one bucket keyed on the proxy's container IP.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -35,9 +41,31 @@ use axum::{
 };
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use crate::state::AppState;
+
+/// Which immediate peers we trust to set `X-Forwarded-For` /
+/// `X-Real-IP`. `All` is for single-host dev stacks where every
+/// upstream is on the same docker bridge; production should always
+/// enumerate.
+#[derive(Debug, Clone, Default)]
+pub enum TrustedProxies {
+    #[default]
+    None,
+    All,
+    Only(Vec<IpAddr>),
+}
+
+impl TrustedProxies {
+    fn trusts(&self, peer: IpAddr) -> bool {
+        match self {
+            TrustedProxies::None => false,
+            TrustedProxies::All => true,
+            TrustedProxies::Only(ips) => ips.contains(&peer),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
@@ -46,6 +74,8 @@ pub struct RateLimitConfig {
     /// Refill rate in tokens per second. At `capacity=60`, `rate=1.0`
     /// this yields a sustained 1 rps with 60-request burst headroom.
     pub refill_per_sec: f64,
+    /// Peers we'll honor `X-Forwarded-For` / `X-Real-IP` from.
+    pub trusted_proxies: TrustedProxies,
 }
 
 impl Default for RateLimitConfig {
@@ -55,6 +85,7 @@ impl Default for RateLimitConfig {
         Self {
             capacity: 120.0,
             refill_per_sec: 20.0,
+            trusted_proxies: TrustedProxies::None,
         }
     }
 }
@@ -128,7 +159,11 @@ impl RateLimiter {
 /// auth middleware: explicit bearer token wins, then `x-api-key`,
 /// then the caller's IP. The chosen principal is also written onto a
 /// request extension so later middleware (e.g. logging) can read it.
-fn principal(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+///
+/// IP resolution honors `X-Forwarded-For` / `X-Real-IP` only when the
+/// immediate peer is in `trusted_proxies` — otherwise any client
+/// could spoof their bucket key by sending the header themselves.
+fn principal(headers: &HeaderMap, peer: Option<SocketAddr>, trusted: &TrustedProxies) -> String {
     if let Some(v) = headers.get(header::AUTHORIZATION).and_then(|h| h.to_str().ok()) {
         if let Some(tok) = v.strip_prefix("Bearer ") {
             return format!("bearer:{}", tok.trim());
@@ -138,9 +173,34 @@ fn principal(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
         return format!("apikey:{v}");
     }
     match peer {
-        Some(p) => format!("ip:{}", p.ip()),
+        Some(p) => {
+            if trusted.trusts(p.ip()) {
+                if let Some(client) = client_ip_from_headers(headers) {
+                    return format!("ip:{client}");
+                }
+            }
+            format!("ip:{}", p.ip())
+        }
         None => "anon".into(),
     }
+}
+
+/// Parse the leftmost entry from `X-Forwarded-For`, falling back to
+/// `X-Real-IP`. Returns `None` if neither is present or parses.
+/// Leftmost is the original client; intermediate proxies append
+/// themselves to the right.
+fn client_ip_from_headers(headers: &HeaderMap) -> Option<IpAddr> {
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
+        if let Some(first) = xff.split(',').next() {
+            if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                return Some(ip);
+            }
+        }
+    }
+    headers
+        .get("x-real-ip")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.trim().parse::<IpAddr>().ok())
 }
 
 /// Axum middleware. Consumes and forwards the request unchanged on
@@ -161,7 +221,11 @@ pub async fn rate_limit(
     };
     let cfg = &state.config.rate_limit;
 
-    let key = principal(req.headers(), connect_info.map(|ConnectInfo(a)| a));
+    let key = principal(
+        req.headers(),
+        connect_info.map(|ConnectInfo(a)| a),
+        &cfg.trusted_proxies,
+    );
     let entry = limiter
         .buckets
         .entry(key.clone())
@@ -204,6 +268,7 @@ mod tests {
         let cfg = RateLimitConfig {
             capacity: 3.0,
             refill_per_sec: 0.1,
+            ..Default::default()
         };
         let mut b = Bucket::new(cfg.capacity);
         assert!(b.try_take(&cfg));
@@ -217,6 +282,7 @@ mod tests {
         let cfg = RateLimitConfig {
             capacity: 1.0,
             refill_per_sec: 100.0, // fast refill so the test is quick
+            ..Default::default()
         };
         let mut b = Bucket::new(cfg.capacity);
         assert!(b.try_take(&cfg));
@@ -230,6 +296,7 @@ mod tests {
         let cfg = RateLimitConfig {
             capacity: 2.0,
             refill_per_sec: 1000.0,
+            ..Default::default()
         };
         let mut b = Bucket::new(cfg.capacity);
         // Sleep long enough that uncapped refill would accumulate well
@@ -241,10 +308,58 @@ mod tests {
     }
 
     #[test]
+    fn principal_ignores_xff_from_untrusted_peer() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "203.0.113.7".parse().unwrap());
+        let peer: SocketAddr = "172.21.0.8:50000".parse().unwrap();
+        let key = principal(&h, Some(peer), &TrustedProxies::None);
+        assert_eq!(key, "ip:172.21.0.8");
+    }
+
+    #[test]
+    fn principal_uses_xff_when_peer_is_trusted() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "203.0.113.7, 10.0.0.1".parse().unwrap());
+        let peer: SocketAddr = "172.21.0.8:50000".parse().unwrap();
+        let trusted = TrustedProxies::Only(vec!["172.21.0.8".parse().unwrap()]);
+        let key = principal(&h, Some(peer), &trusted);
+        assert_eq!(key, "ip:203.0.113.7");
+    }
+
+    #[test]
+    fn principal_falls_back_to_real_ip_when_xff_missing() {
+        let mut h = HeaderMap::new();
+        h.insert("x-real-ip", "198.51.100.4".parse().unwrap());
+        let peer: SocketAddr = "172.21.0.8:50000".parse().unwrap();
+        let key = principal(&h, Some(peer), &TrustedProxies::All);
+        assert_eq!(key, "ip:198.51.100.4");
+    }
+
+    #[test]
+    fn principal_bearer_token_beats_xff() {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", "Bearer abc".parse().unwrap());
+        h.insert("x-forwarded-for", "203.0.113.7".parse().unwrap());
+        let peer: SocketAddr = "172.21.0.8:50000".parse().unwrap();
+        let key = principal(&h, Some(peer), &TrustedProxies::All);
+        assert_eq!(key, "bearer:abc");
+    }
+
+    #[test]
+    fn principal_ignores_garbage_xff() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "not-an-ip".parse().unwrap());
+        let peer: SocketAddr = "172.21.0.8:50000".parse().unwrap();
+        let key = principal(&h, Some(peer), &TrustedProxies::All);
+        assert_eq!(key, "ip:172.21.0.8");
+    }
+
+    #[test]
     fn retry_after_is_positive_when_empty() {
         let cfg = RateLimitConfig {
             capacity: 1.0,
             refill_per_sec: 1.0,
+            ..Default::default()
         };
         let mut b = Bucket::new(cfg.capacity);
         assert!(b.try_take(&cfg));

@@ -488,6 +488,7 @@ async fn rate_limiter_returns_429_after_burst() {
             rate_limit: RateLimitConfig {
                 capacity: 3.0,
                 refill_per_sec: 0.1,
+                ..Default::default()
             },
             ..AppConfig::default()
         },
