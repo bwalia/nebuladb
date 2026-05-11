@@ -19,6 +19,7 @@ use nebula_index::TextIndex;
 use nebula_llm::{LlmClient, MockLlm, OllamaConfig, OllamaLlm, OpenAiChatConfig, OpenAiChatLlm};
 use nebula_redis_cache::{RedisCacheConfig, RedisEmbedCache};
 use nebula_server::state::{FollowerCursor, TeeCursorStore};
+use nebula_server::snapshot_scheduler::{self, SnapshotSchedulerConfig};
 use nebula_server::{
     build_router, AppConfig, AppState, CapturingSubscriber, ClusterConfig, JwtConfig, LogBus,
     LogLevel, RateLimitConfig, RateLimiter, SlowQueryLog, TrustedProxies,
@@ -191,6 +192,15 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             HnswConfig::default(),
         )?),
     };
+
+    // Spawn the background snapshot scheduler. No-op for in-memory
+    // mode (the scheduler self-exits when wal_stats() returns None).
+    // Without this, the WAL grows unbounded between operator-triggered
+    // snapshots — which in practice means forever, leaving the next
+    // cold recovery to replay everything since the dawn of the data
+    // dir. Tunables are env-driven; see snapshot_scheduler.rs.
+    let snapshot_handle =
+        snapshot_scheduler::spawn(Arc::clone(&index), SnapshotSchedulerConfig::from_env());
 
     let api_keys: AHashSet<String> = std::env::var("NEBULA_API_KEYS")
         .unwrap_or_default()
@@ -613,6 +623,11 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(h) = pg_fut {
         h.abort();
     }
+    // The snapshot scheduler's loop is `loop { sleep; ... }` — abort
+    // cancels the sleep and drops the task. No in-flight work is at
+    // risk: a snapshot in progress runs on spawn_blocking and will
+    // finish on its own, just without us awaiting it.
+    snapshot_handle.abort();
     for h in cross_region_handles {
         h.abort();
     }

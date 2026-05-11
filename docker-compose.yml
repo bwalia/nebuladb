@@ -239,6 +239,15 @@ services:
       NEBULA_SLOW_QUERY_THRESHOLD_MS: "${NEBULA_SLOW_QUERY_THRESHOLD_MS:-10}"
       NEBULA_SLOW_QUERY_CAPACITY: "${NEBULA_SLOW_QUERY_CAPACITY:-32}"
 
+      # Background snapshot scheduler. Without periodic snapshots,
+      # cold WAL recovery replays everything since the dawn of the
+      # data dir — minutes on a multi-GB WAL. Defaults: snapshot
+      # every 15 min or whenever WAL exceeds 50 MiB, whichever
+      # comes first; compact-after-snapshot on.
+      NEBULA_SNAPSHOT_INTERVAL_SECS: "${NEBULA_SNAPSHOT_INTERVAL_SECS:-900}"
+      NEBULA_SNAPSHOT_WAL_BYTES: "${NEBULA_SNAPSHOT_WAL_BYTES:-52428800}"
+      NEBULA_SNAPSHOT_COMPACT: "${NEBULA_SNAPSHOT_COMPACT:-on}"
+
       RUST_LOG: "info,nebula_server=debug"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
@@ -310,6 +319,12 @@ services:
       NEBULA_WORKER_THREADS: "${NEBULA_WORKER_THREADS:-8}"
       NEBULA_REQUEST_TIMEOUT_SECS: "${NEBULA_REQUEST_TIMEOUT_SECS:-30}"
       NEBULA_TRUSTED_PROXIES: "${NEBULA_TRUSTED_PROXIES:-}"
+      # Follower runs the same snapshot scheduler so its own WAL
+      # (built from replicated records) stays compactable. Same
+      # defaults as the leader.
+      NEBULA_SNAPSHOT_INTERVAL_SECS: "${NEBULA_SNAPSHOT_INTERVAL_SECS:-900}"
+      NEBULA_SNAPSHOT_WAL_BYTES: "${NEBULA_SNAPSHOT_WAL_BYTES:-52428800}"
+      NEBULA_SNAPSHOT_COMPACT: "${NEBULA_SNAPSHOT_COMPACT:-on}"
       # No Redis / LLM on the follower in the demo — reads don't
       # need them, and adding them would double the memory for no
       # benefit in the default stack.
