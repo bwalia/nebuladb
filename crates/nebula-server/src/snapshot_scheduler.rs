@@ -135,6 +135,18 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig) {
         "snapshot scheduler started"
     );
     let mut last_snapshot = Instant::now();
+    // WAL size at the moment of the previous snapshot. The size
+    // trigger fires when the WAL has *grown* by `wal_bytes_threshold`
+    // since then, not whenever absolute size happens to exceed the
+    // threshold. Without this, a system whose compact is blocked (e.g.
+    // follower hasn't ack'd yet) snapshots every single poll once
+    // it crosses the threshold — pegging the inner read lock and
+    // starving writers. Observed on 192.168.1.193 leader: 30+
+    // snapshots in 9 minutes before the runtime wedged.
+    let mut wal_bytes_at_last_snapshot: u64 = index
+        .wal_stats()
+        .map(|s| s.total_bytes)
+        .unwrap_or(0);
     loop {
         tokio::time::sleep(cfg.poll_interval).await;
         let wal_bytes = index
@@ -143,7 +155,11 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig) {
             .unwrap_or(0);
         let time_fired = cfg.time_trigger_enabled()
             && last_snapshot.elapsed() >= cfg.interval;
-        let size_fired = cfg.size_trigger_enabled() && wal_bytes >= cfg.wal_bytes_threshold;
+        // Growth-based size trigger: how many bytes have been
+        // appended since the last snapshot. Saturating sub because
+        // compact may have shrunk the WAL.
+        let growth = wal_bytes.saturating_sub(wal_bytes_at_last_snapshot);
+        let size_fired = cfg.size_trigger_enabled() && growth >= cfg.wal_bytes_threshold;
         if !(time_fired || size_fired) {
             continue;
         }
@@ -157,6 +173,7 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig) {
         tracing::info!(
             reason,
             wal_bytes,
+            growth,
             elapsed_secs = last_snapshot.elapsed().as_secs(),
             "snapshot scheduler firing"
         );
@@ -180,6 +197,16 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig) {
                     "snapshot scheduler completed"
                 );
                 last_snapshot = Instant::now();
+                // Re-read WAL size *after* compact so the next
+                // growth comparison starts from the post-compact
+                // baseline. If compact removed segments this drops;
+                // if it couldn't (follower lag), it stays high but
+                // we still won't re-fire until ANOTHER threshold's
+                // worth of appends arrives.
+                wal_bytes_at_last_snapshot = index
+                    .wal_stats()
+                    .map(|s| s.total_bytes)
+                    .unwrap_or(wal_bytes_at_last_snapshot);
             }
             Ok(Err(e)) => {
                 tracing::error!(error = %e, "snapshot scheduler failed");

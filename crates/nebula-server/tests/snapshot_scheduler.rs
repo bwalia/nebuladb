@@ -64,6 +64,60 @@ async fn scheduler_takes_a_snapshot_when_interval_elapses() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn size_trigger_does_not_refire_without_growth() {
+    // Regression: the size trigger used to compare absolute WAL
+    // size against the threshold. With compact blocked (no follower
+    // ack) the WAL never shrinks below threshold and the scheduler
+    // fired every poll forever — 30+ snapshots in 9 min on the
+    // 192.168.1.193 leader. Fix: trigger on growth since last
+    // snapshot. This test bakes that in.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().to_owned();
+    let snapshots_dir = dir.join("snapshots");
+    std::fs::create_dir_all(&snapshots_dir).ok();
+
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(8));
+    let index = Arc::new(
+        TextIndex::open_persistent(emb, Metric::Cosine, HnswConfig::default(), &dir)
+            .expect("open_persistent"),
+    );
+    // One write — produces a WAL bigger than the trigger.
+    index
+        .upsert_text("docs", "id-1", "hello world", serde_json::json!({}))
+        .await
+        .expect("upsert");
+
+    let cfg = SnapshotSchedulerConfig {
+        interval: Duration::from_secs(3600), // time trigger effectively off
+        wal_bytes_threshold: 1,              // any growth fires
+        poll_interval: Duration::from_millis(50),
+        compact: false, // simulate the "follower lag → compact no-op" state
+    };
+    let handle = snapshot_scheduler::spawn(Arc::clone(&index), cfg);
+    // Let the scheduler poll many times. With the bug it would fire
+    // every poll (~12 times in 600ms). With the fix it should fire
+    // at most once (the initial growth), then stay quiet.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    handle.abort();
+
+    let count = std::fs::read_dir(&snapshots_dir)
+        .expect("read snapshots dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.starts_with("snapshot-") && !n.ends_with(".ok")
+        })
+        .count();
+    // Allow 0 or 1 — depending on timing the first poll may fire,
+    // but never more than once without further writes.
+    assert!(
+        count <= 1,
+        "scheduler fired {count} times without WAL growth; should be <=1"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scheduler_exits_when_disabled() {
     // No data dir + no triggers → the scheduler must return promptly
     // (not stay parked in its sleep loop). We use the in-memory index
