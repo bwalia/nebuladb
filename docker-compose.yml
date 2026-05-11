@@ -373,9 +373,14 @@ services:
     image: nebuladb/showcase:dev
     container_name: nebula-showcase
     <<: [*default-restart, *default-logging]
+    # No `depends_on: service_healthy` on the leader — that would
+    # prevent showcase from starting (or being recreated) while the
+    # leader is in WAL recovery, which is exactly when we want it
+    # up so it can route reads to the follower via nebula_read_pool.
+    # nginx tolerates an unreachable upstream at startup (it resolves
+    # via docker DNS at request time, not boot).
     depends_on:
-      nebula-server:
-        condition: service_healthy
+      - nebula-server
     ports:
       - "${NEBULA_SHOWCASE_PORT:-5173}:80"
     environment:
