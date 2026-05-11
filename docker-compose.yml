@@ -250,17 +250,20 @@ services:
 
       RUST_LOG: "info,nebula_server=debug"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
+      # Liveness probe — 200 as soon as the boot listener is up,
+      # *before* WAL recovery completes. /healthz (without /live)
+      # still returns 503 during recovery so clients and the
+      # showcase nginx pool can fail over to the follower. Without
+      # the /live split, docker would kill the container mid-replay
+      # on a multi-GB WAL just as recovery is nearly done.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz/live || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 10
-      # Give the build + initial boot a generous window before health
-      # checks start failing the container. Cold WAL recovery on a
-      # large data dir (tens of MB of WAL, tens of thousands of HNSW
-      # inserts) can take minutes under the 2-CPU cap below — keep
-      # the start window above that worst case so a heavy ingest
-      # session doesn't lock the operator out at the next deploy.
-      start_period: 300s
+      # Recovery now runs *behind* a live HTTP listener, but keep a
+      # generous start_period anyway: it covers the build + initial
+      # boot before the boot stub is even up.
+      start_period: 60s
     deploy:
       resources:
         limits:
@@ -330,14 +333,13 @@ services:
       # benefit in the default stack.
       RUST_LOG: "info,nebula_server=debug,nebula_grpc=debug"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
+      # Same /healthz/live split as the leader — the follower also
+      # runs WAL recovery on boot, so the same kill-loop risk applies.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz/live || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 10
-      # Cold WAL recovery on a sizable replicated index can take
-      # several minutes under tight CPU caps — same reasoning as
-      # the leader's start_period.
-      start_period: 300s
+      start_period: 60s
     deploy:
       resources:
         limits:
