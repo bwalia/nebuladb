@@ -86,7 +86,7 @@ impl SnapshotSchedulerConfig {
         {
             cfg.poll_interval = Duration::from_secs(v);
         }
-        if let Some(v) = std::env::var("NEBULA_SNAPSHOT_COMPACT").ok() {
+        if let Ok(v) = std::env::var("NEBULA_SNAPSHOT_COMPACT") {
             cfg.compact = !matches!(v.as_str(), "off" | "0" | "false" | "no");
         }
         cfg
