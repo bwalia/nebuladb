@@ -27,6 +27,7 @@ pub mod middleware;
 pub mod ratelimit;
 pub mod router;
 pub mod slow_log;
+pub mod snapshot_scheduler;
 pub mod state;
 
 pub use audit::AuditLog;
