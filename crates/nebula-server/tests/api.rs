@@ -1162,6 +1162,34 @@ async fn follower_still_accepts_reads() {
 }
 
 #[tokio::test]
+async fn follower_accepts_sql_query_despite_post() {
+    // POST /api/v1/query is the SQL endpoint. The engine is SELECT-
+    // only, so although the method is POST it's a read in disguise.
+    // The follower guard must let it through, otherwise the read-
+    // failover story has a hole exactly where SQL lives.
+    let app = build_router(app_state_with_role(NodeRole::Follower));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/query")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"sql":"SELECT id FROM docs WHERE semantic_match(content, 'x') LIMIT 1"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // The empty TextIndex returns 0 rows but the request must reach
+    // the handler — we're asserting it does NOT get short-circuited
+    // by the write-guard.
+    assert_ne!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "SQL query on follower must not be 409'd as a write"
+    );
+}
+
+#[tokio::test]
 async fn standalone_accepts_writes_as_before() {
     let app = build_router(app_state_with_role(NodeRole::Standalone));
     let res = app

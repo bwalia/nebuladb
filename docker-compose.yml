@@ -273,9 +273,12 @@ services:
     image: nebuladb/server:dev
     container_name: nebula-follower
     <<: [*default-restart, *default-logging]
-    depends_on:
-      nebula-server:
-        condition: service_healthy
+    # No depends_on the leader: this whole service exists so reads
+    # survive a leader outage. A `condition: service_healthy` gate
+    # would prevent the follower from even starting while the leader
+    # is in WAL recovery — exactly when we need the follower up.
+    # The follower's own gRPC client retries the leader connection
+    # on its own schedule.
     ports:
       # Expose on different host ports to avoid clashing with the
       # leader. Container-side matches the leader (same binary).
@@ -301,15 +304,25 @@ services:
       NEBULA_NODE_ROLE: "follower"
       NEBULA_PEERS: "nebula-leader=http://nebula-server:8080"
       NEBULA_EMBED_DIM: "384"
+      # Same runtime knobs as the leader so the follower has the
+      # same survival characteristics. Worker count + request
+      # timeout fall back to compose defaults via the `:-` syntax.
+      NEBULA_WORKER_THREADS: "${NEBULA_WORKER_THREADS:-8}"
+      NEBULA_REQUEST_TIMEOUT_SECS: "${NEBULA_REQUEST_TIMEOUT_SECS:-30}"
+      NEBULA_TRUSTED_PROXIES: "${NEBULA_TRUSTED_PROXIES:-}"
       # No Redis / LLM on the follower in the demo — reads don't
       # need them, and adding them would double the memory for no
       # benefit in the default stack.
       RUST_LOG: "info,nebula_server=debug,nebula_grpc=debug"
-    profiles:
-      # Opt-in: `docker compose --profile replication up` includes
-      # it. Default `docker compose up` skips it so the demo stays
-      # single-node.
-      - replication
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      # Cold WAL recovery on a sizable replicated index can take
+      # several minutes under tight CPU caps — same reasoning as
+      # the leader's start_period.
+      start_period: 300s
     deploy:
       resources:
         limits:
@@ -360,9 +373,14 @@ services:
     image: nebuladb/showcase:dev
     container_name: nebula-showcase
     <<: [*default-restart, *default-logging]
+    # No `depends_on: service_healthy` on the leader — that would
+    # prevent showcase from starting (or being recreated) while the
+    # leader is in WAL recovery, which is exactly when we want it
+    # up so it can route reads to the follower via nebula_read_pool.
+    # nginx tolerates an unreachable upstream at startup (it resolves
+    # via docker DNS at request time, not boot).
     depends_on:
-      nebula-server:
-        condition: service_healthy
+      - nebula-server
     ports:
       - "${NEBULA_SHOWCASE_PORT:-5173}:80"
     environment:

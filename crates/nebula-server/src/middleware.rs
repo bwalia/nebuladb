@@ -117,7 +117,12 @@ pub async fn require_auth(
 /// Exempted: all GET/HEAD requests and the ops endpoints mounted
 /// outside /api/v1 (which this middleware never sees anyway).
 /// `/api/v1/admin/*` reads are allowed so operators can still
-/// inspect the follower.
+/// inspect the follower. The SQL endpoints (`/api/v1/query` and
+/// `/api/v1/query/explain`) are also exempt: the engine only
+/// supports SELECT, so a POST there is a read in disguise — they
+/// use POST because the SQL text travels in the body. Letting
+/// them through means the follower can serve SQL reads while the
+/// leader is down, which is the whole point of running one.
 pub async fn guard_writes_on_follower(
     axum::extract::State(state): axum::extract::State<crate::state::AppState>,
     req: Request<axum::body::Body>,
@@ -131,6 +136,11 @@ pub async fn guard_writes_on_follower(
         &axum::http::Method::GET | &axum::http::Method::HEAD | &axum::http::Method::OPTIONS
     );
     if !is_write {
+        return next.run(req).await;
+    }
+    // SELECT-only SQL endpoints — POST is just the body carrier.
+    let path = req.uri().path();
+    if path == "/api/v1/query" || path == "/api/v1/query/explain" {
         return next.run(req).await;
     }
     // Structured JSON so clients with an error envelope keep working.
