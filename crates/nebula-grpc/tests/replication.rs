@@ -627,3 +627,38 @@ async fn cross_region_refuses_in_memory_leader() {
         }
     }
 }
+
+/// Regression: the follower must build its channel lazily so an
+/// unreachable leader at boot doesn't kill the process. Before the
+/// fix, `Channel::connect().await?` in main propagated to `?` in
+/// `main`, the process exited, and `restart: unless-stopped` looped
+/// it 5-10× per second while the leader was in WAL recovery.
+///
+/// This test simulates that situation: aim at a port that nobody is
+/// listening on, spawn the follower, and assert the task stays alive
+/// past several backoff cycles. With the bug, the channel build
+/// itself would have panicked or `connect_lazy` would have been
+/// missing — both surfaceable as compile/runtime failures here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn follower_lazy_channel_survives_unreachable_leader() {
+    // Pick a port we deliberately don't bind so connects refuse.
+    // 127.0.0.1:1 reliably refuses on Linux (root-only port, no
+    // listener) without needing to discover a free port first.
+    let bogus = "http://127.0.0.1:1";
+    let channel = Channel::from_shared(bogus.to_string())
+        .unwrap()
+        .connect_lazy();
+    let idx = Arc::new(
+        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
+    );
+    let fh = follower::spawn_with_store(channel, idx.clone(), WalCursor::BEGIN, None);
+    // Give the follower task plenty of time to attempt several
+    // reconnects (backoff starts at 100ms, caps at 5s). If the task
+    // had panicked or exited, `is_finished` would be true.
+    sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !fh.task_is_finished(),
+        "follower task exited despite unreachable leader; should retry forever"
+    );
+    fh.abort();
+}
