@@ -126,6 +126,15 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/healthz", get(healthz))
+        // Liveness probe: 200 as soon as the process is serving HTTP
+        // at all, independent of WAL recovery state. The docker
+        // healthcheck uses this so a slow recovery doesn't trip the
+        // unhealthy → kill loop. /healthz remains the rich readiness
+        // probe (returns 503 during recovery via the boot stub).
+        .route(
+            "/healthz/live",
+            get(|| async { (StatusCode::OK, "alive") }),
+        )
         .route("/metrics", get(metrics_handler))
         .nest("/api/v1", api)
         .layer(RequestBodyLimitLayer::new(limit))

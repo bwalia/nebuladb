@@ -68,6 +68,67 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
 
+    // Stand up a minimal "boot" HTTP listener immediately, well
+    // before WAL recovery starts. Recovery on a multi-GB WAL with no
+    // snapshot can take minutes; without an early listener the port
+    // is closed during that window and every probe hits "connection
+    // refused". Both docker's `wget /healthz` healthcheck and the
+    // showcase nginx pool then see the leader as down and start the
+    // unhealthy → kill loop just as recovery is nearly finished.
+    //
+    // The stub serves three things:
+    //   * GET /healthz/live → 200 "alive" (process is up)
+    //   * GET /healthz      → 503 { status: "recovering", elapsed_ms }
+    //   * everything else   → 503 (so writes/reads fail fast and the
+    //                         nginx read pool fails over to the
+    //                         follower instead of waiting on timeout)
+    //
+    // The docker healthcheck is configured to use /healthz/live so the
+    // container stays "healthy" through recovery. /healthz still
+    // returns 503 (legible to humans and to nginx via
+    // `proxy_next_upstream http_503`) so the read pool routes around
+    // a recovering leader.
+    let boot_started = std::time::Instant::now();
+    let (boot_shutdown_tx, boot_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let boot_listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!("nebula-server boot listener bound on {bind} (serving 503 until recovery completes)");
+    let boot_handle = tokio::spawn(async move {
+        let boot_router = axum::Router::new()
+            .route(
+                "/healthz/live",
+                axum::routing::get(|| async {
+                    (axum::http::StatusCode::OK, "alive")
+                }),
+            )
+            .route(
+                "/healthz",
+                axum::routing::get(move || async move {
+                    let elapsed_ms = boot_started.elapsed().as_millis() as u64;
+                    (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        axum::Json(serde_json::json!({
+                            "status": "recovering",
+                            "elapsed_ms": elapsed_ms,
+                        })),
+                    )
+                }),
+            )
+            .fallback(|| async {
+                (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Json(serde_json::json!({
+                        "code": "recovering",
+                        "error": "server is still in WAL recovery; retry shortly",
+                    })),
+                )
+            });
+        let _ = axum::serve(boot_listener, boot_router)
+            .with_graceful_shutdown(async move {
+                let _ = boot_shutdown_rx.await;
+            })
+            .await;
+    });
+
     let raw_embedder: Arc<dyn Embedder> = match std::env::var("NEBULA_OPENAI_API_KEY").ok() {
         Some(key) => {
             let base_url = std::env::var("NEBULA_OPENAI_BASE_URL")
@@ -590,6 +651,16 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             Vec::new()
         };
 
+    // Hand off from the boot stub to the real router. Signal the
+    // stub to stop accepting new connections, wait for it to drain
+    // (it owns the listener; we can't rebind until it drops it),
+    // then bind the real listener. The unbind window is microseconds
+    // and tokio's `TcpListener::bind` sets SO_REUSEADDR so the rebind
+    // is immediate.
+    let _ = boot_shutdown_tx.send(());
+    if let Err(e) = boot_handle.await {
+        tracing::warn!(error = ?e, "boot listener task did not exit cleanly");
+    }
     tracing::info!("nebula-server listening on {bind}");
     let listener = tokio::net::TcpListener::bind(bind).await?;
     // `into_make_service_with_connect_info` is what lets the
