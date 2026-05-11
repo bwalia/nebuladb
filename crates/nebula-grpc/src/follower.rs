@@ -207,6 +207,15 @@ impl FollowerHandle {
     pub async fn join(self) -> Result<(), tokio::task::JoinError> {
         self.task.await
     }
+
+    /// Whether the inner task has completed (returned or panicked).
+    /// Exposed so callers / tests can assert "the follower is still
+    /// running" without consuming the handle. A follower task is
+    /// designed to loop forever — `true` here means something went
+    /// wrong (panic, JoinHandle dropped, abort was called).
+    pub fn task_is_finished(&self) -> bool {
+        self.task.is_finished()
+    }
 }
 
 /// One pass of tailing: subscribe at `start`, apply records until

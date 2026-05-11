@@ -478,9 +478,23 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         match std::env::var("NEBULA_FOLLOW_LEADER").ok() {
             Some(leader) if !leader.is_empty() => {
                 tracing::info!(leader = %leader, "follower mode: connecting to leader");
+                // `connect_lazy` builds the channel without doing any
+                // I/O. The first RPC drives the actual TCP/HTTP2
+                // handshake; if it fails (leader still in WAL
+                // recovery, network blip, restart in progress) the
+                // follower's existing reconnect loop catches the
+                // error, backs off, and tries again.
+                //
+                // Critically this avoids `.connect().await?` — the
+                // eager variant — which would propagate the error to
+                // `main`, exit the process, and combine with
+                // `restart: unless-stopped` into a crashloop. We
+                // observed exactly that on 192.168.1.193: 5-10
+                // restarts/sec while the leader was recovering,
+                // making the follower unavailable as a read backup
+                // during the window where it mattered most.
                 let channel = tonic::transport::Channel::from_shared(leader.clone())?
-                    .connect()
-                    .await?;
+                    .connect_lazy();
                 // Durable (file-backed) half of the cursor store.
                 // Optional — without NEBULA_DATA_DIR the follower
                 // has nowhere on disk to persist, so it restarts
