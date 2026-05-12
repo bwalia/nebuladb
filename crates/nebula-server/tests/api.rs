@@ -55,6 +55,23 @@ async fn healthz_is_public() {
 }
 
 #[tokio::test]
+async fn healthz_live_is_public_and_minimal() {
+    // /healthz/live is the docker liveness probe. It MUST stay
+    // dependency-free: no auth, no AppState access. The boot stub
+    // serves an identical response shape during recovery; the real
+    // router takes over once the index is loaded but the contract
+    // (200 + "alive") must not change or the healthcheck flips.
+    let app = build_router(app_state(&["secret"]));
+    let res = app
+        .oneshot(Request::get("/healthz/live").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert_eq!(body, "alive");
+}
+
+#[tokio::test]
 async fn admin_version_reports_build_identity() {
     let app = build_router(app_state(&[]));
     let res = app
