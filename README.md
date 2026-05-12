@@ -270,6 +270,28 @@ helm install nebula deploy/helm/nebuladb \
   --set server.ingress.hosts[0].host=nebuladb.example.com
 ```
 
+### Host watchdog (compose deployments)
+
+`restart: unless-stopped` (set on every service in `docker-compose.yml`)
+covers crashes and Docker daemon restarts, but **not** containers
+stuck in `Created` state — which is what you get when a `compose up`
+run is interrupted, or when a CI deploy job gets cancelled
+mid-`compose create`. Those containers never auto-start.
+
+`scripts/reconcile.sh` closes that gap. It's an idempotent
+`docker compose up -d --no-recreate --no-build` — a no-op when
+everything is Up, a fast start for anything that isn't. Wire it to
+cron or a systemd timer:
+
+```bash
+# user crontab — runs every 2 min
+( crontab -l 2>/dev/null; \
+  echo '*/2 * * * * /path/to/nebuladb/scripts/reconcile.sh >> /path/to/nebuladb/.reconcile.log 2>&1' \
+) | crontab -
+```
+
+Logs to `.reconcile.log` (gitignored).
+
 ## CI
 
 `.github/workflows/nightly.yml` runs:

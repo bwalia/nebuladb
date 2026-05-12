@@ -12,3 +12,6 @@ dist/
 # committed. Chart.lock pins versions and *is* worth committing.
 deploy/helm/**/charts/
 deploy/helm/**/*.tgz
+
+# Output of scripts/reconcile.sh when run from cron / systemd timer.
+.reconcile.log
