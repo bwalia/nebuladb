@@ -150,6 +150,14 @@ services:
       dockerfile: Dockerfile
     image: nebuladb/server:dev
     container_name: nebula-server
+    # tini as PID 1 so orphaned children (notably the healthcheck
+    # wgets when /healthz is slow / wedged) get reaped instead of
+    # accumulating as long-lived sleepers under nebula-server.
+    # Observed in production: 215 stuck wgets after a 35-minute
+    # /healthz hang — they kept piling up because docker's
+    # healthcheck timeout kills only the wrapping `sh`, not the
+    # child wget, and the orphaned wget reparents to PID 1.
+    init: true
     <<: [*default-restart, *default-logging]
     depends_on:
       ollama:
@@ -256,7 +264,16 @@ services:
       # showcase nginx pool can fail over to the follower. Without
       # the /live split, docker would kill the container mid-replay
       # on a multi-GB WAL just as recovery is nearly done.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz/live || exit 1"]
+      #
+      # `--timeout=2 --tries=1` is load-bearing. The docker
+      # healthcheck `timeout: 3s` field below only kills the
+      # wrapping `sh -c`; if wget itself is blocked in connect(),
+      # docker's SIGTERM races against wget's syscall and the
+      # orphaned wget gets reparented to the container's PID 1
+      # (nebula-server). With `init: true` reaping zombies AND
+      # wget self-timing-out, we never accumulate orphans even
+      # when /healthz is wedged for hours.
+      test: ["CMD-SHELL", "wget -q --timeout=2 --tries=1 -O /dev/null http://localhost:8080/healthz/live || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -284,6 +301,9 @@ services:
   nebula-follower:
     image: nebuladb/server:dev
     container_name: nebula-follower
+    # Same init: true rationale as the leader — reap orphaned
+    # healthcheck wgets so they don't pile up under PID 1.
+    init: true
     <<: [*default-restart, *default-logging]
     # No depends_on the leader: this whole service exists so reads
     # survive a leader outage. A `condition: service_healthy` gate
@@ -335,7 +355,7 @@ services:
     healthcheck:
       # Same /healthz/live split as the leader — the follower also
       # runs WAL recovery on boot, so the same kill-loop risk applies.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz/live || exit 1"]
+      test: ["CMD-SHELL", "wget -q --timeout=2 --tries=1 -O /dev/null http://localhost:8080/healthz/live || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 10
