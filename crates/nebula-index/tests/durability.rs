@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use nebula_chunk::FixedSizeChunker;
 use nebula_embed::{Embedder, MockEmbedder};
 use nebula_index::TextIndex;
 use nebula_vector::{HnswConfig, Metric};
@@ -184,6 +185,83 @@ async fn torn_wal_tail_recovers_to_last_good_record() {
         .await
         .unwrap();
     assert_eq!(idx.len(), 6);
+}
+
+/// Snapshot with parent documents + chunks round-trips. The
+/// streaming snapshot path has its own borrowed serializers for
+/// `parents: AHashMap<(String, String), AHashSet<String>>` —
+/// the rest of the durability tests only exercise standalone docs
+/// via `upsert_text`, so this is the regression guard for the
+/// parents-section wire format. If those bytes drift, every prod
+/// snapshot becomes unreadable on the next deploy.
+#[tokio::test]
+async fn snapshot_round_trips_parents_and_chunks() {
+    let dir = tempdir().unwrap();
+    let chunker = FixedSizeChunker::new(10, 2).unwrap();
+    {
+        let idx = TextIndex::open_persistent(
+            embedder(),
+            Metric::Cosine,
+            HnswConfig::default(),
+            dir.path(),
+        )
+        .unwrap();
+
+        // Two parent docs in different buckets, each producing
+        // multiple chunks. Mix in metadata variety so any drift
+        // in the per-doc serialization surfaces too.
+        idx.upsert_document(
+            "blog",
+            "post-1",
+            "Long enough text to split into multiple chunks across windows.",
+            &chunker,
+            serde_json::json!({"author": "alice", "tags": ["rag", "demo"]}),
+        )
+        .await
+        .unwrap();
+        idx.upsert_document(
+            "wiki",
+            "page-7",
+            "Another body of text in a different bucket, also chunked.",
+            &chunker,
+            serde_json::json!({"source": "imported"}),
+        )
+        .await
+        .unwrap();
+        // A standalone doc alongside, to confirm both branches of
+        // the docs map serialize cleanly.
+        idx.upsert_text("misc", "note", "freestanding", serde_json::json!({"k": 1}))
+            .await
+            .unwrap();
+
+        idx.snapshot().unwrap();
+    }
+
+    // Reopen — recovery loads the streaming snapshot and replays
+    // any WAL records past it. Both parents must still be queryable
+    // via `get_parent_chunks` (proves the `parents` map survived).
+    let idx = TextIndex::open_persistent(
+        embedder(),
+        Metric::Cosine,
+        HnswConfig::default(),
+        dir.path(),
+    )
+    .unwrap();
+
+    // `delete_document` reads the `parents` map to find every
+    // chunk for a parent doc — if the snapshot's parents section
+    // round-tripped correctly, both deletes succeed and report
+    // the chunk counts. If the parents map was lost, this errors.
+    let blog_removed = idx
+        .delete_document("blog", "post-1")
+        .expect("parent post-1 lost its chunks across snapshot+restore");
+    assert!(blog_removed >= 2, "expected multiple chunks for post-1");
+    let wiki_removed = idx
+        .delete_document("wiki", "page-7")
+        .expect("parent page-7 lost its chunks across snapshot+restore");
+    assert!(wiki_removed >= 2, "expected multiple chunks for page-7");
+    // Standalone doc unaffected.
+    assert!(idx.get("misc", "note").is_some(), "standalone doc missing");
 }
 
 /// Compact drops old WAL after a successful snapshot. Verifies

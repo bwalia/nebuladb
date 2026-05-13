@@ -33,7 +33,8 @@ use parking_lot::RwLock;
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeSeq;
+use serde::{Deserialize, Serialize, Serializer};
 
 use nebula_core::{Id, NebulaError, Result};
 
@@ -176,6 +177,38 @@ pub struct HnswSnapshot {
     pub entry: Option<(u32, u8)>,
 }
 
+/// Borrowed mirror of `HnswSnapshot` used by `serialize_snapshot_into`.
+/// Field order + types match exactly so bincode emits the same bytes
+/// as serializing an owned `HnswSnapshot`.
+#[derive(Serialize)]
+struct HnswSnapshotView<'a> {
+    dim: usize,
+    metric: Metric,
+    config: &'a HnswConfig,
+    vectors: &'a [f32],
+    node_levels: &'a [u8],
+    neighbors: &'a [Vec<Vec<u32>>],
+    external: &'a [Id],
+    tombstones: TombstoneSetView<'a>,
+    entry: Option<(u32, u8)>,
+}
+
+/// Serializes an `AHashSet<u32>` as a bincode sequence — same wire
+/// bytes as `Vec<u32>` for the same elements. Iteration order is
+/// hash-defined, which matches the owned path (`to_snapshot` collected
+/// via the same iterator).
+struct TombstoneSetView<'a>(&'a AHashSet<u32>);
+
+impl<'a> Serialize for TombstoneSetView<'a> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for &t in self.0 {
+            seq.serialize_element(&t)?;
+        }
+        seq.end()
+    }
+}
+
 impl Hnsw {
     pub fn new(dim: usize, metric: Metric, config: HnswConfig) -> Result<Self> {
         if dim == 0 {
@@ -228,6 +261,40 @@ impl Hnsw {
 
     pub fn is_empty(&self) -> bool {
         self.len_live() == 0
+    }
+
+    /// Bincode-stream this index's state into `writer`, producing the
+    /// same bytes that `bincode::serialize(&self.to_snapshot())` would,
+    /// but without ever materializing the intermediate `HnswSnapshot`
+    /// (which clones `vectors`/`node_levels`/`neighbors` and roughly
+    /// doubles peak memory). Holds the read lock for the whole stream,
+    /// so writers wait — disk I/O bound, no network — but reads remain
+    /// concurrent.
+    ///
+    /// On-disk wire format is preserved: a `HnswSnapshotView` mirrors
+    /// `HnswSnapshot` field-for-field, and bincode's format depends
+    /// only on field order + element types + sequence layout — not on
+    /// struct or field names.
+    pub fn serialize_snapshot_into<W: std::io::Write>(
+        &self,
+        writer: W,
+    ) -> bincode::Result<()> {
+        let g = self.inner.read();
+        let view = HnswSnapshotView {
+            dim: self.dim,
+            metric: self.metric,
+            config: &self.config,
+            vectors: &g.vectors,
+            node_levels: &g.node_levels,
+            neighbors: &g.neighbors,
+            // `external` in the persisted snapshot is `Vec<u64>`, but
+            // `Id(u64)` is a serde-newtype that bincode emits as just
+            // the inner `u64`. Element bytes are identical.
+            external: &g.external,
+            tombstones: TombstoneSetView(&g.tombstones),
+            entry: g.entry,
+        };
+        bincode::serialize_into(writer, &view)
     }
 
     /// Capture the whole graph state as a plain-data `HnswSnapshot`.
@@ -780,5 +847,37 @@ mod tests {
         let back: HnswSnapshot = bincode::deserialize(&bytes).unwrap();
         let h2 = Hnsw::restore_from_snapshot(back).unwrap();
         assert_eq!(h2.len(), 5);
+    }
+
+    #[test]
+    fn streaming_serialize_matches_owned_serialize() {
+        // serialize_snapshot_into must produce byte-identical output
+        // to bincode::serialize(&to_snapshot()). If it doesn't, every
+        // existing snapshot on disk becomes unreadable on the next
+        // deploy — a far worse failure than the OOM the streaming
+        // path is here to fix.
+        let h = Hnsw::new(6, Metric::Cosine, HnswConfig::default()).unwrap();
+        for i in 0..30u64 {
+            let mut v = vec![0.0f32; 6];
+            v[(i as usize) % 6] = (i as f32) + 0.5;
+            h.insert(Id(i), &v).unwrap();
+        }
+        // Mix in tombstones; the borrowed view iterates the AHashSet
+        // and must yield the same bytes.
+        h.delete(Id(3)).unwrap();
+        h.delete(Id(17)).unwrap();
+
+        let owned_bytes = bincode::serialize(&h.to_snapshot()).unwrap();
+        let mut streamed_bytes = Vec::with_capacity(owned_bytes.len());
+        h.serialize_snapshot_into(&mut streamed_bytes).unwrap();
+
+        // AHashSet iteration order isn't stable across binaries but
+        // it IS stable within one process — `to_snapshot` and
+        // `serialize_snapshot_into` both iterate the same set in the
+        // same order in this run.
+        assert_eq!(
+            streamed_bytes, owned_bytes,
+            "streamed snapshot bytes diverged from the owned path"
+        );
     }
 }

@@ -31,10 +31,11 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use ahash::{AHashMap, AHashSet};
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeSeq;
+use serde::{Deserialize, Serialize, Serializer};
 
 use nebula_core::Id;
-use nebula_vector::HnswSnapshot;
+use nebula_vector::{Hnsw, HnswSnapshot};
 use nebula_wal::WalError;
 
 use crate::{Document, IndexError, Result};
@@ -107,49 +108,74 @@ pub struct ParentEntry {
     pub external_ids: Vec<String>,
 }
 
-/// Serialize to `<dir>/snapshot-<seq>.nsnap`, durably. `wal_seq`
-/// is the HIGHEST WAL seq number that this snapshot captures —
-/// recovery discards everything up to and including it.
-pub fn write_snapshot(
+/// Serialize the index state to `<dir>/snapshot-<seq>.nsnap`
+/// directly, without ever materializing a full `SerializedDocState`
+/// or `HnswSnapshot`. The earlier `write_snapshot` cloned both
+/// (text/metadata per doc, vectors/neighbors for HNSW) which on a
+/// 200 MB+ snapshot pushed the 1 GiB container past its cgroup cap
+/// and crashed it every fire. This streaming path keeps peak memory
+/// at roughly the live index size plus one doc's metadata string.
+///
+/// `wal_seq` is the highest WAL seq this snapshot captures —
+/// recovery discards every WAL record with seq `<=` this. Caller
+/// MUST hold a read lock on the index for the duration to keep
+/// `docs` / `parents` / `hnsw` consistent.
+///
+/// On-disk format is byte-identical to the old path: borrowed
+/// serializer views mirror the owned types field-for-field, and
+/// bincode's wire format depends only on field order + element
+/// shape, not on struct names. Existing `.nsnap` files load
+/// unchanged via `load_latest_snapshot`.
+pub fn write_snapshot_streaming(
     dir: &Path,
     wal_seq: u64,
-    docs: SerializedDocState,
-    hnsw: HnswSnapshot,
+    next_id: u64,
+    docs: &AHashMap<Id, Document>,
+    parents: &AHashMap<(String, String), AHashSet<String>>,
+    hnsw: &Hnsw,
 ) -> Result<PathBuf> {
     fs::create_dir_all(dir).map_err(io_to_index)?;
 
-    let header = SnapshotHeader {
+    let header_view = SnapshotHeaderView {
         version: 1,
         wal_seq_at_snapshot: wal_seq,
         taken_at_ms: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0),
-        docs,
+        docs: SerializedDocStateView {
+            next_id,
+            docs: DocsSeqView(docs),
+            parents: ParentsSeqView(parents),
+        },
     };
-    let header_bytes =
-        bincode::serialize(&header).map_err(|e| IndexError::Invalid(format!("snapshot header: {e}")))?;
-    let hnsw_bytes =
-        bincode::serialize(&hnsw).map_err(|e| IndexError::Invalid(format!("snapshot hnsw: {e}")))?;
+
+    // We need the header length up front (the on-disk layout is
+    // `[u64 header_len][header_bytes][hnsw_bytes]`, so the reader
+    // knows where to split). `bincode::serialized_size` walks the
+    // structure without buffering output — the only intermediate
+    // allocations are the per-doc `metadata_json` strings, dropped
+    // as soon as each element is "measured".
+    let header_len = bincode::serialized_size(&header_view)
+        .map_err(|e| IndexError::Invalid(format!("snapshot header sizing: {e}")))?;
 
     let stem = format!("snapshot-{wal_seq:020}");
     let part_path = dir.join(format!("{stem}.{SNAPSHOT_PART_EXT}"));
     let final_path = dir.join(format!("{stem}.{SNAPSHOT_EXT}"));
     let ok_path = dir.join(format!("{stem}.{SNAPSHOT_OK_EXT}"));
 
-    // Stream directly into zstd so we never hold the whole
-    // compressed blob in memory. Level 3 is a reasonable
-    // throughput/size tradeoff; snapshots run out-of-band.
     {
         let file = File::create(&part_path).map_err(io_to_index)?;
         let mut writer = BufWriter::new(file);
         let mut enc = zstd::Encoder::new(&mut writer, 3)
             .map_err(|e| IndexError::Invalid(format!("zstd enc: {e}")))?;
         // Layout: [u64 header_len] [header_bytes] [hnsw_bytes]
-        enc.write_all(&(header_bytes.len() as u64).to_le_bytes())
+        enc.write_all(&header_len.to_le_bytes())
             .map_err(io_to_index)?;
-        enc.write_all(&header_bytes).map_err(io_to_index)?;
-        enc.write_all(&hnsw_bytes).map_err(io_to_index)?;
+        bincode::serialize_into(&mut enc, &header_view)
+            .map_err(|e| IndexError::Invalid(format!("snapshot header: {e}")))?;
+        hnsw.serialize_snapshot_into(&mut enc)
+            .map_err(|e| IndexError::Invalid(format!("snapshot hnsw: {e}")))?;
         enc.finish().map_err(io_to_index)?.flush().map_err(io_to_index)?;
     }
     // fsync body before rename.
@@ -163,6 +189,101 @@ pub fn write_snapshot(
     sync_dir(dir)?;
 
     Ok(final_path)
+}
+
+// --- Borrowed serializer views ----------------------------------------
+//
+// Each `*View` mirrors the owned type (`SnapshotHeader`,
+// `SerializedDocState`, `SerializedDoc`, `ParentEntry`) field-for-field.
+// Bincode's wire format depends only on field order + element shape, so
+// these emit the same bytes as serializing the owned counterpart — and
+// `streaming_matches_owned` (below) holds us to that.
+
+#[derive(Serialize)]
+struct SnapshotHeaderView<'a> {
+    version: u32,
+    wal_seq_at_snapshot: u64,
+    taken_at_ms: u64,
+    docs: SerializedDocStateView<'a>,
+}
+
+#[derive(Serialize)]
+struct SerializedDocStateView<'a> {
+    next_id: u64,
+    docs: DocsSeqView<'a>,
+    parents: ParentsSeqView<'a>,
+}
+
+#[derive(Serialize)]
+struct SerializedDocView<'a> {
+    internal_id: u64,
+    bucket: &'a str,
+    external_id: &'a str,
+    text: &'a str,
+    /// `serde_json::Value::to_string` allocates a per-doc String. We
+    /// can't borrow here without changing the wire format. The
+    /// allocation lives just long enough to serialize this one doc,
+    /// so peak overhead is bounded by the largest single document's
+    /// metadata — not the whole bucket like the old clone-then-write
+    /// path.
+    metadata_json: String,
+    parent_doc_id: Option<&'a str>,
+    chunk_index: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct ParentEntryView<'a> {
+    bucket: &'a str,
+    parent_doc_id: &'a str,
+    external_ids: ExternalIdsSeqView<'a>,
+}
+
+struct DocsSeqView<'a>(&'a AHashMap<Id, Document>);
+
+impl<'a> Serialize for DocsSeqView<'a> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for (id, doc) in self.0 {
+            seq.serialize_element(&SerializedDocView {
+                internal_id: id.0,
+                bucket: &doc.bucket,
+                external_id: &doc.external_id,
+                text: &doc.text,
+                metadata_json: doc.metadata.to_string(),
+                parent_doc_id: doc.parent_doc_id.as_deref(),
+                chunk_index: doc.chunk_index,
+            })?;
+        }
+        seq.end()
+    }
+}
+
+struct ParentsSeqView<'a>(&'a AHashMap<(String, String), AHashSet<String>>);
+
+impl<'a> Serialize for ParentsSeqView<'a> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for ((bucket, parent), kids) in self.0 {
+            seq.serialize_element(&ParentEntryView {
+                bucket: bucket.as_str(),
+                parent_doc_id: parent.as_str(),
+                external_ids: ExternalIdsSeqView(kids),
+            })?;
+        }
+        seq.end()
+    }
+}
+
+struct ExternalIdsSeqView<'a>(&'a AHashSet<String>);
+
+impl<'a> Serialize for ExternalIdsSeqView<'a> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for k in self.0 {
+            seq.serialize_element(k.as_str())?;
+        }
+        seq.end()
+    }
 }
 
 /// Load the newest `.ok`-blessed snapshot in `dir`. Returns
@@ -273,40 +394,6 @@ fn sync_dir(dir: &Path) -> Result<()> {
 
 fn io_to_index(e: std::io::Error) -> IndexError {
     IndexError::Core(nebula_core::NebulaError::Io(e))
-}
-
-/// Convenience: convert the current `Inner` maps into their
-/// serializable form. Used by the snapshot path.
-pub fn serialize_docs(
-    next_id: u64,
-    docs: &AHashMap<Id, Document>,
-    parents: &AHashMap<(String, String), AHashSet<String>>,
-) -> SerializedDocState {
-    let mut serialized_docs = Vec::with_capacity(docs.len());
-    for (id, doc) in docs {
-        serialized_docs.push(SerializedDoc {
-            internal_id: id.0,
-            bucket: doc.bucket.clone(),
-            external_id: doc.external_id.clone(),
-            text: doc.text.clone(),
-            metadata_json: doc.metadata.to_string(),
-            parent_doc_id: doc.parent_doc_id.clone(),
-            chunk_index: doc.chunk_index,
-        });
-    }
-    let parents_vec = parents
-        .iter()
-        .map(|((bucket, parent), kids)| ParentEntry {
-            bucket: bucket.clone(),
-            parent_doc_id: parent.clone(),
-            external_ids: kids.iter().cloned().collect(),
-        })
-        .collect();
-    SerializedDocState {
-        next_id,
-        docs: serialized_docs,
-        parents: parents_vec,
-    }
 }
 
 /// Convert a WAL error into our `IndexError` without a second
