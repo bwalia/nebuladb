@@ -15,3 +15,12 @@ deploy/helm/**/*.tgz
 
 # Output of scripts/reconcile.sh when run from cron / systemd timer.
 .reconcile.log
+
+# Per-machine container-build cache used by ad-hoc `cargo check` runs
+# inside a rust:1.83 container (`docker run -v $PWD:/src ... -e
+# CARGO_HOME=/src/.cargo_cache`). Hundreds of MB of registry +
+# compiled crates; useless to share, painful to commit.
+.cargo_cache/
+
+# Claude Code harness state — per-user, machine-specific.
+.claude/
