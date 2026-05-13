@@ -4,16 +4,19 @@ Paste the section below into a fresh Claude Code session against this repo
 when you want to actually ship "scales horizontally, runs non-stop,
 active-active across regions."
 
-The prompt is intentionally **decision-first**. Two RFCs in this repo
-already cover the design (`docs/design/0001-multi-region-active-active.md`
-and `docs/design/0003-write-availability.md`). Both end with
-"Decision needed." Until those decisions are made, *no implementation
-should start* — the warning in RFC 0003's closing paragraph applies:
-multi-master without a chosen consistency model is a recipe for silent
-data loss.
+**Status: decisions landed.** The two RFCs that anchor this work
+(`docs/design/0001-multi-region-active-active.md` and
+`docs/design/0003-write-availability.md`) both shipped with
+"Decision needed." flags. Those have been resolved in issues #32
+(RFC 0003 = **A, Raft**) and #33 (RFC 0001 §9 = all five answered;
+auto-failback uses hysteresis with manual-confirm opt-in). The
+implementation specifics for Raft live in
+`docs/design/0004-raft-implementation.md`, which is the gating doc
+for Phase 2 work.
 
-The phasing here mirrors the rollout plans in the two RFCs. Don't
-reinvent them. Read both first, then come back to this file.
+The phasing here mirrors the rollout plans in the two RFCs and the
+implementation breakdown in ADR 0004. Don't reinvent them. Read
+both RFCs and ADR 0004 first, then come back to this file.
 
 ---
 
@@ -29,126 +32,149 @@ In this order:
 
 1. `docs/design/0003-write-availability.md` — within-region write
    availability. Four options (A Raft, B multi-leader LWW, C etcd
-   lease, D manual promotion). RFC recommends **B** as default with
-   **D** as fallback. Ends with "Decision needed."
+   lease, D manual promotion). **Decision: A (Raft)**, tracked in
+   closed issue #32.
 2. `docs/design/0001-multi-region-active-active.md` — cross-region
    active-active. Recommends Option A'/C' hybrid: per-bucket
    `home_region` + `home_epoch`, cross-region WAL tail, client-side
-   routing, operator-managed failover via a new `NebulaRegionFailover`
-   CRD. Has 5 open questions in §9.
-3. `crates/nebula-grpc/src/cross_region.rs` (~335 lines) and
+   routing, operator-managed failover via `NebulaRegionFailover`.
+   §9's five open questions are **all answered** in closed issue #33
+   (1a, 2a, 3a, 4a, 5a-with-hysteresis).
+3. **`docs/design/0004-raft-implementation.md`** — implementation
+   ADR for the Raft choice. **Read this before scaffolding any
+   code.** Covers `openraft` vs `raft-rs`, single group vs sharded,
+   WAL/log relationship, snapshot integration, replica sizing.
+4. `crates/nebula-grpc/src/cross_region.rs` (~335 lines) and
    `crates/nebula-server/src/cross_region_status.rs` (~269 lines) —
    skeleton of the cross-region replication service. Phase 2 of
    RFC 0001 is partly built. Read it before designing anything; you
    may be re-implementing what's already there.
-4. `crates/nebula-server/src/cluster.rs` — `ClusterConfig`,
+5. `crates/nebula-server/src/cluster.rs` — `ClusterConfig`,
    `CrossRegionPeer`, env-var parsing. The shape of "peers and home
    regions" already exists at the config layer.
-5. PR #25 (`fix/snapshot-streaming-oom`) — the streaming snapshot
+6. PR #25 (`fix/snapshot-streaming-oom`) — the streaming snapshot
    fix that unblocks production. Confirm it's merged on `main`
    before starting any HA work. If not merged, **stop and merge it
    first**; everything else is moot if the binary OOM-loops every
    15 minutes.
 
-## 1. Two decisions that must land before code
+## 1. Decisions — landed
 
-Open a one-page issue for each. Do not start coding until both are
-answered.
+Both blocking decisions are now answered. Tracked in closed issues
+#32 and #33.
 
-### Decision 1 — RFC 0003 option
+### Decision 1 — RFC 0003 option: **A (Raft)**
 
-Pick exactly one of A / B / C / D. Each option's implementation cost
-diverges by an order of magnitude.
+Tracked: [#32](https://github.com/bwalia/nebuladb/issues/32), closed.
 
-Default recommendation in the RFC: **B (multi-leader LWW)**. Reasoning
-the RFC gives:
-- Vector upserts are LWW-tolerant by data shape (stable
-  `external_id`).
-- No transactions to preserve, so Raft is overkill.
-- Operational model stays flat: every node is the same.
-- Estimate: 5–10 days + 1 week soak.
+The owner chose **A (Raft consensus)** over the RFC default of B.
+Implementation specifics live in `docs/design/0004-raft-implementation.md`
+(this is now the gating doc for Phase 2 — read it before scaffolding
+the `nebula-raft` crate).
 
-Counter-cases:
-- If the target audience is enterprises that run Raft systems
-  (etcd, CockroachDB), they expect **A**.
-- If the team can't tolerate any consistency relaxation today,
-  ship **D** as a tactical 2–3-day stopgap while B gets built.
+Implications already absorbed below:
+- Within-region phase scope expands from 5–10 days (B) to 4–8 weeks
+  (A) + 2 weeks soak.
+- Existing replication code (`crates/nebula-grpc/src/follower.rs`,
+  `Wal::subscribe`, `state::FollowerCursor`) stays for standalone
+  mode; deprecated for Raft clusters but not removed.
+- HNSW index becomes a Raft state machine. Snapshot format is
+  reused unchanged — `crates/nebula-index/src/durability.rs` plugs
+  into `openraft`'s `RaftSnapshotBuilder`.
+- K8s operator must enforce `replicas >= 3 && replicas % 2 == 1`
+  via admission webhook for Raft-enabled clusters.
 
-### Decision 2 — RFC 0001 open questions (§9)
+### Decision 2 — RFC 0001 §9: all five answered
 
-Five items, each blocks implementation:
-1. Tiebreaker for concurrent failovers (operator lease vs
-   majority-of-consumers vote).
-2. Do followers tail remote regions directly, or always via local
-   leader?
-3. Schema for home-region map — one doc per bucket in its own seed,
-   or a `__system/home_map` bucket.
-4. pgwire SQLSTATE for "wrong home region" — reuse `25006` or pick
-   a new code.
-5. Auto-failback yes/no when the original home recovers.
+Tracked: [#33](https://github.com/bwalia/nebuladb/issues/33), closed.
 
-The RFC leans toward: operator lease, leader-only, per-bucket seed
-doc, `25006`, no auto-failback. Confirm or override.
+| Q | Topic | Answer |
+|---|---|---|
+| 1 | Failover tiebreaker | (a) operator namespace lease via `controller-runtime` |
+| 2 | Follower cross-region tail | (a) leader-only; matches existing `crates/nebula-grpc/src/cross_region.rs` |
+| 3 | Home-map schema | (a) per-bucket seed doc (already implemented in `crates/nebula-server/src/home_region.rs`) |
+| 4 | pgwire SQLSTATE | (a) reuse `25006 read_only_sql_transaction` with distinct error message |
+| 5 | Auto-failback | (a) **with hysteresis** — `NEBULA_FAILBACK_STABILITY_SECS` (default 300s); `NebulaBucket.spec.failback: auto\|manual` opt-out for regulated workloads |
+
+Q5 implementation contract (excerpted from #33):
+- Continuous health = N consecutive 30s gRPC pings; any failure
+  resets the counter. Default 300s = 10 successes.
+- New CRD `NebulaRegionFailback` carries the manual-confirm flow.
+- Three new metrics: `nebula_failback_deferred_total{bucket,reason}`,
+  `nebula_failback_completed_total{bucket}`,
+  `nebula_failback_pending_seconds{bucket}`.
+- Audit event `nebuladb-operator-failback` on every flip.
 
 ## 2. Sequencing
 
 Strictly in this order. Do not let a later phase start until the
 previous one is verified in production.
 
+This phasing reflects the Raft decision (#32 = A). For the per-phase
+implementation details inside Phase 2, read
+`docs/design/0004-raft-implementation.md` §9 — that's the source of
+truth and this table is its summary.
+
 | Phase | Work | Where | Estimate |
 |---|---|---|---|
-| 0 | Merge PR #25 (streaming snapshot). | `fix/snapshot-streaming-oom` | already done if merged; verify before continuing |
-| 1 | Verify read failover actually works on `192.168.1.193`. Take `nebula-server` down, confirm `/api` reads on showcase still succeed via `nebula-follower`. If they don't, fix the nginx pool config first. | `apps/showcase/nginx/*.conf`, follower compose service | ~2 hours |
-| 2 | RFC 0003 chosen option (default B). See §3 below. | `crates/nebula-wal`, `crates/nebula-index`, `crates/nebula-server/middleware.rs` | 5–10 days + 1 week soak (B); 2–3 days (D); 4–8 weeks (A) |
-| 3 | RFC 0001 Phase 1 — `home_region` + `home_epoch` in bucket seed docs; `GET /admin/bucket/:b/home-region`; per-remote lag in `/admin/replication`. | `crates/nebula-server/router.rs`, operator's bucket controller | ~1 week |
-| 4 | RFC 0001 Phase 2 — wire up `CrossRegionReplicationService` end-to-end. The skeleton exists; finish the gRPC service definition, peer config plumbing, lag metrics. | `crates/nebula-grpc/cross_region.rs`, `crates/nebula-server/cross_region_status.rs`, `crates/nebula-server/main.rs` | ~2 weeks |
-| 5 | RFC 0001 Phase 3 — `nebula-client` SDK with bucket→region resolver + 30s cache; `require_home_region` middleware (parallel to `guard_writes_on_follower`); pgwire + gRPC parity. | new crate `nebula-client`, `crates/nebula-server/middleware.rs` | ~1 week |
-| 6 | RFC 0001 Phase 4 — `NebulaRegionFailover` CRD + controller state machine (Preflight → Drain → EpochBump → Announce → Completed). | `operator/` | ~1 week |
+| 0a | Merge PR #25 (streaming snapshot). Verify deployed on `192.168.1.193`. Remove the `NEBULA_SNAPSHOT_INTERVAL_SECS=0` workaround from `.env` once stable. | `fix/snapshot-streaming-oom` | 1 day |
+| 0b | Verify read failover actually works on `192.168.1.193`. Take `nebula-server` down, confirm `/api` reads on showcase still succeed via `nebula-follower`. Use `scripts/integration_validate.sh` (PR #29) to check. If it fails, fix the nginx pool first. | `apps/showcase/nginx/*.conf`, follower compose service | 1 day |
+| 2.1 | Scaffold new `nebula-raft` crate. `openraft` deps wired. `RaftLogStorage` over a new `.nrlog` segment format. Unit tests. | `crates/nebula-raft/` (new) | ~1 week |
+| 2.2 | `RaftStateMachine` impl wrapping `TextIndex`. Determinism test: two peers apply the same log → byte-identical snapshot. | `crates/nebula-raft/`, `crates/nebula-index` | ~1 week |
+| 2.3 | `RaftSnapshotBuilder` reusing the `nsnap` snapshot format. Streaming install on a fresh peer. | `crates/nebula-raft/`, `crates/nebula-index/src/durability.rs` | ~1 week |
+| 2.4 | gRPC transport (`RaftService` in `nebula-grpc`). Membership change tests (add/remove peer). Dedicated bind port `:50052` (`NEBULA_RAFT_BIND`). | `crates/nebula-grpc/` | ~1 week |
+| 2.5 | `nebula-server` boot integration. `NEBULA_RAFT_*` env vars. `guard_writes_on_follower` → `guard_writes_on_non_leader` for raft mode (response carries leader address). | `crates/nebula-server/{cluster,main,middleware,state}.rs` | ~1 week |
+| 2.6 | **Soak: 2 weeks.** 3-node cluster on `192.168.1.193`-style hardware. Kill nodes, partition the network, fail back. Watch for committed-but-unapplied edge cases. | live cluster | 2 weeks |
+| 3 | RFC 0001 Phase 1 — `home_region` + `home_epoch` in bucket seed docs (already started in `crates/nebula-server/src/home_region.rs`); `GET /admin/bucket/:b/home-region`; per-remote lag in `/admin/replication`. | `crates/nebula-server/router.rs`, operator's bucket controller | ~1 week |
+| 4 | RFC 0001 Phase 2 — finish `CrossRegionReplicationService`. Skeleton at `crates/nebula-grpc/src/cross_region.rs` (335 lines) + `crates/nebula-server/src/cross_region_status.rs` (269 lines). | mixed | ~2 weeks |
+| 5 | RFC 0001 Phase 3 — `nebula-client` SDK with bucket→region resolver + 30s cache; `guard_wrong_home_region` parity for gRPC + pgwire (REST already done). | new crate `nebula-client`, `crates/nebula-server/middleware.rs` | ~1 week |
+| 6 | RFC 0001 Phase 4 — `NebulaRegionFailover` controller state machine (Preflight → Drain → EpochBump → Announce → Completed) + `NebulaRegionFailback` CRD with hysteresis + manual-confirm support per #33 Q5. | `operator/api/v1alpha1/`, `operator/internal/controllers/` | ~1.5 weeks |
 | 7 | RFC 0001 Phase 5 — nice-to-haves: anti-affinity, per-bucket read preferences, conflict auditing. | mixed | as time permits |
 
-Total: ~8–10 weeks of focused engineering for full RFC 0001 + the
-chosen RFC 0003 option.
+**Total: ~12–16 weeks** of focused engineering for full RFC 0001 +
+Raft (vs ~8–10 weeks the original prompt estimated under Option B).
+Critical path is **2.1 → 2.6 (8 weeks)** before any RFC 0001 phase 3+
+work can start — cross-region depends on a stable within-region HA
+story.
 
-## 3. Phase 2 specifics if Decision 1 = B (multi-leader LWW)
+## 3. Phase 2 specifics — Raft (Decision 1 = A)
 
-The RFC's §"What changes if we pick (B)" lays it out. Concrete commits
-in suggested order:
+Implementation details live in `docs/design/0004-raft-implementation.md`.
+Read that document before scaffolding any code; the bullets here are
+a pointer, not a substitute.
 
-1. **WAL record ordering**. Extend `WalRecord` with `(wal_seq,
-   node_id)` tuple. Replay's conflict rule: higher `wal_seq` wins;
-   ties broken by `node_id`. Tests for both win conditions.
-2. **Deterministic apply on conflict**. The HNSW insert path already
-   tolerates a tombstone + re-insert. Verify that an upsert with an
-   earlier-than-current `(wal_seq, node_id)` is no-op'd, not applied.
-3. **Tombstone grace period**. Deletes leave a tombstone marker for
-   24h (env-tunable). Compaction respects this. Without it, a late
-   upsert from a partitioned peer can resurrect a deleted doc.
-4. **Bi-directional replication**. Both nodes stream their WAL to
-   each other. `apply_wal_record` on the receiving side is already
-   idempotent — verify with a test that runs it twice on the same
-   record.
-5. **Retire `guard_writes_on_follower`**. The middleware in
-   `crates/nebula-server/src/middleware.rs` should now allow writes
-   on any node. Keep the symbol around with a deprecation note for
-   one release; removal is a follow-up.
-6. **Nginx pool**. `apps/showcase/nginx/*.conf` — rename
-   `nebula_read_pool` to `nebula_pool` (or similar) and route ALL
-   methods (not just `GET`) through it. Both nodes are equivalent.
-7. **pgwire**. Stop returning `25006 read_only_sql_transaction` from
-   either node on `INSERT`/`UPDATE`/`DELETE`. The follower guard's
-   pgwire integration retires here too.
+Decisions already locked in:
 
-Soak test (week 2):
-- Run a 10-minute concurrent-write workload against both nodes
-  targeting overlapping keys. Confirm convergence within the
-  cross-node tail's lag SLO (target ≤ 5s).
-- Kill one node mid-workload. Other node accepts writes
-  uninterrupted. Killed node rejoins, applies the missed records,
-  converges.
-- Net-split simulation: `iptables` drop between the two nodes for
-  60s. Both nodes accept conflicting writes. Heal the partition.
-  Confirm the LWW resolution matches what `(wal_seq, node_id)`
-  ordering predicts.
+- **Library: `openraft 0.9.x`** (async-first; matches the `tokio` /
+  `axum` codebase). See ADR §3.
+- **Single Raft group v1.** No bucket-sharded groups. ADR §4.
+- **Replace `nebula-wal` with `openraft`'s log storage** for raft
+  clusters; `nebula-wal` stays for `NEBULA_NODE_ROLE=standalone`.
+  ADR §5.
+- **Reuse the `nsnap` snapshot format unchanged** — plug `openraft`'s
+  `RaftSnapshotBuilder` into `crates/nebula-index/src/durability.rs`.
+  ADR §6.
+- **3-node minimum, odd replicas only.** Operator admission webhook
+  enforces. ADR §7.
+- **No standalone → raft online migration in v1.** Wipe + re-ingest.
+  Document this clearly in the operator's CRD docs.
+
+Soak test (Phase 2.6, two weeks on a 3-node cluster):
+
+- Concurrent writes against the leader for 1 hour; kill the leader
+  mid-workload; verify writes resume on the new leader within
+  election timeout (~1s with `openraft` defaults).
+- Network partition simulation: `iptables` drop between two of the
+  three peers for 60s. The majority side stays writable; the
+  minority side rejects writes. Heal the partition; verify the
+  minority side catches up via log replay.
+- Slow snapshot transfer: throttle the inter-peer link and bring up
+  a fourth node as a learner. Snapshot install must complete; the
+  PR #25 streaming snapshot fix is the prerequisite.
+- Determinism check: dump the HNSW snapshot from each peer after the
+  workload; bytes must be identical (the
+  `streaming_serialize_matches_owned_serialize` test pattern, but
+  cross-node).
 
 ## 4. Verification gates
 
@@ -209,9 +235,13 @@ For each shipped phase:
 
 ## 7. When to escalate to the user
 
-Stop and ask before:
-- Picking between A / B / C / D in RFC 0003 if there's any doubt.
-- Resolving any of the 5 open questions in RFC 0001 §9.
+Both blocking decisions are now landed (#32, #33), so the escalation
+list is shorter:
+
+- Anything not covered by `docs/design/0004-raft-implementation.md`
+  — that ADR is the source of truth for Phase 2.
+- The three open questions in ADR §12 (openraft pin, gRPC port,
+  standalone deprecation) — flag before acting.
 - Making any change that requires data migration on
   `192.168.1.193`.
 - Force-pushing or rewriting history on any branch.
@@ -236,8 +266,8 @@ Stop and ask before:
   embedder is being re-called per chunk during replay. Worth a
   separate investigation; not blocking for this work.
 
-Once you've read this file end-to-end and the two RFCs, your first
-output should be: "I've read RFCs 0001 and 0003. My recommended
-sequencing matches §2 of the prompt. Decisions 1 and 2 still need
-the user's input — drafting issues for each now." Then draft them.
-Do not start any code until both decisions land.
+Once you've read this file end-to-end, RFCs 0001 + 0003, and ADR
+0004, your first output should be: "I've read the rollout prompt,
+RFCs 0001 + 0003, and ADR 0004. Decisions 1 and 2 are landed (#32 +
+#33). Starting Phase 0a / 0b verification on `192.168.1.193`."
+Don't start Phase 2.1 code until 0a and 0b are green.
