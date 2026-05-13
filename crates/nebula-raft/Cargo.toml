@@ -1,0 +1,22 @@
+[package]
+name = "nebula-raft"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nebula-wal = { path = "../nebula-wal" }
+serde = { workspace = true }
+bincode = { workspace = true }
+crc32fast = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
