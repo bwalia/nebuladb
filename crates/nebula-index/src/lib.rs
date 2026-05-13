@@ -899,12 +899,20 @@ impl TextIndex {
     /// Returns the path + the WAL seq at the time of the snapshot. A
     /// no-op and error if the index is in-memory (no `data_dir`).
     ///
-    /// Snapshot is atomic w.r.t. writers: we hold the read lock for
-    /// the in-memory half (blocks writers briefly), take the HNSW
-    /// snapshot (also holds an HNSW read lock), then write to disk
-    /// outside any lock. The WAL's current seq captured *before*
-    /// the read lock is released ensures post-snapshot records
-    /// won't be double-applied on recovery.
+    /// Streams directly from the live state into a zstd-compressed
+    /// file — no intermediate `SerializedDocState` / `HnswSnapshot`
+    /// clone. The earlier two-phase path (clone under read lock, then
+    /// `bincode::serialize` each into a `Vec<u8>`, then write the
+    /// vecs) tripled peak memory for the duration of every fire and
+    /// took the 1 GiB-capped container OOM on each 15-minute tick
+    /// — see RFC followups in commit history.
+    ///
+    /// Trade-off: the read lock is held for the *entire* write, not
+    /// just the clone phase. Writers block for the duration. Readers
+    /// continue (parking_lot RwLock allows concurrent readers). For
+    /// a 200 MB compressed snapshot at zstd-3 + NVMe that's roughly
+    /// 1–2 s of writer queueing per fire — well below the cost of
+    /// the OOM kill loop we're replacing.
     pub fn snapshot(&self) -> Result<SnapshotOutcome> {
         let data_dir = self
             .data_dir
@@ -915,28 +923,38 @@ impl TextIndex {
             .as_ref()
             .ok_or_else(|| IndexError::Invalid("index has no wal".into()))?;
 
-        // Make sure every buffered append is on disk before we
-        // read the seq. Without this a recent append could be
-        // included in the snapshot but not yet in any segment —
-        // recovery would think it was unseen.
+        // Flush WAL so on-disk seq reflects every committed append.
+        // Without this a recently appended record might not be in
+        // any segment yet — recovery would think it was unseen.
         wal.flush().map_err(durability::wal_err)?;
+        // Capture wal_seq BEFORE acquiring the read lock — matches
+        // the pre-existing ordering. The write path appends to the
+        // WAL *outside* `inner.write()`, so neither ordering is
+        // race-free: capturing seq before the lock risks recovery
+        // double-applying a record that landed in `inner` between
+        // the seq read and the lock acquisition (idempotent for
+        // upsert, the only worry is a stray duplicate-key error in
+        // logs); capturing after the lock risks the opposite —
+        // recovery *skipping* a record whose WAL append happened
+        // between the lock and the seq read but whose `inner` apply
+        // is blocked behind us, i.e. data loss. The former is the
+        // preferable failure mode until WAL append + inner apply
+        // are made atomic on the write path.
         let wal_seq =
             nebula_wal::current_seq(wal.dir()).map_err(durability::wal_err)?.unwrap_or(0);
 
-        // Capture in-memory + HNSW state under the read lock.
-        let (serialized_docs, hnsw_snap) = {
-            let g = self.inner.read();
-            let docs = durability::serialize_docs(g.next_id, &g.docs, &g.parents);
-            let hnsw = self.hnsw.to_snapshot();
-            (docs, hnsw)
-        };
-
-        let path = durability::write_snapshot(
+        let g = self.inner.read();
+        let path = durability::write_snapshot_streaming(
             &data_dir.join("snapshots"),
             wal_seq,
-            serialized_docs,
-            hnsw_snap,
+            g.next_id,
+            &g.docs,
+            &g.parents,
+            &self.hnsw,
         )?;
+        // Lock dropped here on `g` going out of scope.
+        drop(g);
+
         Ok(SnapshotOutcome {
             path,
             wal_seq_captured: wal_seq,

@@ -773,7 +773,17 @@ async fn admin_version() -> Json<VersionInfo> {
 async fn admin_snapshot(
     State(s): State<AppState>,
 ) -> Result<Json<nebula_index::SnapshotOutcome>, ApiError> {
-    let out = s.index.snapshot()?;
+    // `TextIndex::snapshot` holds the inner read lock through the
+    // disk write (streaming bincode → zstd → file). At a few hundred
+    // MB that's seconds of synchronous I/O — far too long to run on
+    // a tokio worker thread, which would block every other axum
+    // handler queued behind it. The background snapshot scheduler
+    // already wraps the same call in `spawn_blocking`; do the same
+    // for the admin-triggered path.
+    let idx = s.index.clone();
+    let out = tokio::task::spawn_blocking(move || idx.snapshot())
+        .await
+        .map_err(|e| ApiError::Internal(format!("snapshot task panicked: {e}")))??;
     Ok(Json(out))
 }
 
