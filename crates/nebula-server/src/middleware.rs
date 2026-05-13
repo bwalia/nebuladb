@@ -139,8 +139,13 @@ pub async fn guard_writes_on_follower(
         return next.run(req).await;
     }
     // SELECT-only SQL endpoints — POST is just the body carrier.
+    // The middleware is route_layered on the nested `/api/v1` router,
+    // so the path here is already nest-stripped (`/query`); accept the
+    // full-prefix form too, since tests construct `Request::post` with
+    // the full URI and hit the same middleware.
     let path = req.uri().path();
-    if path == "/api/v1/query" || path == "/api/v1/query/explain" {
+    let nest_stripped = path.strip_prefix("/api/v1").unwrap_or(path);
+    if nest_stripped == "/query" || nest_stripped == "/query/explain" {
         return next.run(req).await;
     }
     // Structured JSON so clients with an error envelope keep working.
