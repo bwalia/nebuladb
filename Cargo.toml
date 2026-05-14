@@ -9,6 +9,7 @@ members = [
     "crates/nebula-chunk",
     "crates/nebula-llm",
     "crates/nebula-wal",
+    "crates/nebula-raft",
     "crates/nebula-index",
     "crates/nebula-sql",
     "crates/nebula-grpc",
