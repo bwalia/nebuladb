@@ -2461,6 +2461,7 @@ dependencies = [
  "nebula-embed",
  "nebula-index",
  "nebula-llm",
+ "nebula-raft",
  "nebula-vector",
  "nebula-wal",
  "parking_lot",

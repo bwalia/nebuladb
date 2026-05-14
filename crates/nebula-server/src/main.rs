@@ -534,8 +534,14 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             let grpc_addr: SocketAddr = addr.parse()?;
             // Pass the cluster role through so DocumentService rejects
             // writes on followers — symmetric with the REST guard.
-            let grpc_state =
+            // When raft is configured, also hand the handle through so
+            // DocumentService writes route through Raft consensus
+            // (Phase 2.5f) — same model AppState uses on the REST side.
+            let mut grpc_state =
                 GrpcState::with_role(grpc_index.clone(), grpc_llm, grpc_chunker, cluster.role);
+            if let Some(rh) = raft_handle.as_ref() {
+                grpc_state = grpc_state.with_raft(Arc::clone(rh));
+            }
             let source_region = cluster.region.clone();
             tracing::info!(
                 "nebula-grpc listening on {grpc_addr} (role={:?}, region={:?})",
