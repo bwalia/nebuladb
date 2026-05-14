@@ -27,6 +27,7 @@
 //! needs as one flat API.
 
 pub mod log;
+pub mod network;
 pub mod raft_storage;
 pub mod snapshot;
 pub mod state_machine;
@@ -34,6 +35,7 @@ pub mod storage;
 pub mod types;
 
 pub use log::{LogConfig, LogEntry, LogPayload, LogSegment, LogStore, LogStoreError};
+pub use network::{GrpcRaftNetwork, GrpcRaftNetworkFactory, NebulaRaftServer, RaftRpcServer};
 pub use raft_storage::NebulaRaftStorage;
 pub use snapshot::{NebulaSnapshotStore, SnapshotError};
 pub use state_machine::{NebulaStateMachine, StateMachineError};

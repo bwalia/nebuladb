@@ -1,0 +1,42 @@
+syntax = "proto3";
+package nebula.raft.v1;
+
+// gRPC transport for openraft RPCs between NebulaDB peers.
+//
+// Wire protocol design: each RPC body is a single `bytes` field
+// carrying a `bincode`-encoded openraft request/response. We sidestep
+// re-defining openraft's many request/response types in protobuf
+// because:
+//
+//   1. openraft already has `serde` derives — bincode round-trips
+//      losslessly via the `serde` feature we depend on.
+//   2. Re-deriving the message structs in protobuf would lock us into
+//      a separate schema we'd have to keep in sync across openraft
+//      version bumps.
+//   3. These messages travel only between cluster peers, not to
+//      external clients. There's no "human readable on the wire"
+//      requirement — peers always run the same nebuladb binary.
+//
+// The trade-off: peers running different openraft versions cannot
+// interop. We accept this — within-region clusters are upgraded as
+// a unit (per ADR §10's risk register on openraft API churn).
+//
+// All RPCs are unary; openraft expects request/response semantics
+// even for snapshot install (the streaming-snapshot path is
+// `full_snapshot` and is built on top of multiple `InstallSnapshot`
+// calls — see the trait's default impl).
+
+service NebulaRaft {
+  // RaftNetwork::append_entries
+  rpc AppendEntries(RaftRpc) returns (RaftRpc);
+  // RaftNetwork::vote
+  rpc Vote(RaftRpc) returns (RaftRpc);
+  // RaftNetwork::install_snapshot
+  rpc InstallSnapshot(RaftRpc) returns (RaftRpc);
+}
+
+// Single-field bincode envelope. The `payload` is whichever
+// openraft request or response type the calling RPC expects.
+message RaftRpc {
+  bytes payload = 1;
+}
