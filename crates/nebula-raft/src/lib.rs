@@ -23,10 +23,12 @@
 //! the trait wiring on top.
 
 pub mod log;
+pub mod state_machine;
 pub mod storage;
 pub mod types;
 
 pub use log::{LogConfig, LogEntry, LogPayload, LogSegment, LogStore, LogStoreError};
+pub use state_machine::{NebulaStateMachine, StateMachineError};
 pub use storage::NebulaLogStorage;
 pub use types::{ClientWriteResponse, NebulaNode, NebulaTypeConfig, NodeId};
 
