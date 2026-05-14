@@ -83,7 +83,27 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/restore", post(crate::backup_routes::admin_restore_start))
         .route("/admin/restore/:id", get(crate::backup_routes::admin_restore_status))
         .route("/admin/cluster/nodes", get(admin_cluster_nodes))
-        .route("/admin/replication", get(admin_replication));
+        .route("/admin/replication", get(admin_replication))
+        // Raft cluster admin. Active only when raft mode is on; the
+        // handlers themselves return 500 with a clear message on a
+        // standalone deployment, since 503 would be confused with the
+        // boot-time recovery 503.
+        .route(
+            "/admin/raft/metrics",
+            get(crate::raft_routes::admin_raft_metrics),
+        )
+        .route(
+            "/admin/raft/init",
+            post(crate::raft_routes::admin_raft_init),
+        )
+        .route(
+            "/admin/raft/add-learner",
+            post(crate::raft_routes::admin_raft_add_learner),
+        )
+        .route(
+            "/admin/raft/change-membership",
+            post(crate::raft_routes::admin_raft_change_membership),
+        );
     let api_normal = if let Some(t) = request_timeout {
         api_normal.layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

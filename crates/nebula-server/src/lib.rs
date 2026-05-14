@@ -24,6 +24,7 @@ pub mod jwt;
 pub mod log_stream;
 pub mod metrics;
 pub mod middleware;
+pub mod raft_routes;
 pub mod ratelimit;
 pub mod router;
 pub mod slow_log;

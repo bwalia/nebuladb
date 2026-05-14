@@ -1862,3 +1862,99 @@ async fn bucket_import_rejects_wrong_dim() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
+
+// ---------- raft admin endpoints (Phase 2.5g) ----------
+
+#[tokio::test]
+async fn raft_metrics_returns_500_in_standalone_mode() {
+    // Standalone AppState has raft = None. The handler returns
+    // ApiError::Internal("raft mode not enabled (...)") which maps
+    // to 500. We don't use 503 for this because boot-time recovery
+    // also uses 503 — operators monitoring the endpoint need to be
+    // able to tell "raft never wired" apart from "node still booting".
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/raft/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_string(res.into_body()).await;
+    assert!(
+        body.contains("raft mode not enabled"),
+        "expected disabled-mode message, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn raft_init_returns_500_in_standalone_mode() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/admin/raft/init")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"members": {"1": "h:1", "2": "h:2", "3": "h:3"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn raft_metrics_works_with_real_handle() {
+    // Bring up an actual RaftHandle via nebula_raft::bootstrap, plug
+    // it into AppState, and confirm the metrics endpoint returns the
+    // expected shape. This exercises the cross-crate wiring without
+    // requiring a multi-node cluster — the handle is uninitialized
+    // (no `Raft::initialize` called yet) so it reports as a fresh
+    // single-node. Good enough to assert the field shape.
+    use std::collections::BTreeMap;
+    let dir = tempfile::tempdir().unwrap();
+    let raft_cfg = nebula_raft::RaftConfig {
+        node_id: 1,
+        peers: {
+            let mut m = BTreeMap::new();
+            m.insert(1u64, nebula_raft::NebulaNode::new("127.0.0.1:50052"));
+            m.insert(2u64, nebula_raft::NebulaNode::new("127.0.0.1:50053"));
+            m.insert(3u64, nebula_raft::NebulaNode::new("127.0.0.1:50054"));
+            m
+        },
+        data_dir: dir.path().to_path_buf(),
+        bind: "127.0.0.1:0".into(),
+        cluster_name: "test".into(),
+    };
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    let handle = Arc::new(
+        nebula_raft::bootstrap(raft_cfg, Arc::clone(&index))
+            .await
+            .expect("bootstrap"),
+    );
+    let app_cfg = AppConfig {
+        api_keys: AHashSet::new(),
+        ..AppConfig::default()
+    };
+    let state = AppState::new(index, app_cfg).with_raft(handle);
+    let app = build_router(state);
+
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/raft/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"id\":1"), "expected id=1: {body}");
+    assert!(body.contains("\"current_term\""));
+    assert!(body.contains("\"voters\""));
+    assert!(body.contains("\"learners\""));
+}
