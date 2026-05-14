@@ -16,6 +16,7 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+openraft = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
