@@ -358,6 +358,16 @@ impl TextIndex {
         self.embedder.model()
     }
 
+    /// Borrow the embedder. Used by Raft mode (`nebula-raft`) so the
+    /// leader can resolve text → vector before submitting the log
+    /// entry — the resolved vector then replicates to peers, which
+    /// is what makes the state-machine apply path embedder-free
+    /// (every peer reaches byte-identical state without re-calling
+    /// the embedder).
+    pub fn embedder(&self) -> Arc<dyn Embedder> {
+        Arc::clone(&self.embedder)
+    }
+
     pub fn len(&self) -> usize {
         self.inner.read().docs.len()
     }
@@ -738,6 +748,19 @@ impl TextIndex {
             doc_id: doc_id.to_string(),
         })?;
         self.delete_document_internal(bucket, doc_id)
+    }
+
+    /// Count the chunks currently registered under `(bucket, doc_id)`.
+    /// Returns 0 if the document doesn't exist. Read-only — used by
+    /// the Raft path's REST handler to populate the response's
+    /// `chunks_removed` field at submit time, without taking a write
+    /// lock.
+    pub fn count_chunks(&self, bucket: &str, doc_id: &str) -> usize {
+        let g = self.inner.read();
+        g.parents
+            .get(&(bucket.to_string(), doc_id.to_string()))
+            .map(|s| s.len())
+            .unwrap_or(0)
     }
 
     fn delete_document_internal(&self, bucket: &str, doc_id: &str) -> Result<usize> {
@@ -1278,6 +1301,18 @@ mod tests {
         assert_eq!(idx.len(), 1);
         assert!(idx.get("docs", "d1#0").is_some());
         assert!(idx.get("docs", "d1#1").is_none()); // from first version
+    }
+
+    #[tokio::test]
+    async fn count_chunks_reports_zero_for_unknown_and_n_for_known() {
+        let idx = make_index();
+        assert_eq!(idx.count_chunks("docs", "missing"), 0);
+        let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
+        idx.upsert_document("docs", "d1", "aaaaabbbbbccccc", &chunker, serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(idx.count_chunks("docs", "d1"), 3);
+        assert_eq!(idx.count_chunks("other-bucket", "d1"), 0);
     }
 
     #[tokio::test]

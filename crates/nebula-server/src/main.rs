@@ -18,8 +18,8 @@ use nebula_grpc::GrpcState;
 use nebula_index::TextIndex;
 use nebula_llm::{LlmClient, MockLlm, OllamaConfig, OllamaLlm, OpenAiChatConfig, OpenAiChatLlm};
 use nebula_redis_cache::{RedisCacheConfig, RedisEmbedCache};
-use nebula_server::state::{FollowerCursor, TeeCursorStore};
 use nebula_server::snapshot_scheduler::{self, SnapshotSchedulerConfig};
+use nebula_server::state::{FollowerCursor, TeeCursorStore};
 use nebula_server::{
     build_router, AppConfig, AppState, CapturingSubscriber, ClusterConfig, JwtConfig, LogBus,
     LogLevel, RateLimitConfig, RateLimiter, SlowQueryLog, TrustedProxies,
@@ -92,14 +92,14 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     let boot_started = std::time::Instant::now();
     let (boot_shutdown_tx, boot_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let boot_listener = tokio::net::TcpListener::bind(bind).await?;
-    tracing::info!("nebula-server boot listener bound on {bind} (serving 503 until recovery completes)");
+    tracing::info!(
+        "nebula-server boot listener bound on {bind} (serving 503 until recovery completes)"
+    );
     let boot_handle = tokio::spawn(async move {
         let boot_router = axum::Router::new()
             .route(
                 "/healthz/live",
-                axum::routing::get(|| async {
-                    (axum::http::StatusCode::OK, "alive")
-                }),
+                axum::routing::get(|| async { (axum::http::StatusCode::OK, "alive") }),
             )
             .route(
                 "/healthz",
@@ -254,14 +254,69 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         )?),
     };
 
+    // Raft bootstrap: opt-in via NEBULA_RAFT_PEERS. When set, this
+    // node joins (or starts) a Raft cluster and the gRPC raft transport
+    // is bound on NEBULA_RAFT_BIND (default 0.0.0.0:50052). When unset,
+    // the standalone WAL path runs unchanged — every existing
+    // single-node deployment keeps working without env changes.
+    //
+    // The handle is held in AppState so future PRs (2.5c) can route
+    // writes through `RaftHandle::client_write` instead of going
+    // straight to TextIndex. Phase 2.5b — this PR — only stands up the
+    // raft instance + transport; the write path doesn't change yet.
+    //
+    // Snapshot scheduler is intentionally NOT spawned in raft mode:
+    // openraft drives its own snapshot triggers from log growth,
+    // tracked by ADR §6. Two snapshot schedulers fighting over the
+    // same nsnap dir would race on the .ok marker. We pick one path.
+    let raft_handle: Option<Arc<nebula_raft::RaftHandle>> =
+        match nebula_raft::RaftConfig::from_env() {
+            Ok(Some(cfg)) => {
+                tracing::info!(
+                    node_id = cfg.node_id,
+                    bind = %cfg.bind,
+                    peers = cfg.peers.len(),
+                    "raft mode: bootstrapping"
+                );
+                let bind_addr: SocketAddr = cfg.bind.parse()?;
+                let handle = Arc::new(nebula_raft::bootstrap(cfg, Arc::clone(&index)).await?);
+
+                // Stand up the Raft gRPC service so peers can reach us.
+                // Server runs for the process lifetime; we don't await
+                // its JoinHandle here because that would block the boot.
+                let svc = nebula_raft::RaftRpcServer::new(Arc::clone(handle.raft()));
+                tracing::info!(addr = %bind_addr, "nebula-raft transport listening");
+                tokio::spawn(async move {
+                    if let Err(e) = tonic::transport::Server::builder()
+                        .add_service(nebula_raft::NebulaRaftServer::new(svc))
+                        .serve(bind_addr)
+                        .await
+                    {
+                        tracing::error!(error = %e, "raft gRPC server exited");
+                    }
+                });
+                Some(handle)
+            }
+            Ok(None) => None,
+            Err(e) => return Err(format!("raft config: {e}").into()),
+        };
+
     // Spawn the background snapshot scheduler. No-op for in-memory
     // mode (the scheduler self-exits when wal_stats() returns None).
+    // In raft mode openraft drives its own snapshot lifecycle, so we
+    // skip our scheduler — no point running two.
     // Without this, the WAL grows unbounded between operator-triggered
     // snapshots — which in practice means forever, leaving the next
     // cold recovery to replay everything since the dawn of the data
     // dir. Tunables are env-driven; see snapshot_scheduler.rs.
-    let snapshot_handle =
-        snapshot_scheduler::spawn(Arc::clone(&index), SnapshotSchedulerConfig::from_env());
+    let snapshot_handle = if raft_handle.is_some() {
+        None
+    } else {
+        Some(snapshot_scheduler::spawn(
+            Arc::clone(&index),
+            SnapshotSchedulerConfig::from_env(),
+        ))
+    };
 
     let api_keys: AHashSet<String> = std::env::var("NEBULA_API_KEYS")
         .unwrap_or_default()
@@ -438,6 +493,9 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(rl) = rate_limiter {
         state = state.with_rate_limiter(rl);
     }
+    if let Some(rh) = raft_handle.as_ref() {
+        state = state.with_raft(Arc::clone(rh));
+    }
 
     // Slow-query log: default capacity 32, threshold 10 ms. Dev
     // stacks on MockEmbedder are fast enough that nothing crosses
@@ -476,8 +534,14 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             let grpc_addr: SocketAddr = addr.parse()?;
             // Pass the cluster role through so DocumentService rejects
             // writes on followers — symmetric with the REST guard.
-            let grpc_state =
+            // When raft is configured, also hand the handle through so
+            // DocumentService writes route through Raft consensus
+            // (Phase 2.5f) — same model AppState uses on the REST side.
+            let mut grpc_state =
                 GrpcState::with_role(grpc_index.clone(), grpc_llm, grpc_chunker, cluster.role);
+            if let Some(rh) = raft_handle.as_ref() {
+                grpc_state = grpc_state.with_raft(Arc::clone(rh));
+            }
             let source_region = cluster.region.clone();
             tracing::info!(
                 "nebula-grpc listening on {grpc_addr} (role={:?}, region={:?})",
@@ -554,8 +618,8 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                 // restarts/sec while the leader was recovering,
                 // making the follower unavailable as a read backup
                 // during the window where it mattered most.
-                let channel = tonic::transport::Channel::from_shared(leader.clone())?
-                    .connect_lazy();
+                let channel =
+                    tonic::transport::Channel::from_shared(leader.clone())?.connect_lazy();
                 // Durable (file-backed) half of the cursor store.
                 // Optional — without NEBULA_DATA_DIR the follower
                 // has nowhere on disk to persist, so it restarts
@@ -712,7 +776,10 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     // cancels the sleep and drops the task. No in-flight work is at
     // risk: a snapshot in progress runs on spawn_blocking and will
     // finish on its own, just without us awaiting it.
-    snapshot_handle.abort();
+    // None in raft mode (openraft drives its own snapshot lifecycle).
+    if let Some(h) = snapshot_handle {
+        h.abort();
+    }
     for h in cross_region_handles {
         h.abort();
     }

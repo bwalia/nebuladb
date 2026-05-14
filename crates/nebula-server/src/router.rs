@@ -256,17 +256,81 @@ async fn upsert_docs_bulk(
     // Reject empty fields up-front so every failure is 400 not 500.
     for it in &body.items {
         if it.text.trim().is_empty() {
-            return Err(ApiError::BadRequest("each item.text must be non-empty".into()));
+            return Err(ApiError::BadRequest(
+                "each item.text must be non-empty".into(),
+            ));
         }
+    }
+    if bucket.is_empty() {
+        return Err(ApiError::BadRequest("bucket must be non-empty".into()));
     }
 
     let requested = body.items.len();
-    let prepared: Vec<(String, String, serde_json::Value)> = body
-        .items
-        .into_iter()
-        .map(|d| (d.id, d.text, d.metadata))
-        .collect();
-    let inserted = s.index.upsert_text_bulk(&bucket, &prepared).await?;
+
+    let inserted = if let Some(raft) = &s.raft {
+        // Raft mode v1: one Raft submit per item. The standalone path
+        // batches into a single embedder call + sequential HNSW
+        // inserts with partial-success tolerance; we preserve the
+        // batched embedder call here to keep upstream cost flat, then
+        // submit one log entry per item.
+        //
+        // Trade-off: N round-trips through Raft consensus per request.
+        // For N=100 in-DC that's ~100×election-RTT overhead vs the
+        // single-fsync standalone path. Acceptable for v1; a future
+        // ADR will introduce a `WalRecord::UpsertTextBulk` variant
+        // for atomic bulk submit. That's a wire-format change with
+        // bincode-variant-ordering discipline, hence not in this PR.
+        // Tracked under "Phase 2.5d follow-up" — bulk-atomic submit.
+        //
+        // Partial-success semantics: if the Nth item fails (e.g. a
+        // mid-batch leader change → NotLeader), we return the count
+        // committed so far and surface the error. The standalone path
+        // also tolerates partial success (one bad HNSW insert doesn't
+        // fail the whole batch); this is the closest analogue we can
+        // give without the bulk WAL variant.
+        let inputs: Vec<String> = body.items.iter().map(|it| it.text.clone()).collect();
+        let vectors = s
+            .index
+            .embedder()
+            .embed(&inputs)
+            .await
+            .map_err(ApiError::Embed)?;
+        if vectors.len() != body.items.len() {
+            return Err(ApiError::Internal(format!(
+                "embedder returned {} vectors for {} items",
+                vectors.len(),
+                body.items.len()
+            )));
+        }
+        let mut committed = 0usize;
+        for (item, vector) in body.items.into_iter().zip(vectors.into_iter()) {
+            if vector.len() != s.index.dim() {
+                return Err(ApiError::Embed(nebula_embed::EmbedError::DimensionMismatch {
+                    expected: s.index.dim(),
+                    actual: vector.len(),
+                }));
+            }
+            let payload =
+                nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::UpsertText {
+                    bucket: bucket.clone(),
+                    external_id: item.id,
+                    text: item.text,
+                    vector,
+                    metadata_json: item.metadata.to_string(),
+                });
+            raft.submit_mutation(payload).await?;
+            committed += 1;
+        }
+        committed
+    } else {
+        let prepared: Vec<(String, String, serde_json::Value)> = body
+            .items
+            .into_iter()
+            .map(|d| (d.id, d.text, d.metadata))
+            .collect();
+        s.index.upsert_text_bulk(&bucket, &prepared).await?
+    };
+
     s.metrics.inc_insert();
     Ok(Json(BulkUpsertResponse {
         bucket,
@@ -283,9 +347,42 @@ async fn upsert_doc(
     if body.text.trim().is_empty() {
         return Err(ApiError::BadRequest("text must be non-empty".into()));
     }
-    s.index
-        .upsert_text(&bucket, &body.id, &body.text, body.metadata)
-        .await?;
+    if bucket.is_empty() || body.id.is_empty() {
+        return Err(ApiError::BadRequest("bucket and id must be non-empty".into()));
+    }
+
+    if let Some(raft) = &s.raft {
+        // Raft mode: leader resolves text → vector, then submits the
+        // log entry. Followers receive the entry with the resolved
+        // vector and apply via the state-machine path. The embedder
+        // is only called once per write — on the leader — keeping
+        // followers embedder-free during apply (the property the
+        // determinism test in nebula-raft/state_machine.rs locks in).
+        let vector = s
+            .index
+            .embedder()
+            .embed_one(&body.text)
+            .await
+            .map_err(ApiError::Embed)?;
+        if vector.len() != s.index.dim() {
+            return Err(ApiError::Embed(nebula_embed::EmbedError::DimensionMismatch {
+                expected: s.index.dim(),
+                actual: vector.len(),
+            }));
+        }
+        let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::UpsertText {
+            bucket: bucket.clone(),
+            external_id: body.id.clone(),
+            text: body.text.clone(),
+            vector,
+            metadata_json: body.metadata.to_string(),
+        });
+        raft.submit_mutation(payload).await?;
+    } else {
+        s.index
+            .upsert_text(&bucket, &body.id, &body.text, body.metadata)
+            .await?;
+    }
     s.metrics.inc_insert();
     Ok(Json(UpsertResponse {
         bucket,
@@ -322,7 +419,19 @@ async fn delete_doc(
     State(s): State<AppState>,
     Path((bucket, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    s.index.delete(&bucket, &id)?;
+    if let Some(raft) = &s.raft {
+        // Raft mode: deletes go through consensus the same as
+        // upserts. The state-machine apply path tolerates a delete
+        // for a missing id (replay no-op), which matches what
+        // standalone does — see TextIndex::apply_wal_record.
+        let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::Delete {
+            bucket: bucket.clone(),
+            external_id: id.clone(),
+        });
+        raft.submit_mutation(payload).await?;
+    } else {
+        s.index.delete(&bucket, &id)?;
+    }
     s.metrics.inc_delete();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -353,15 +462,81 @@ async fn upsert_document(
     if body.text.trim().is_empty() {
         return Err(ApiError::BadRequest("text must be non-empty".into()));
     }
-    let chunks = s
-        .index
-        .upsert_document(&bucket, &body.doc_id, &body.text, s.chunker.as_ref(), body.metadata)
-        .await?;
+    if bucket.is_empty() || body.doc_id.is_empty() {
+        return Err(ApiError::BadRequest(
+            "bucket and doc_id must be non-empty".into(),
+        ));
+    }
+
+    let chunk_count = if let Some(raft) = &s.raft {
+        // Raft mode: chunk + batch-embed on the leader, then submit
+        // a single UpsertDocument log entry. The state-machine apply
+        // path handles the multi-chunk insert on every peer
+        // identically — same code path standalone WAL replay uses.
+        // One log entry covers the whole document so a partial apply
+        // can't leave a doc half-indexed (this matches the standalone
+        // contract documented on TextIndex::upsert_document).
+        let chunks = s.chunker.chunk(&body.text);
+        if chunks.is_empty() {
+            return Err(ApiError::BadRequest("chunker produced no chunks".into()));
+        }
+        let inputs: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+        let vectors = s
+            .index
+            .embedder()
+            .embed(&inputs)
+            .await
+            .map_err(ApiError::Embed)?;
+        if vectors.len() != chunks.len() {
+            return Err(ApiError::Internal(format!(
+                "embedder returned {} vectors for {} chunks",
+                vectors.len(),
+                chunks.len()
+            )));
+        }
+        for v in &vectors {
+            if v.len() != s.index.dim() {
+                return Err(ApiError::Embed(nebula_embed::EmbedError::DimensionMismatch {
+                    expected: s.index.dim(),
+                    actual: v.len(),
+                }));
+            }
+        }
+        let wal_chunks: Vec<nebula_wal::WalChunk> = chunks
+            .iter()
+            .zip(vectors.iter())
+            .map(|(c, v)| nebula_wal::WalChunk {
+                index: c.index,
+                char_start: c.char_start,
+                text: c.text.clone(),
+                vector: v.clone(),
+            })
+            .collect();
+        let count = wal_chunks.len();
+        let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::UpsertDocument {
+            bucket: bucket.clone(),
+            doc_id: body.doc_id.clone(),
+            chunks: wal_chunks,
+            metadata_json: body.metadata.to_string(),
+        });
+        raft.submit_mutation(payload).await?;
+        count
+    } else {
+        s.index
+            .upsert_document(
+                &bucket,
+                &body.doc_id,
+                &body.text,
+                s.chunker.as_ref(),
+                body.metadata,
+            )
+            .await?
+    };
     s.metrics.inc_insert();
     Ok(Json(UpsertDocumentResponse {
         bucket,
         doc_id: body.doc_id,
-        chunks,
+        chunks: chunk_count,
     }))
 }
 
@@ -376,7 +551,25 @@ async fn delete_document(
     State(s): State<AppState>,
     Path((bucket, doc_id)): Path<(String, String)>,
 ) -> Result<Json<DeleteDocumentResponse>, ApiError> {
-    let n = s.index.delete_document(&bucket, &doc_id)?;
+    let n = if let Some(raft) = &s.raft {
+        // Raft mode: peek the chunk count from the local index for
+        // the response body, then submit. The peek is best-effort —
+        // a follower's view may lag, so the count we return is the
+        // count the *leader* saw at submit time. That's still the
+        // most useful number for the client (it answers "did the
+        // delete cover anything?"). The state-machine apply tolerates
+        // a missing doc_id so a stale peek that under-counts is a
+        // monitoring concern, not a correctness one.
+        let local_count = s.index.count_chunks(&bucket, &doc_id);
+        let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::DeleteDocument {
+            bucket: bucket.clone(),
+            doc_id: doc_id.clone(),
+        });
+        raft.submit_mutation(payload).await?;
+        local_count
+    } else {
+        s.index.delete_document(&bucket, &doc_id)?
+    };
     s.metrics.inc_delete();
     Ok(Json(DeleteDocumentResponse {
         bucket,

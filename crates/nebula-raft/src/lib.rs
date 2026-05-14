@@ -26,14 +26,18 @@
 //! reviewable; this `lib.rs` re-exports the surface a 2.4/2.5 caller
 //! needs as one flat API.
 
+pub mod boot;
 pub mod log;
+pub mod network;
 pub mod raft_storage;
 pub mod snapshot;
 pub mod state_machine;
 pub mod storage;
 pub mod types;
 
+pub use boot::{bootstrap, BootError, RaftConfig, RaftHandle, SubmitError};
 pub use log::{LogConfig, LogEntry, LogPayload, LogSegment, LogStore, LogStoreError};
+pub use network::{GrpcRaftNetwork, GrpcRaftNetworkFactory, NebulaRaftServer, RaftRpcServer};
 pub use raft_storage::NebulaRaftStorage;
 pub use snapshot::{NebulaSnapshotStore, SnapshotError};
 pub use state_machine::{NebulaStateMachine, StateMachineError};
