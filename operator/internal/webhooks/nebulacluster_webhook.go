@@ -57,6 +57,57 @@ func (v *NebulaClusterValidator) validate(c *nebulav1alpha1.NebulaCluster, old *
 			"replication.followers>0 with replication.enabled=false — followers will not be provisioned")
 	}
 
+	// Raft mode (RFC 0003 Option A, issue #32). The boot-time check in
+	// nebula_raft::RaftConfig::from_env enforces the same invariants;
+	// duplicating here lets us reject a misconfigured CR at admission
+	// instead of crash-looping the StatefulSet on rollout. ADR §7
+	// is the source of truth.
+	if c.Spec.Raft.Enabled {
+		if c.Spec.Raft.Replicas < 3 {
+			errs = append(errs, field.Invalid(
+				field.NewPath("spec", "raft", "replicas"),
+				c.Spec.Raft.Replicas,
+				"raft requires at least 3 voting peers (ADR §7)"))
+		}
+		if c.Spec.Raft.Replicas%2 == 0 {
+			errs = append(errs, field.Invalid(
+				field.NewPath("spec", "raft", "replicas"),
+				c.Spec.Raft.Replicas,
+				"raft replicas must be odd to form a clean quorum (ADR §7)"))
+		}
+		// Two write paths in one cluster is split-brain by construction.
+		if c.Spec.Replication.Enabled {
+			errs = append(errs, field.Forbidden(
+				field.NewPath("spec", "raft", "enabled"),
+				"raft.enabled and replication.enabled are mutually exclusive — pick one write-availability model"))
+		}
+		// Catch the common shrink mistake on update: dropping voters
+		// below quorum without a graceful change_membership will stall
+		// the cluster. Operators have to drive that explicitly via
+		// /admin/raft/change-membership; the webhook can only warn.
+		if old != nil && old.Spec.Raft.Enabled && c.Spec.Raft.Replicas < old.Spec.Raft.Replicas {
+			warnings = append(warnings,
+				fmt.Sprintf("raft.replicas shrinking %d -> %d; operator must drive this via /admin/raft/change-membership before scaling the StatefulSet, or quorum will stall",
+					old.Spec.Raft.Replicas, c.Spec.Raft.Replicas))
+		}
+		// Toggling raft on/off after the fact is not supported in v1
+		// (ADR §11: no online migration from standalone -> raft). Reject
+		// hot-toggle so the failure mode is "admission rejection at
+		// kubectl apply time" instead of "data loss on next pod restart."
+		if old != nil && old.Spec.Raft.Enabled != c.Spec.Raft.Enabled {
+			errs = append(errs, field.Forbidden(
+				field.NewPath("spec", "raft", "enabled"),
+				"raft.enabled is immutable after creation — wipe + re-create the cluster to switch modes (ADR §11, no online migration in v1)"))
+		}
+	} else if c.Spec.Raft.Replicas != 0 {
+		// raft.replicas set without raft.enabled is almost always a typo
+		// or a half-converted manifest — warn loudly. Not an error
+		// because legacy manifests with the field defaulted via webhook
+		// rewrite shouldn't trip rollback.
+		warnings = append(warnings,
+			"spec.raft.replicas is set but spec.raft.enabled=false; the field will be ignored")
+	}
+
 	// Autoscaling sanity checks.
 	if c.Spec.Autoscaling.Enabled {
 		if c.Spec.Autoscaling.MinFollowers > c.Spec.Autoscaling.MaxFollowers {

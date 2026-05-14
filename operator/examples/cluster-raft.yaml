@@ -1,0 +1,67 @@
+# Example: Raft consensus cluster (RFC 0003 Option A, ADR 0004).
+#
+# Provisions a 3-node openraft cluster within a single region. Use this
+# instead of `cluster-ha.yaml` when:
+#   - Per-node failover (writes survive a node loss) is required
+#   - Single-region deployment is acceptable (cross-region is RFC 0001's
+#     job; raft is within-region only)
+#
+# Bring-up sequence:
+#   1. kubectl apply -f cluster-raft.yaml
+#   2. Wait for the StatefulSet to reach 3/3 ready
+#   3. POST /admin/raft/init on any pod with the same peer list — this
+#      kicks off the leader election. The operator currently leaves
+#      first-time bootstrap to the operator runbook (Phase 2.6 will
+#      automate it via a controller hook).
+#
+# The operator admission webhook enforces:
+#   - raft.replicas must be odd and >= 3
+#   - raft.enabled and replication.enabled are mutually exclusive
+#   - raft.enabled is immutable after creation (no online migration)
+
+apiVersion: nebula.nebuladb.io/v1alpha1
+kind: NebulaCluster
+metadata:
+  name: nebula-raft
+  namespace: nebuladb
+spec:
+  version: "0.1.0"
+  storage:
+    size: "100Gi"
+    storageClassName: fast-ssd
+  resources:
+    requests: {cpu: "2", memory: "4Gi"}
+    limits:   {cpu: "4", memory: "8Gi"}
+
+  ai:
+    enabled: true
+    embeddingModel: text-embedding-3-small
+    embeddingDim: 1536
+    openAIAPIKeySecretRef: {name: nebula-openai, key: api_key}
+
+  # NOTE: replication block is intentionally omitted. Setting
+  # replication.enabled=true alongside raft.enabled=true is rejected
+  # by the admission webhook — they are two competing write-availability
+  # models and running both would mean each peer thinks it's a
+  # different role at boot.
+
+  raft:
+    enabled: true
+    replicas: 3       # ADR §7: odd, >= 3. Use 5 for tolerating 2 failures.
+    bindPort: 50052   # gRPC for inter-peer Raft RPCs (ADR §12.2)
+    clusterName: prod-east
+
+  backup:
+    enabled: true
+    schedule: "0 */6 * * *"
+    retain: 14
+
+  security:
+    apiKeysSecretRef: {name: nebula-auth, key: api_keys}
+    jwtSecretRef:     {name: nebula-auth, key: jwt_secret}
+
+  # Raft mode requires anti-affinity: spreading peers across nodes
+  # is the whole point. A single-node-down event takes 1 of 3 peers
+  # rather than 3 of 3.
+  podLabels:
+    app.kubernetes.io/part-of: nebula-raft
