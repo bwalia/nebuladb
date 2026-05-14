@@ -198,6 +198,65 @@ impl RaftHandle {
     pub fn storage(&self) -> &NebulaRaftStorage {
         &self.storage
     }
+
+    /// Submit a mutation through Raft consensus.
+    ///
+    /// On the leader: appends to the log, replicates to a quorum,
+    /// applies via the state machine, returns once committed.
+    /// On a follower: returns [`SubmitError::NotLeader`] carrying
+    /// the current leader's id (when known) so the caller can
+    /// reject with the right HTTP status (409 / 421) and the
+    /// leader address so a smart client can retry.
+    ///
+    /// `app_data` is the same `LogPayload` shape the state machine
+    /// applies — typically `LogPayload::Mutation(WalRecord::...)`.
+    pub async fn submit_mutation(
+        &self,
+        app_data: crate::log::LogPayload,
+    ) -> Result<(), SubmitError> {
+        match self.raft.client_write(app_data).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                use openraft::error::{ClientWriteError, RaftError};
+                match e {
+                    RaftError::APIError(ClientWriteError::ForwardToLeader(f)) => {
+                        Err(SubmitError::NotLeader {
+                            leader_id: f.leader_id,
+                            leader_addr: f.leader_node.map(|n| n.addr),
+                        })
+                    }
+                    RaftError::APIError(ClientWriteError::ChangeMembershipError(_)) => {
+                        // We never submit membership changes through
+                        // submit_mutation — those go through
+                        // Raft::change_membership directly.
+                        Err(SubmitError::Other(
+                            "unexpected ChangeMembership variant".into(),
+                        ))
+                    }
+                    RaftError::Fatal(f) => Err(SubmitError::Other(f.to_string())),
+                }
+            }
+        }
+    }
+}
+
+/// Outcome of a failed [`RaftHandle::submit_mutation`].
+#[derive(Debug, thiserror::Error)]
+pub enum SubmitError {
+    /// This node isn't the leader. The optional leader id + addr come
+    /// from openraft's `ForwardToLeader` so a smart REST client (or
+    /// our own retry middleware) can re-target without polling
+    /// `/admin/cluster/nodes`.
+    #[error("not leader (current leader: {leader_id:?}, addr: {leader_addr:?})")]
+    NotLeader {
+        leader_id: Option<NodeId>,
+        leader_addr: Option<String>,
+    },
+    /// Anything else openraft reports — typically a fatal Raft state
+    /// (storage error mid-apply, runaway election). Client retry is
+    /// safe; the operator should investigate the node.
+    #[error("raft submit: {0}")]
+    Other(String),
 }
 
 /// Bootstrap a Raft instance from parsed config + a fresh `TextIndex`.

@@ -358,6 +358,16 @@ impl TextIndex {
         self.embedder.model()
     }
 
+    /// Borrow the embedder. Used by Raft mode (`nebula-raft`) so the
+    /// leader can resolve text → vector before submitting the log
+    /// entry — the resolved vector then replicates to peers, which
+    /// is what makes the state-machine apply path embedder-free
+    /// (every peer reaches byte-identical state without re-calling
+    /// the embedder).
+    pub fn embedder(&self) -> Arc<dyn Embedder> {
+        Arc::clone(&self.embedder)
+    }
+
     pub fn len(&self) -> usize {
         self.inner.read().docs.len()
     }
