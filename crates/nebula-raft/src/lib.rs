@@ -35,7 +35,7 @@ pub mod state_machine;
 pub mod storage;
 pub mod types;
 
-pub use boot::{bootstrap, BootError, RaftConfig, RaftHandle};
+pub use boot::{bootstrap, BootError, RaftConfig, RaftHandle, SubmitError};
 pub use log::{LogConfig, LogEntry, LogPayload, LogSegment, LogStore, LogStoreError};
 pub use network::{GrpcRaftNetwork, GrpcRaftNetworkFactory, NebulaRaftServer, RaftRpcServer};
 pub use raft_storage::NebulaRaftStorage;

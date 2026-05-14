@@ -283,9 +283,42 @@ async fn upsert_doc(
     if body.text.trim().is_empty() {
         return Err(ApiError::BadRequest("text must be non-empty".into()));
     }
-    s.index
-        .upsert_text(&bucket, &body.id, &body.text, body.metadata)
-        .await?;
+    if bucket.is_empty() || body.id.is_empty() {
+        return Err(ApiError::BadRequest("bucket and id must be non-empty".into()));
+    }
+
+    if let Some(raft) = &s.raft {
+        // Raft mode: leader resolves text → vector, then submits the
+        // log entry. Followers receive the entry with the resolved
+        // vector and apply via the state-machine path. The embedder
+        // is only called once per write — on the leader — keeping
+        // followers embedder-free during apply (the property the
+        // determinism test in nebula-raft/state_machine.rs locks in).
+        let vector = s
+            .index
+            .embedder()
+            .embed_one(&body.text)
+            .await
+            .map_err(ApiError::Embed)?;
+        if vector.len() != s.index.dim() {
+            return Err(ApiError::Embed(nebula_embed::EmbedError::DimensionMismatch {
+                expected: s.index.dim(),
+                actual: vector.len(),
+            }));
+        }
+        let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::UpsertText {
+            bucket: bucket.clone(),
+            external_id: body.id.clone(),
+            text: body.text.clone(),
+            vector,
+            metadata_json: body.metadata.to_string(),
+        });
+        raft.submit_mutation(payload).await?;
+    } else {
+        s.index
+            .upsert_text(&bucket, &body.id, &body.text, body.metadata)
+            .await?;
+    }
     s.metrics.inc_insert();
     Ok(Json(UpsertResponse {
         bucket,
@@ -322,7 +355,19 @@ async fn delete_doc(
     State(s): State<AppState>,
     Path((bucket, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    s.index.delete(&bucket, &id)?;
+    if let Some(raft) = &s.raft {
+        // Raft mode: deletes go through consensus the same as
+        // upserts. The state-machine apply path tolerates a delete
+        // for a missing id (replay no-op), which matches what
+        // standalone does — see TextIndex::apply_wal_record.
+        let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::Delete {
+            bucket: bucket.clone(),
+            external_id: id.clone(),
+        });
+        raft.submit_mutation(payload).await?;
+    } else {
+        s.index.delete(&bucket, &id)?;
+    }
     s.metrics.inc_delete();
     Ok(StatusCode::NO_CONTENT)
 }

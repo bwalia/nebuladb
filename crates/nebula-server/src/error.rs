@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use nebula_embed::EmbedError;
 use nebula_index::IndexError;
+use nebula_raft::SubmitError;
 use nebula_sql::SqlError;
 
 #[derive(Debug, Error)]
@@ -35,8 +36,34 @@ pub enum ApiError {
     Embed(#[from] EmbedError),
     #[error(transparent)]
     Sql(#[from] SqlError),
+    /// Raft mode: write hit a non-leader node. The optional addr lets
+    /// a smart client retry directly without polling the cluster
+    /// status endpoint. Returns HTTP 421 (Misdirected Request) — the
+    /// same code the cross-region home guard uses, distinct from the
+    /// 409 the within-region follower guard returns so clients can
+    /// tell the cases apart without parsing bodies.
+    #[error("not leader (current leader: {leader_id:?}, addr: {leader_addr:?})")]
+    NotLeader {
+        leader_id: Option<u64>,
+        leader_addr: Option<String>,
+    },
     #[error("internal: {0}")]
     Internal(String),
+}
+
+impl From<SubmitError> for ApiError {
+    fn from(e: SubmitError) -> Self {
+        match e {
+            SubmitError::NotLeader {
+                leader_id,
+                leader_addr,
+            } => ApiError::NotLeader {
+                leader_id,
+                leader_addr,
+            },
+            SubmitError::Other(msg) => ApiError::Internal(msg),
+        }
+    }
 }
 
 impl ApiError {
@@ -57,6 +84,7 @@ impl ApiError {
             ApiError::Sql(SqlError::InvalidPlan(_)) => ("sql_invalid", StatusCode::BAD_REQUEST),
             ApiError::Sql(SqlError::TypeError(_)) => ("sql_type", StatusCode::BAD_REQUEST),
             ApiError::Sql(SqlError::Index(_)) => ("internal", StatusCode::INTERNAL_SERVER_ERROR),
+            ApiError::NotLeader { .. } => ("not_leader", StatusCode::MISDIRECTED_REQUEST),
             ApiError::Internal(_) => ("internal", StatusCode::INTERNAL_SERVER_ERROR),
         }
     }
@@ -70,12 +98,68 @@ impl IntoResponse for ApiError {
         if status.is_server_error() {
             tracing::error!(code, error = %self, "server error");
         }
-        let body = Json(json!({
-            "error": {
-                "code": code,
-                "message": self.to_string(),
-            }
-        }));
+        // For NotLeader we attach the leader id + addr at the top level
+        // (alongside `error`) so a retry-aware client can re-target
+        // without parsing the human-readable message.
+        let body = match &self {
+            ApiError::NotLeader {
+                leader_id,
+                leader_addr,
+            } => Json(json!({
+                "error": {
+                    "code": code,
+                    "message": self.to_string(),
+                },
+                "leader_id": leader_id,
+                "leader_addr": leader_addr,
+            })),
+            _ => Json(json!({
+                "error": {
+                    "code": code,
+                    "message": self.to_string(),
+                }
+            })),
+        };
         (status, body).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_leader_maps_to_421_misdirected() {
+        let err = ApiError::NotLeader {
+            leader_id: Some(7),
+            leader_addr: Some("10.0.0.7:50052".into()),
+        };
+        let (code, status) = err.code_and_status();
+        assert_eq!(code, "not_leader");
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+    }
+
+    #[test]
+    fn submit_error_not_leader_converts_to_api_error() {
+        let raft_err = SubmitError::NotLeader {
+            leader_id: Some(3),
+            leader_addr: Some("a:1".into()),
+        };
+        match ApiError::from(raft_err) {
+            ApiError::NotLeader {
+                leader_id,
+                leader_addr,
+            } => {
+                assert_eq!(leader_id, Some(3));
+                assert_eq!(leader_addr.as_deref(), Some("a:1"));
+            }
+            other => panic!("expected NotLeader, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_error_other_converts_to_internal() {
+        let raft_err = SubmitError::Other("storage shrugged".into());
+        assert!(matches!(ApiError::from(raft_err), ApiError::Internal(_)));
     }
 }
