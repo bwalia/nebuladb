@@ -2597,6 +2597,7 @@ dependencies = [
  "nebula-index",
  "nebula-llm",
  "nebula-pgwire",
+ "nebula-raft",
  "nebula-redis-cache",
  "nebula-sql",
  "nebula-vector",

@@ -172,6 +172,11 @@ pub struct AppState {
     /// jobs. Capacity is fixed at 50 in `JobRing`; production
     /// historical view comes from object storage, not this ring.
     pub backup_jobs: Arc<crate::backup_routes::JobRing>,
+    /// Raft handle when this node booted in raft mode (NEBULA_RAFT_PEERS
+    /// configured). `None` for standalone / legacy single-leader mode.
+    /// Phase 2.5c will gate write-path routing on this — when present,
+    /// REST/pgwire/gRPC writes go through `Raft::client_write`.
+    pub raft: Option<Arc<nebula_raft::RaftHandle>>,
 }
 
 impl AppState {
@@ -202,7 +207,13 @@ impl AppState {
             log_bus: Arc::new(LogBus::default()),
             cross_region_status: crate::cross_region_status::CrossRegionStatusHub::new(),
             backup_jobs: Arc::new(crate::backup_routes::JobRing::new()),
+            raft: None,
         }
+    }
+
+    pub fn with_raft(mut self, raft: Arc<nebula_raft::RaftHandle>) -> Self {
+        self.raft = Some(raft);
+        self
     }
 
     pub fn with_log_bus(mut self, bus: Arc<LogBus>) -> Self {
