@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 nebula-wal = { path = "../nebula-wal" }
+nebula-index = { path = "../nebula-index" }
 serde = { workspace = true }
 bincode = { workspace = true }
 crc32fast = { workspace = true }
@@ -16,7 +17,11 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+openraft = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+nebula-embed = { path = "../nebula-embed" }
+nebula-vector = { path = "../nebula-vector" }
+serde_json = { workspace = true }
