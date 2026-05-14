@@ -55,6 +55,11 @@ pub struct GrpcState {
     /// to buckets whose home_region is not this value. `None` disables
     /// the check (single-region behaviour).
     pub region: Option<String>,
+    /// Raft handle when this server booted in raft mode. `Some` ⇒
+    /// gRPC writes go through `RaftHandle::submit_mutation`; `None` ⇒
+    /// the legacy single-leader path applies directly to the index.
+    /// Mirrors the REST `AppState::raft` field.
+    pub raft: Option<Arc<nebula_raft::RaftHandle>>,
 }
 
 impl GrpcState {
@@ -78,6 +83,7 @@ impl GrpcState {
             chunker,
             role,
             region: None,
+            raft: None,
         }
     }
 
@@ -85,6 +91,14 @@ impl GrpcState {
     /// existing callers that don't care about multi-region yet.
     pub fn with_region(mut self, region: Option<String>) -> Self {
         self.region = region;
+        self
+    }
+
+    /// Attach a Raft handle. When set, DocumentService writes route
+    /// through `RaftHandle::submit_mutation` instead of mutating the
+    /// index directly — same model the REST `upsert_doc` handler uses.
+    pub fn with_raft(mut self, raft: Arc<nebula_raft::RaftHandle>) -> Self {
+        self.raft = Some(raft);
         self
     }
 
@@ -102,8 +116,42 @@ impl GrpcState {
 /// without parsing prose.
 pub const READ_ONLY_FOLLOWER: &str = "read_only_follower";
 
+/// Stable error detail prefix emitted when a Raft non-leader refuses a
+/// write. REST returns 421 `not_leader` with leader_id + leader_addr in
+/// the body; gRPC returns `FAILED_PRECONDITION` and the message has
+/// the form `not_leader: leader_addr=<addr|unknown> leader_id=<id|unknown>`
+/// so a typed gRPC client can parse without depending on a prose match.
+/// The `not_leader` keyword is distinct from `read_only_follower` so
+/// callers can branch on which guard fired (within-region follower vs
+/// raft non-leader). Mirrors the REST `code: not_leader` pattern.
+pub const NOT_LEADER: &str = "not_leader";
+
 fn follower_write_error() -> Status {
     Status::failed_precondition(READ_ONLY_FOLLOWER)
+}
+
+/// Convert a [`nebula_raft::SubmitError`] into a gRPC [`Status`].
+///
+/// - `NotLeader` becomes a `FAILED_PRECONDITION` carrying the leader id
+///   + addr in the message body (parseable, see [`NOT_LEADER`]).
+/// - `Other` collapses to `INTERNAL` — these correspond to openraft
+///   fatal states the operator should investigate.
+fn raft_submit_error(e: nebula_raft::SubmitError) -> Status {
+    match e {
+        nebula_raft::SubmitError::NotLeader {
+            leader_id,
+            leader_addr,
+        } => {
+            let id = leader_id
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "unknown".into());
+            let addr = leader_addr.unwrap_or_else(|| "unknown".into());
+            Status::failed_precondition(format!(
+                "{NOT_LEADER}: leader_addr={addr} leader_id={id}"
+            ))
+        }
+        nebula_raft::SubmitError::Other(msg) => Status::internal(msg),
+    }
 }
 
 /// Emitted when gRPC rejects a write because the bucket's home region
@@ -172,18 +220,77 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
         }
         check_home_region(&self.state, &r.bucket)?;
         let metadata = parse_metadata(&r.metadata_json)?;
-        let chunks = self
-            .state
-            .index
-            .upsert_document(
-                &r.bucket,
-                &r.doc_id,
-                &r.text,
-                self.state.chunker.as_ref(),
-                metadata,
-            )
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let chunks = if let Some(raft) = &self.state.raft {
+            // Raft mode: leader chunks + batch-embeds + submits one
+            // log entry. State-machine apply on every peer reuses the
+            // same standalone code path (TextIndex::apply_wal_record)
+            // — peers reach byte-identical state without re-embedding.
+            // Mirrors the REST `upsert_document` handler from 2.5d.
+            let chunked = self.state.chunker.chunk(&r.text);
+            if chunked.is_empty() {
+                return Err(Status::invalid_argument("chunker produced no chunks"));
+            }
+            let inputs: Vec<String> = chunked.iter().map(|c| c.text.clone()).collect();
+            let vectors = self
+                .state
+                .index
+                .embedder()
+                .embed(&inputs)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+            if vectors.len() != chunked.len() {
+                return Err(Status::internal(format!(
+                    "embedder returned {} vectors for {} chunks",
+                    vectors.len(),
+                    chunked.len()
+                )));
+            }
+            for v in &vectors {
+                if v.len() != self.state.index.dim() {
+                    return Err(Status::internal(format!(
+                        "vector dim {} != index dim {}",
+                        v.len(),
+                        self.state.index.dim()
+                    )));
+                }
+            }
+            let wal_chunks: Vec<nebula_wal::WalChunk> = chunked
+                .iter()
+                .zip(vectors.iter())
+                .map(|(c, v)| nebula_wal::WalChunk {
+                    index: c.index,
+                    char_start: c.char_start,
+                    text: c.text.clone(),
+                    vector: v.clone(),
+                })
+                .collect();
+            let count = wal_chunks.len();
+            let payload =
+                nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::UpsertDocument {
+                    bucket: r.bucket.clone(),
+                    doc_id: r.doc_id.clone(),
+                    chunks: wal_chunks,
+                    metadata_json: r.metadata_json.clone(),
+                });
+            raft.submit_mutation(payload)
+                .await
+                .map_err(raft_submit_error)?;
+            count
+        } else {
+            self.state
+                .index
+                .upsert_document(
+                    &r.bucket,
+                    &r.doc_id,
+                    &r.text,
+                    self.state.chunker.as_ref(),
+                    metadata,
+                )
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?
+        };
+
         Ok(Response::new(pb::UpsertDocumentResponse {
             bucket: r.bucket,
             doc_id: r.doc_id,
@@ -200,14 +307,34 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
         }
         let r = req.into_inner();
         check_home_region(&self.state, &r.bucket)?;
-        let removed = self
-            .state
-            .index
-            .delete_document(&r.bucket, &r.doc_id)
-            .map_err(|e| match e {
-                nebula_index::IndexError::DocNotFound { .. } => Status::not_found(e.to_string()),
-                other => Status::internal(other.to_string()),
-            })?;
+
+        let removed = if let Some(raft) = &self.state.raft {
+            // Raft mode: peek count from the leader's local view for the
+            // response body, then submit. Apply tolerates a missing
+            // doc_id (matches standalone WAL replay) so a stale peek
+            // that under-counts is a monitoring concern, not correctness.
+            // Mirrors the REST `delete_document` handler from 2.5d.
+            let local_count = self.state.index.count_chunks(&r.bucket, &r.doc_id);
+            let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::DeleteDocument {
+                bucket: r.bucket.clone(),
+                doc_id: r.doc_id.clone(),
+            });
+            raft.submit_mutation(payload)
+                .await
+                .map_err(raft_submit_error)?;
+            local_count
+        } else {
+            self.state
+                .index
+                .delete_document(&r.bucket, &r.doc_id)
+                .map_err(|e| match e {
+                    nebula_index::IndexError::DocNotFound { .. } => {
+                        Status::not_found(e.to_string())
+                    }
+                    other => Status::internal(other.to_string()),
+                })?
+        };
+
         Ok(Response::new(pb::DeleteDocumentResponse {
             bucket: r.bucket,
             doc_id: r.doc_id,
@@ -739,4 +866,44 @@ pub async fn serve_with_region(
         )
         .serve(addr)
         .await
+}
+
+#[cfg(test)]
+mod raft_error_tests {
+    use super::*;
+
+    #[test]
+    fn raft_submit_not_leader_maps_to_failed_precondition_with_leader() {
+        let err = nebula_raft::SubmitError::NotLeader {
+            leader_id: Some(7),
+            leader_addr: Some("10.0.0.7:50052".into()),
+        };
+        let status = raft_submit_error(err);
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        let msg = status.message();
+        assert!(msg.starts_with(NOT_LEADER), "expected NOT_LEADER prefix, got: {msg}");
+        assert!(msg.contains("leader_addr=10.0.0.7:50052"));
+        assert!(msg.contains("leader_id=7"));
+    }
+
+    #[test]
+    fn raft_submit_not_leader_with_unknown_leader_still_includes_keyword() {
+        let err = nebula_raft::SubmitError::NotLeader {
+            leader_id: None,
+            leader_addr: None,
+        };
+        let status = raft_submit_error(err);
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        let msg = status.message();
+        assert!(msg.contains(NOT_LEADER));
+        assert!(msg.contains("leader_addr=unknown"));
+        assert!(msg.contains("leader_id=unknown"));
+    }
+
+    #[test]
+    fn raft_submit_other_maps_to_internal() {
+        let err = nebula_raft::SubmitError::Other("storage shrugged".into());
+        let status = raft_submit_error(err);
+        assert_eq!(status.code(), tonic::Code::Internal);
+    }
 }

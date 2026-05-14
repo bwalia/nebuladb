@@ -11,6 +11,7 @@ nebula-chunk = { path = "../nebula-chunk" }
 nebula-llm = { path = "../nebula-llm" }
 nebula-index = { path = "../nebula-index" }
 nebula-wal = { path = "../nebula-wal" }
+nebula-raft = { path = "../nebula-raft" }
 bincode.workspace = true
 
 tonic.workspace = true
