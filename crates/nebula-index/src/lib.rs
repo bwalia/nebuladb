@@ -913,6 +913,40 @@ impl TextIndex {
     /// a 200 MB compressed snapshot at zstd-3 + NVMe that's roughly
     /// 1–2 s of writer queueing per fire — well below the cost of
     /// the OOM kill loop we're replacing.
+    /// Write a snapshot to an explicit directory with a caller-supplied
+    /// `mark_seq`. Unlike [`Self::snapshot`], this variant does not
+    /// require a WAL — Raft mode (`nebula-raft`) drives its own log
+    /// and supplies the Raft `last_applied.index` as the marker.
+    ///
+    /// The on-disk format is identical to `Self::snapshot`. The
+    /// `wal_seq_at_snapshot` field on the header is reused as a
+    /// generic "covers up through this seq" marker — its semantics
+    /// are correct for either driver, only the name is WAL-flavored.
+    /// We don't rename the field because that would break load
+    /// compatibility with snapshots produced by today's standalone
+    /// path.
+    pub fn snapshot_to(
+        &self,
+        snapshots_dir: impl AsRef<Path>,
+        mark_seq: u64,
+    ) -> Result<SnapshotOutcome> {
+        let snapshots_dir = snapshots_dir.as_ref();
+        let g = self.inner.read();
+        let path = durability::write_snapshot_streaming(
+            snapshots_dir,
+            mark_seq,
+            g.next_id,
+            &g.docs,
+            &g.parents,
+            &self.hnsw,
+        )?;
+        drop(g);
+        Ok(SnapshotOutcome {
+            path,
+            wal_seq_captured: mark_seq,
+        })
+    }
+
     pub fn snapshot(&self) -> Result<SnapshotOutcome> {
         let data_dir = self
             .data_dir
