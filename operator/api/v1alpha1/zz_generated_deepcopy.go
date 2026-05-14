@@ -52,6 +52,10 @@ func (in *AIConfig) DeepCopyInto(out *AIConfig) {
 
 func (in *ReplicationSpec) DeepCopyInto(out *ReplicationSpec) { *out = *in }
 
+// ---------- RaftSpec ----------
+
+func (in *RaftSpec) DeepCopyInto(out *RaftSpec) { *out = *in }
+
 // ---------- RegionSpec ----------
 
 func (in *RegionSpec) DeepCopyInto(out *RegionSpec) {
@@ -141,6 +145,7 @@ func (in *NebulaClusterSpec) DeepCopyInto(out *NebulaClusterSpec) {
 	in.Storage.DeepCopyInto(&out.Storage)
 	in.Resources.DeepCopyInto(&out.Resources)
 	in.Replication.DeepCopyInto(&out.Replication)
+	in.Raft.DeepCopyInto(&out.Raft)
 	in.AI.DeepCopyInto(&out.AI)
 	in.Autoscaling.DeepCopyInto(&out.Autoscaling)
 	in.Backup.DeepCopyInto(&out.Backup)

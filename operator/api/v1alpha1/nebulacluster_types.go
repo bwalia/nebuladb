@@ -83,6 +83,50 @@ type ReplicationSpec struct {
 	LagByteThreshold int64 `json:"lagByteThreshold,omitempty"`
 }
 
+// RaftSpec opts the cluster into Raft consensus (RFC 0003 Option A,
+// chosen in issue #32). When `Enabled=true`, the operator wires
+// NEBULA_RAFT_PEERS / NEBULA_RAFT_NODE_ID / NEBULA_RAFT_DATA_DIR /
+// NEBULA_RAFT_BIND on every pod, sizes the StatefulSet to Replicas,
+// and the data plane uses Raft for write consensus instead of the
+// legacy single-leader path. Mutually exclusive with the
+// Replication.Enabled toggle — both running at once would mean
+// "openraft thinks node 2 is a follower while NEBULA_NODE_ROLE thinks
+// node 2 is a leader," which is exactly the kind of split-brain
+// invariant the design forbids. The webhook enforces the exclusion.
+//
+// ADR §7 sets the topology rule: at least 3 voting peers, odd count.
+// The webhook in `internal/webhooks/nebulacluster_webhook.go` mirrors
+// the boot-time check in `nebula_raft::RaftConfig::from_env` so a
+// misconfigured CR fails admission instead of crashing the binary.
+type RaftSpec struct {
+	// Enabled flips the cluster into Raft mode. When true, Replicas
+	// must be >= 3 and odd; the webhook rejects otherwise.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Replicas is the number of voting peers. Must be odd and >=3 when
+	// Enabled is true. We don't default this — the operator should
+	// have to type the number explicitly so 3-vs-5 isn't picked by
+	// accident.
+	// +kubebuilder:validation:Minimum=0
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// BindPort is the gRPC port for inter-peer Raft RPCs (ADR §12.2).
+	// Distinct from the client gRPC port so ops can apply different
+	// network policies — peer-to-peer Raft traffic is highly trusted;
+	// client gRPC less so.
+	// +kubebuilder:default=50052
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	BindPort int32 `json:"bindPort,omitempty"`
+
+	// ClusterName is the openraft logging tag — surfaced in metrics +
+	// logs to disambiguate clusters running on the same observability
+	// stack. Default "nebula".
+	// +kubebuilder:default="nebula"
+	ClusterName string `json:"clusterName,omitempty"`
+}
+
 // RegionSpec describes a deployment zone. Multi-region is application-routed —
 // the operator provisions independent clusters per region.
 type RegionSpec struct {
@@ -226,6 +270,13 @@ type NebulaClusterSpec struct {
 
 	// Replication toggle + follower count.
 	Replication ReplicationSpec `json:"replication,omitempty"`
+
+	// Raft consensus configuration. When Raft.Enabled is true, the
+	// operator provisions the cluster as an openraft 3+-node group
+	// (per ADR §7) and disables the legacy single-leader Replication
+	// path. The two modes are mutually exclusive — the webhook
+	// rejects a CR that has both enabled.
+	Raft RaftSpec `json:"raft,omitempty"`
 
 	// AI/RAG configuration.
 	AI AIConfig `json:"ai,omitempty"`

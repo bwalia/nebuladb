@@ -71,6 +71,27 @@ spec:
                   followers: {type: integer, default: 1, minimum: 0}
                   restartPolicyOnLag: {type: boolean, default: false}
                   lagByteThreshold: {type: integer}
+              raft:
+                type: object
+                description: |
+                  Raft consensus mode (RFC 0003 Option A, ADR 0004).
+                  When enabled, the operator provisions an openraft 3+-node
+                  group; the data plane uses Raft for write consensus
+                  instead of the legacy single-leader path. Mutually
+                  exclusive with replication.enabled — the webhook enforces.
+                properties:
+                  enabled: {type: boolean, default: false}
+                  replicas:
+                    type: integer
+                    minimum: 0
+                    description: |
+                      Voting peer count. Must be odd and >=3 when
+                      enabled=true (ADR §7). The webhook rejects
+                      otherwise; this CRD bound only enforces non-negative
+                      so a typo doesn't surface as an unsigned integer
+                      overflow before the webhook runs.
+                  bindPort: {type: integer, default: 50052, minimum: 1, maximum: 65535}
+                  clusterName: {type: string, default: nebula}
               ai:
                 type: object
                 properties:
