@@ -5,25 +5,30 @@
 //!
 //! - The on-disk `.nrlog` segment format (parallel to `nebula-wal`'s
 //!   `.nwal` but extended with Raft term/index slots).
-//! - Low-level append, read-by-index, and truncate primitives that
-//!   the `RaftLogStorage` trait impl will sit on top of.
+//! - The `openraft::RaftLogStorage` trait impl that sits on top of the
+//!   raw segment store, plus a `RaftLogReader` for openraft's read
+//!   path.
+//! - The `NebulaTypeConfig` openraft type binding shared by every
+//!   storage and network trait we implement.
 //!
 //! What this crate does **not** yet contain:
 //!
-//! - The `openraft::RaftLogStorage` impl itself. That lands once the
-//!   openraft 0.9.x version pin is locked (ADR §12.1) so the
-//!   workspace doesn't carry an unconfirmed major dependency.
 //! - The state machine wrapping `TextIndex`. That is Phase 2.2.
 //! - Snapshot integration. That is Phase 2.3 — it reuses the existing
 //!   `nsnap` format from `nebula-index/src/durability.rs` unchanged.
+//! - Network transport (gRPC `RaftService`). That is Phase 2.4.
 //!
-//! Splitting the openraft trait impl into 2.1b keeps the diffs
-//! reviewable: this commit is pure-Rust I/O code with no new
-//! transitive deps; 2.1b adds openraft and the trait wiring.
+//! The 2.1a / 2.1b split keeps PR diffs reviewable: 2.1a was pure-Rust
+//! I/O code with no new transitive deps; 2.1b (this) adds openraft and
+//! the trait wiring on top.
 
 pub mod log;
+pub mod storage;
+pub mod types;
 
-pub use log::{LogEntry, LogPayload, LogSegment, LogStore, LogStoreError};
+pub use log::{LogConfig, LogEntry, LogPayload, LogSegment, LogStore, LogStoreError};
+pub use storage::NebulaLogStorage;
+pub use types::{ClientWriteResponse, NebulaNode, NebulaTypeConfig, NodeId};
 
-/// Crate-wide result alias.
+/// Crate-wide result alias for our own (non-openraft) operations.
 pub type Result<T> = std::result::Result<T, LogStoreError>;
