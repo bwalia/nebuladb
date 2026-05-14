@@ -285,7 +285,18 @@ services:
       resources:
         limits:
           cpus: "2.0"
-          memory: 1g
+          # 8g, not 1g: cold-start recovery loads the latest snapshot
+          # via `load_latest_snapshot` → `bincode::deserialize` of the
+          # whole `HnswSnapshot` → `restore_from_snapshot`, which
+          # fully materializes the decompressed blob AND the structured
+          # copy AND the live index — roughly 3x the on-disk snapshot
+          # size in peak RAM. A 429 MB snapshot blew past the old 1g
+          # cap ~3s into recovery and the cgroup killed it on a loop
+          # (memory.events `max` counter, not a clean OOM-kill flag).
+          # This is a band-aid sized with headroom for snapshot
+          # growth; the real fix is streaming the *read* path the way
+          # PR #25 streamed the write path — see follow-up issue.
+          memory: 8g
 
   # ---------------------------------------------------------------------------
   # Optional follower replica. Tails the leader's WAL over gRPC and
