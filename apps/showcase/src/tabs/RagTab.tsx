@@ -23,7 +23,12 @@ interface Turn {
  */
 export function RagTab() {
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [input, setInput] = useState("What is NebulaDB?");
+  const [input, setInput] = useState("");
+  // Retrieval is scoped to a single bucket. Defaults to `leads` —
+  // the real corpus on this deployment (~84k docs) — rather than
+  // the demo `docs`/`wiki` seed data. Blank = search every bucket
+  // (the server treats an absent `bucket` as unscoped).
+  const [bucket, setBucket] = useState("leads");
   const [topK, setTopK] = useState(3);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -60,7 +65,9 @@ export function RagTab() {
     try {
       for await (const frame of sseStream(
         "/api/v1/ai/rag",
-        { query, top_k: topK, stream: true },
+        // `bucket || undefined` so a blank field omits the key and
+        // the server falls back to unscoped retrieval.
+        { query, top_k: topK, stream: true, bucket: bucket || undefined },
         ctrl.signal
       )) {
         switch (frame.event) {
@@ -126,7 +133,16 @@ export function RagTab() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !busy) void ask();
               }}
-              placeholder="e.g. How does NebulaDB handle failover?"
+              placeholder="Ask a question about the retrieved bucket…"
+            />
+          </label>
+          <label className="block">
+            <span className="block text-xs font-medium mb-1">bucket</span>
+            <input
+              className="input !w-32"
+              value={bucket}
+              onChange={(e) => setBucket(e.target.value)}
+              placeholder="(all buckets)"
             />
           </label>
           <label className="block">
@@ -165,8 +181,9 @@ export function RagTab() {
           ))}
         {turns.length === 0 && !busy && (
           <div className="card text-sm text-gray-500 dark:text-gray-400">
-            Ask a question to start. Make sure you've ingested some content first, or
-            run <code>./scripts/seed.sh</code> to load the knowledge corpus.
+            Ask a question to start. Retrieval is scoped to the{" "}
+            <code>{bucket || "all"}</code> bucket — change the bucket field
+            above, or leave it blank to search every bucket.
           </div>
         )}
       </div>
