@@ -395,13 +395,22 @@ impl pb::search_service_server::SearchService for SearchSvc {
             )));
         }
         let k = validate_top_k(r.top_k)?;
-        let bucket = optional(&r.bucket);
+        // Take owned `Option<String>` up front so we can hand it to
+        // the blocking pool's `'static` task below.
+        let bucket = optional(&r.bucket).map(String::from);
         let ef = optional_ef(r.ef);
         let started = std::time::Instant::now();
+        // Move the synchronous HNSW traversal to the blocking pool.
+        // Calling the sync `search_vector` directly from an async
+        // handler pins a tokio worker for the duration; a burst of
+        // concurrent gRPC vector searches saturates the runtime
+        // (same wedge mechanism router.rs:628 documents for REST).
         let hits = self
             .state
             .index
-            .search_vector(&r.vector, bucket, k, ef)
+            .clone()
+            .search_vector_blocking(r.vector, bucket, k, ef)
+            .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(pb::SearchResponse {
             hits: hits.into_iter().map(hit_to_proto).collect(),
