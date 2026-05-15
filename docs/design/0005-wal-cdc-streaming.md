@@ -17,6 +17,24 @@ The key claim — "WAL is the nervous system, not just durability" — is the on
 
 ---
 
+## 0.1 Status of the "next steps" from the original brief
+
+The original brief closed with a 5-item "build next" list. **Three of those items already exist on `main`.** Calling that out up front so a reviewer doesn't kick off work that's been done:
+
+| Original brief item | Status | Where it lives |
+|---|---|---|
+| WAL writer implementation | ✅ **Done** | `crates/nebula-wal/src/lib.rs` — segmented append-only log, `NEBWAL01` magic, CRC32, fsync-on-append, 64 MiB rotation, torn-tail recovery (~813 lines). Raft mode adds a parallel writer at `crates/nebula-raft/src/log.rs` with `NEBRAF01` magic + term/index slots (~1000 lines). |
+| CDC gRPC streaming server | 🟨 **Half done** | `nebula-grpc::ReplicationService::TailWal` ships records over a gRPC server-streaming RPC today. **Missing**: typed `CdcEvent` shape and a subscriber-filter language (`bucket=X`, `op_type IN (...)`). Covered by §2.2 + §5.4 of this RFC. |
+| Replication apply engine | ✅ **Done** | Two of them, depending on mode. Standalone follower replication uses `TextIndex::apply_wal_record` (`crates/nebula-index/src/lib.rs`). Raft mode uses `NebulaStateMachine::apply_entries` (`crates/nebula-raft/src/state_machine.rs`) — same entrypoint as standalone WAL replay, which is the determinism property the cross-peer test locks in. |
+| Snapshot + WAL recovery | ✅ **Done** | `crates/nebula-index/src/durability.rs` (`write_snapshot_streaming`, `load_latest_snapshot`) + `TextIndex::open_persistent` driving the load-snapshot-then-replay-WAL boot cycle. Streaming-friendly per PR #25. |
+| Vector-aware CDC consumer | 🟥 **Missing** | No actual consumer today. The infrastructure exists — `WalRecord::UpsertDocument` carries chunks + resolved vectors, `SubscriberHub` fans out, `ReplicationService::TailWal` ships them — but there is no concrete consumer that mirrors writes into an external vector store, fires a webhook on embedding events, or pumps to Kafka. §5.5 (webhook plugin) is the first one this RFC proposes building. |
+
+**Net: 3 of 5 already done, 1 half done, 1 missing.** The 1 missing + the half-done piece are exactly what §5.2–§5.5 propose.
+
+The honest gap *none* of those 5 items name: **no 3-node soak**. Eleven raft PRs are stacked unmerged with zero runtime against a real cluster. Phase 2.6 in `docs/active-active-rollout-prompt.md` is the work that gates production confidence in any of this.
+
+---
+
 ## 1. What already exists (and shouldn't be re-built)
 
 Honest inventory before proposing anything:
