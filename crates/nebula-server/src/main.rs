@@ -900,12 +900,105 @@ fn spawn_runtime_watchdog() {
                     // Best-effort message to stderr — the tokio
                     // logging pipeline is by definition wedged here.
                     eprintln!(
-                        "[WATCHDOG] tokio runtime hasn't beat in {}s — aborting so `restart: unless-stopped` recovers",
+                        "[WATCHDOG] tokio runtime hasn't beat in {}s — dumping forensics then aborting",
                         stalled.as_secs()
                     );
+                    dump_forensics_to_stderr();
                     std::process::abort();
                 }
             }
         })
         .expect("failed to spawn watchdog thread");
+}
+
+/// Dump every thread's state to stderr just before the watchdog
+/// aborts. Two layers:
+///
+/// 1. Per-thread `/proc/self/task/*/{comm,wchan,status,syscall}`.
+///    Always readable (no caps, no ptrace) and tells us:
+///      - which thread is `R` (running) vs `S` (sleeping)
+///      - which syscall every sleeper is parked in
+///      - which kernel function each is waiting on (wchan)
+///
+/// 2. `gdb -batch -ex "thread apply all bt"` against our own PID.
+///    Gives the user-space Rust backtrace for every thread, which is
+///    what we actually need to identify the busy-spinning worker
+///    that's wedging the runtime (the `/proc/.../stack` kernel
+///    backtrace only shows scheduler ticks, not the Rust frame
+///    actually running). Requires gdb in the image (added in the
+///    runtime Dockerfile) and `cap_add: [SYS_PTRACE]` on the compose
+///    service. If gdb isn't installed or ptrace is denied, this
+///    silently fails and we still get the /proc dump above.
+fn dump_forensics_to_stderr() {
+    eprintln!("[WATCHDOG-DUMP] ==================== begin ====================");
+    eprintln!("[WATCHDOG-DUMP] pid={} time={:?}", std::process::id(), std::time::SystemTime::now());
+
+    // (1) /proc/self/task/* — works without root for own threads.
+    if let Ok(entries) = std::fs::read_dir("/proc/self/task") {
+        for entry in entries.flatten() {
+            let tid = entry.file_name().to_string_lossy().to_string();
+            let p = entry.path();
+            let comm = std::fs::read_to_string(p.join("comm"))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let wchan = std::fs::read_to_string(p.join("wchan"))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let state = std::fs::read_to_string(p.join("status"))
+                .unwrap_or_default()
+                .lines()
+                .find(|l| l.starts_with("State:"))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let syscall = std::fs::read_to_string(p.join("syscall"))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            eprintln!(
+                "[WATCHDOG-DUMP] tid={tid} comm={comm} {state} wchan={wchan} syscall={syscall}"
+            );
+        }
+    } else {
+        eprintln!("[WATCHDOG-DUMP] (could not read /proc/self/task)");
+    }
+
+    // (2) gdb thread apply all bt — gives user-space Rust frames.
+    // 5s timeout: gdb attach can hang if ptrace is unavailable, and
+    // we'd rather abort cleanly than block here forever.
+    let pid = std::process::id().to_string();
+    let gdb = std::process::Command::new("timeout")
+        .args([
+            "5",
+            "gdb",
+            "-batch",
+            "-nx",
+            "-p",
+            &pid,
+            "-ex",
+            "set pagination off",
+            "-ex",
+            "thread apply all bt 30",
+            "-ex",
+            "detach",
+            "-ex",
+            "quit",
+        ])
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+    match gdb {
+        Ok(s) if s.success() => {
+            eprintln!("[WATCHDOG-DUMP] gdb completed");
+        }
+        Ok(s) => {
+            eprintln!("[WATCHDOG-DUMP] gdb exited {} (likely missing or ptrace denied)", s);
+        }
+        Err(e) => {
+            eprintln!("[WATCHDOG-DUMP] gdb spawn failed: {} — install `gdb` + cap_add SYS_PTRACE", e);
+        }
+    }
+    eprintln!("[WATCHDOG-DUMP] ===================== end =====================");
 }
