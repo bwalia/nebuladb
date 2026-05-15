@@ -430,7 +430,15 @@ async fn delete_doc(
         });
         raft.submit_mutation(payload).await?;
     } else {
-        s.index.delete(&bucket, &id)?;
+        // Standalone delete: WAL + inner.write + HNSW tombstone are
+        // all synchronous. Hand off to the blocking pool so a burst
+        // of deletes from a client app doesn't pin async workers.
+        let idx = std::sync::Arc::clone(&s.index);
+        let b = bucket.clone();
+        let i = id.clone();
+        tokio::task::spawn_blocking(move || idx.delete(&b, &i))
+            .await
+            .map_err(|e| ApiError::Internal(format!("delete task: {e}")))??;
     }
     s.metrics.inc_delete();
     Ok(StatusCode::NO_CONTENT)
@@ -568,7 +576,15 @@ async fn delete_document(
         raft.submit_mutation(payload).await?;
         local_count
     } else {
-        s.index.delete_document(&bucket, &doc_id)?
+        // Standalone path: delete_document tombstones every chunk
+        // of the parent doc — linear in chunk count, fully sync.
+        // Off to the blocking pool.
+        let idx = std::sync::Arc::clone(&s.index);
+        let b = bucket.clone();
+        let d = doc_id.clone();
+        tokio::task::spawn_blocking(move || idx.delete_document(&b, &d))
+            .await
+            .map_err(|e| ApiError::Internal(format!("delete_document task: {e}")))??
     };
     s.metrics.inc_delete();
     Ok(Json(DeleteDocumentResponse {
@@ -889,7 +905,20 @@ async fn admin_buckets(
     State(s): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<BucketsQuery>,
 ) -> Result<Json<Vec<nebula_index::BucketStats>>, ApiError> {
-    Ok(Json(s.index.bucket_stats(q.top_keys)))
+    // `bucket_stats` is a full corpus scan — it iterates every doc
+    // in every bucket and tallies metadata keys. At ~84k docs in
+    // `leads` it's a multi-hundred-ms synchronous walk under the
+    // index read lock. The showcase Admin tab polls this endpoint
+    // every ~3s; with a couple of browser clients open the sustained
+    // pinning of tokio workers saturates the runtime — same wedge
+    // mechanism as sync search (see router.rs:628 et al). Move the
+    // scan to the blocking pool so async workers stay free.
+    let idx = std::sync::Arc::clone(&s.index);
+    let top_keys = q.top_keys;
+    let stats = tokio::task::spawn_blocking(move || idx.bucket_stats(top_keys))
+        .await
+        .map_err(|e| ApiError::Internal(format!("bucket_stats task: {e}")))?;
+    Ok(Json(stats))
 }
 
 #[derive(Deserialize)]
@@ -1395,7 +1424,14 @@ async fn admin_empty_bucket(
     if bucket.is_empty() {
         return Err(ApiError::BadRequest("bucket name required".into()));
     }
-    let removed = s.index.empty_bucket(&bucket);
+    // empty_bucket tombstones every doc in the bucket — linear in
+    // bucket size. On `leads` (~84k docs) that's a real wedge risk
+    // if called from an admin script while writes are flowing.
+    let idx = std::sync::Arc::clone(&s.index);
+    let b = bucket.clone();
+    let removed = tokio::task::spawn_blocking(move || idx.empty_bucket(&b))
+        .await
+        .map_err(|e| ApiError::Internal(format!("empty_bucket task: {e}")))?;
     s.metrics.inc_delete();
     Ok(Json(EmptyBucketResponse { bucket, removed }))
 }
@@ -1423,7 +1459,14 @@ async fn admin_export_bucket(
     if bucket.is_empty() {
         return Err(ApiError::BadRequest("bucket name required".into()));
     }
-    let docs = s.index.export_bucket(&bucket);
+    // export_bucket walks every doc in the bucket and serializes
+    // the full payload. Linear scan; same wedge risk as
+    // empty_bucket. Hand off to the blocking pool.
+    let idx = std::sync::Arc::clone(&s.index);
+    let b = bucket.clone();
+    let docs = tokio::task::spawn_blocking(move || idx.export_bucket(&b))
+        .await
+        .map_err(|e| ApiError::Internal(format!("export_bucket task: {e}")))?;
     Ok(Json(ExportBucketResponse {
         bucket,
         dim: s.index.dim(),
@@ -1521,9 +1564,14 @@ async fn admin_import_bucket(
         }
     }
     let requested = body.docs.len();
-    let imported = s
-        .index
-        .import_bucket(&bucket, &body.docs)
+    // import_bucket is bulk insert — linear in payload size. Move
+    // it off the async worker so the upload doesn't pin the runtime.
+    let idx = std::sync::Arc::clone(&s.index);
+    let b = bucket.clone();
+    let docs_in = body.docs;
+    let imported = tokio::task::spawn_blocking(move || idx.import_bucket(&b, &docs_in))
+        .await
+        .map_err(|e| ApiError::Internal(format!("import_bucket task: {e}")))?
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     s.metrics.inc_insert();
     Ok(Json(ImportBucketResponse {
