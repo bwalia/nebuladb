@@ -889,7 +889,20 @@ async fn admin_buckets(
     State(s): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<BucketsQuery>,
 ) -> Result<Json<Vec<nebula_index::BucketStats>>, ApiError> {
-    Ok(Json(s.index.bucket_stats(q.top_keys)))
+    // `bucket_stats` is a full corpus scan — it iterates every doc
+    // in every bucket and tallies metadata keys. At ~84k docs in
+    // `leads` it's a multi-hundred-ms synchronous walk under the
+    // index read lock. The showcase Admin tab polls this endpoint
+    // every ~3s; with a couple of browser clients open the sustained
+    // pinning of tokio workers saturates the runtime — same wedge
+    // mechanism as sync search (see router.rs:628 et al). Move the
+    // scan to the blocking pool so async workers stay free.
+    let idx = std::sync::Arc::clone(&s.index);
+    let top_keys = q.top_keys;
+    let stats = tokio::task::spawn_blocking(move || idx.bucket_stats(top_keys))
+        .await
+        .map_err(|e| ApiError::Internal(format!("bucket_stats task: {e}")))?;
+    Ok(Json(stats))
 }
 
 #[derive(Deserialize)]
