@@ -2402,6 +2402,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-cdc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "nebula-wal",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nebula-chunk"
 version = "0.1.0"
 dependencies = [

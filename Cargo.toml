@@ -10,6 +10,7 @@ members = [
     "crates/nebula-llm",
     "crates/nebula-wal",
     "crates/nebula-raft",
+    "crates/nebula-cdc",
     "crates/nebula-index",
     "crates/nebula-sql",
     "crates/nebula-grpc",
