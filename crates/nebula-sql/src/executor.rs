@@ -90,10 +90,21 @@ impl Executor {
     async fn retrieve(&self, plan: &Plan) -> Result<Vec<Hit>> {
         let top_k = plan.top_k();
         match &plan.semantic {
-            SemanticClause::Match { query, .. } => Ok(self
-                .index
-                .search_text(query, Some(&plan.bucket), top_k, None)
-                .await?),
+            SemanticClause::Match { query, .. } => {
+                // search_text is async only because of the embedder;
+                // the HNSW lookup is sync and would pin a tokio worker.
+                // Use _blocking — same fix as the Distance arm below.
+                Ok(self
+                    .index
+                    .clone()
+                    .search_text_blocking(
+                        query.clone(),
+                        Some(plan.bucket.clone()),
+                        top_k,
+                        None,
+                    )
+                    .await?)
+            }
             SemanticClause::Distance { vector, .. } => {
                 if vector.len() != self.index.dim() {
                     return Err(SqlError::TypeError(format!(

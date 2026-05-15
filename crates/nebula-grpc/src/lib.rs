@@ -367,13 +367,14 @@ impl pb::search_service_server::SearchService for SearchSvc {
             return Err(Status::invalid_argument("query required"));
         }
         let k = validate_top_k(r.top_k)?;
-        let bucket = optional(&r.bucket);
+        let bucket = optional(&r.bucket).map(String::from);
         let ef = optional_ef(r.ef);
         let started = std::time::Instant::now();
-        let hits = self
-            .state
-            .index
-            .search_text(&r.query, bucket, k, ef)
+        // search_text's HNSW lookup is sync — use _blocking so it
+        // doesn't pin the tokio worker. Same wedge fix pattern as
+        // the search_vector_blocking migration in PR #51.
+        let hits = std::sync::Arc::clone(&self.state.index)
+            .search_text_blocking(r.query, bucket, k, ef)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(pb::SearchResponse {
@@ -447,12 +448,13 @@ impl pb::ai_service_server::AiService for AiSvc {
         let k = validate_top_k(r.top_k)?;
         let bucket = optional(&r.bucket).map(|s| s.to_string());
 
-        // Retrieve synchronously so retrieval errors surface as a proper
-        // gRPC Status before we hand the client a stream.
-        let hits = self
-            .state
-            .index
-            .search_text(&r.query, bucket.as_deref(), k, None)
+        // Retrieve via the _blocking variant so retrieval errors
+        // surface as a proper gRPC Status before we hand the client
+        // a stream — AND so the synchronous HNSW lookup doesn't pin
+        // the tokio worker. The RAG handler is the wedge trigger
+        // observed from the showcase chat after PR #51 / #52.
+        let hits = std::sync::Arc::clone(&self.state.index)
+            .search_text_blocking(r.query.clone(), bucket, k, None)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();

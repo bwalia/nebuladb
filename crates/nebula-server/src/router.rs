@@ -736,9 +736,15 @@ async fn ai_rag(
     let top_k = validate_top_k(req.top_k, s.config.max_top_k)?;
     s.metrics.inc_rag();
 
-    let hits = s
-        .index
-        .search_text(&req.query, req.bucket.as_deref(), top_k, None)
+    // search_text is async only because of the embedder call;
+    // the HNSW lookup it dispatches to is synchronous. Use the
+    // _blocking variant so retrieval doesn't pin the tokio worker
+    // for the duration of the graph walk. This was the wedge
+    // trigger observed via showcase RAG chat after PR #51 / #52
+    // (which fixed search_vector but missed the search_text leak
+    // for the RAG / SQL / gRPC paths).
+    let hits = std::sync::Arc::clone(&s.index)
+        .search_text_blocking(req.query.clone(), req.bucket.clone(), top_k, None)
         .await?;
     let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
     let prompt = build_rag_prompt(&req.query, &snippets);
