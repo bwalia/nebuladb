@@ -399,19 +399,29 @@ impl TextIndex {
             }));
         }
 
-        // WAL first: if we crash between this append and the
-        // in-memory apply below, replay picks up the record. If we
-        // crash before the append, the caller's retry is safe —
-        // nothing was committed.
-        self.wal_append(&WalRecord::UpsertText {
-            bucket: bucket.to_string(),
-            external_id: external_id.to_string(),
-            text: text.to_string(),
-            vector: vector.clone(),
-            metadata_json: metadata.to_string(),
-        })?;
+        // WAL append + HNSW insert are fully synchronous and hold
+        // the inner write lock. Run them on tokio's blocking-OK
+        // window via `block_in_place` so a burst of writes from a
+        // client app doesn't pin async workers (the wedge source
+        // that took us down earlier today via RAG / Admin polling).
+        // Requires multi-threaded runtime — main.rs builds the
+        // server with one explicitly; tests use
+        // `#[tokio::test(flavor = "multi_thread", ...)]` annotations.
+        tokio::task::block_in_place(|| {
+            // WAL first: if we crash between this append and the
+            // in-memory apply below, replay picks up the record. If
+            // we crash before the append, the caller's retry is safe
+            // — nothing was committed.
+            self.wal_append(&WalRecord::UpsertText {
+                bucket: bucket.to_string(),
+                external_id: external_id.to_string(),
+                text: text.to_string(),
+                vector: vector.clone(),
+                metadata_json: metadata.to_string(),
+            })?;
 
-        self.apply_upsert_single(bucket, external_id, text, vector, metadata, None, None)
+            self.apply_upsert_single(bucket, external_id, text, vector, metadata, None, None)
+        })
     }
 
     /// Pure in-memory apply shared by `upsert_text` and WAL replay.
@@ -513,64 +523,73 @@ impl TextIndex {
             }
         }
 
-        // WAL: write every record before we start applying. The
-        // WAL's writer is internally serialized so a batch lands
-        // contiguously in one segment. If any append fails the
-        // whole batch aborts — simpler than partial-commit
-        // bookkeeping, and `append` doesn't typically fail except
-        // on full disk.
-        for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
-            self.wal_append(&WalRecord::UpsertText {
-                bucket: bucket.to_string(),
-                external_id: id.clone(),
-                text: text.clone(),
-                vector: vec.clone(),
-                metadata_json: meta.to_string(),
-            })?;
-        }
-
-        // Same atomic-per-item discipline as the single-item path:
-        // hold the inner write lock across each item's HNSW mutation
-        // so readers never see a half-committed insert. Under bulk
-        // load this also prevents two batches interleaving their
-        // next_id allocations.
-        //
-        // Per-item failure handling: we keep going on HNSW failures
-        // because a single bad vector shouldn't kill an ingest of
-        // thousands. The lock is released at the end of the batch —
-        // readers back up briefly at scale but never see torn state.
-        let mut inserted = 0usize;
-        let mut g = self.inner.write();
-        for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
-            let key = (bucket.to_string(), id.clone());
-            if let Some(&old_id) = g.by_key.get(&key) {
-                let _ = self.hnsw.delete(old_id);
-                g.docs.remove(&old_id);
-                g.by_key.remove(&key);
-            }
-            let new_id = Id(g.next_id);
-            g.next_id += 1;
-            if self.hnsw.insert(new_id, vec).is_err() {
-                // Roll back the id allocation we already bumped. No
-                // map writes to undo — we haven't done them yet.
-                continue;
-            }
-            g.by_key.insert(key, new_id);
-            g.docs.insert(
-                new_id,
-                Document {
+        // Bulk inserts hold the inner write lock across an entire
+        // batch — at scale (a 1000-doc payload) that's hundreds of
+        // ms of sync HNSW work. Move it to tokio's blocking-OK
+        // window so async workers stay free to drive other futures.
+        // Requires multi-threaded runtime — main.rs builds the
+        // server with one explicitly; tests use the multi_thread
+        // tokio test flavor.
+        tokio::task::block_in_place(|| {
+            // WAL: write every record before we start applying. The
+            // WAL's writer is internally serialized so a batch lands
+            // contiguously in one segment. If any append fails the
+            // whole batch aborts — simpler than partial-commit
+            // bookkeeping, and `append` doesn't typically fail except
+            // on full disk.
+            for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
+                self.wal_append(&WalRecord::UpsertText {
                     bucket: bucket.to_string(),
                     external_id: id.clone(),
                     text: text.clone(),
                     vector: vec.clone(),
-                    metadata: meta.clone(),
-                    parent_doc_id: None,
-                    chunk_index: None,
-                },
-            );
-            inserted += 1;
-        }
-        Ok(inserted)
+                    metadata_json: meta.to_string(),
+                })?;
+            }
+
+            // Same atomic-per-item discipline as the single-item path:
+            // hold the inner write lock across each item's HNSW mutation
+            // so readers never see a half-committed insert. Under bulk
+            // load this also prevents two batches interleaving their
+            // next_id allocations.
+            //
+            // Per-item failure handling: we keep going on HNSW failures
+            // because a single bad vector shouldn't kill an ingest of
+            // thousands. The lock is released at the end of the batch —
+            // readers back up briefly at scale but never see torn state.
+            let mut inserted = 0usize;
+            let mut g = self.inner.write();
+            for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
+                let key = (bucket.to_string(), id.clone());
+                if let Some(&old_id) = g.by_key.get(&key) {
+                    let _ = self.hnsw.delete(old_id);
+                    g.docs.remove(&old_id);
+                    g.by_key.remove(&key);
+                }
+                let new_id = Id(g.next_id);
+                g.next_id += 1;
+                if self.hnsw.insert(new_id, vec).is_err() {
+                    // Roll back the id allocation we already bumped. No
+                    // map writes to undo — we haven't done them yet.
+                    continue;
+                }
+                g.by_key.insert(key, new_id);
+                g.docs.insert(
+                    new_id,
+                    Document {
+                        bucket: bucket.to_string(),
+                        external_id: id.clone(),
+                        text: text.clone(),
+                        vector: vec.clone(),
+                        metadata: meta.clone(),
+                        parent_doc_id: None,
+                        chunk_index: None,
+                    },
+                );
+                inserted += 1;
+            }
+            Ok(inserted)
+        })
     }
 
     pub fn get(&self, bucket: &str, external_id: &str) -> Option<Document> {
@@ -672,15 +691,21 @@ impl TextIndex {
                 vector: v.clone(),
             })
             .collect();
-        self.wal_append(&WalRecord::UpsertDocument {
-            bucket: bucket.to_string(),
-            doc_id: doc_id.to_string(),
-            chunks: wal_chunks.clone(),
-            metadata_json: metadata.to_string(),
+        // Same blocking-window treatment as the other upsert paths
+        // — WAL append + HNSW inserts for every chunk hold the inner
+        // write lock through fully synchronous work. Bulk documents
+        // pin a worker for noticeable time on large texts.
+        let n = chunks.len();
+        tokio::task::block_in_place(|| {
+            self.wal_append(&WalRecord::UpsertDocument {
+                bucket: bucket.to_string(),
+                doc_id: doc_id.to_string(),
+                chunks: wal_chunks.clone(),
+                metadata_json: metadata.to_string(),
+            })?;
+            self.apply_upsert_document(bucket, doc_id, &wal_chunks, metadata)
         })?;
-
-        self.apply_upsert_document(bucket, doc_id, &wal_chunks, metadata)?;
-        Ok(chunks.len())
+        Ok(n)
     }
 
     /// In-memory apply shared by public path and WAL replay. The
@@ -1222,7 +1247,7 @@ mod tests {
         TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn upsert_and_get() {
         let idx = make_index();
         idx.upsert_text("docs", "a", "hello world", serde_json::json!({}))
@@ -1232,7 +1257,7 @@ mod tests {
         assert_eq!(d.text, "hello world");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replace_drops_old_vector() {
         let idx = make_index();
         idx.upsert_text("docs", "a", "v1", serde_json::json!({})).await.unwrap();
@@ -1241,7 +1266,7 @@ mod tests {
         assert_eq!(idx.get("docs", "a").unwrap().text, "v2");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bucket_filter_excludes_other_buckets() {
         let idx = make_index();
         idx.upsert_text("a", "1", "zero trust", serde_json::json!({})).await.unwrap();
@@ -1250,7 +1275,7 @@ mod tests {
         assert!(hits.iter().all(|h| h.bucket == "a"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_removes_from_results() {
         let idx = make_index();
         idx.upsert_text("docs", "a", "foo", serde_json::json!({})).await.unwrap();
@@ -1260,14 +1285,14 @@ mod tests {
         assert!(hits.iter().all(|h| h.id != "a"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn empty_bucket_or_id_rejected() {
         let idx = make_index();
         assert!(idx.upsert_text("", "a", "x", serde_json::json!({})).await.is_err());
         assert!(idx.upsert_text("b", "", "x", serde_json::json!({})).await.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn upsert_document_creates_multiple_chunks() {
         let idx = make_index();
         let chunker = nebula_chunk::FixedSizeChunker::new(10, 0).unwrap();
@@ -1286,7 +1311,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn upsert_document_replaces_previous_chunks() {
         let idx = make_index();
         let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
@@ -1303,7 +1328,7 @@ mod tests {
         assert!(idx.get("docs", "d1#1").is_none()); // from first version
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn count_chunks_reports_zero_for_unknown_and_n_for_known() {
         let idx = make_index();
         assert_eq!(idx.count_chunks("docs", "missing"), 0);
@@ -1315,7 +1340,7 @@ mod tests {
         assert_eq!(idx.count_chunks("other-bucket", "d1"), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_document_removes_all_chunks() {
         let idx = make_index();
         let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
@@ -1331,13 +1356,13 @@ mod tests {
         assert!(idx.get("docs", "d2#0").is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_document_unknown_errors() {
         let idx = make_index();
         assert!(idx.delete_document("docs", "nope").is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bucket_stats_reports_counts_and_top_keys() {
         let idx = make_index();
         // Two buckets with different metadata shapes; parent_doc_id on
@@ -1370,13 +1395,13 @@ mod tests {
         assert_eq!(b.parent_docs, 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bucket_stats_empty_index_is_empty() {
         let idx = make_index();
         assert!(idx.bucket_stats(10).is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn upsert_text_bulk_inserts_and_replaces() {
         let idx = make_index();
         let batch: Vec<(String, String, serde_json::Value)> = (0..50)
@@ -1396,7 +1421,7 @@ mod tests {
         assert_eq!(idx.get("docs", "d0").unwrap().text, "updated 0");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn upsert_text_bulk_rejects_empty_id_or_text() {
         let idx = make_index();
         let err = idx
@@ -1411,7 +1436,7 @@ mod tests {
         assert!(matches!(err, IndexError::Invalid(_)));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn empty_bucket_drops_only_that_bucket() {
         let idx = make_index();
         idx.upsert_text("a", "1", "x", serde_json::json!({})).await.unwrap();
