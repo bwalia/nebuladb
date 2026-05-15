@@ -303,7 +303,7 @@ async fn upsert_docs_bulk(
             )));
         }
         let mut committed = 0usize;
-        for (item, vector) in body.items.into_iter().zip(vectors.into_iter()) {
+        for (item, vector) in body.items.into_iter().zip(vectors) {
             if vector.len() != s.index.dim() {
                 return Err(ApiError::Embed(nebula_embed::EmbedError::DimensionMismatch {
                     expected: s.index.dim(),
