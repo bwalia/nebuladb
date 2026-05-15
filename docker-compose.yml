@@ -158,6 +158,14 @@ services:
     # healthcheck timeout kills only the wrapping `sh`, not the
     # child wget, and the orphaned wget reparents to PID 1.
     init: true
+    # Allow gdb (run by the runtime watchdog right before it aborts
+    # on a silent tokio-runtime wedge) to attach to its own parent
+    # process via ptrace. Without this, the watchdog can still dump
+    # /proc/self/task/*/{wchan,syscall,status} but cannot produce
+    # user-space Rust backtraces — and user-space frames are what
+    # actually tell us which task is busy-spinning the runtime.
+    cap_add:
+      - SYS_PTRACE
     <<: [*default-restart, *default-logging]
     depends_on:
       ollama:

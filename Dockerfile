@@ -60,7 +60,11 @@ FROM debian:${DEBIAN_VARIANT} AS runtime
 # endpoints. `ca-certificates` is the only transitive runtime dep since
 # reqwest is built with rustls and statically links OpenSSL is not used.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates wget \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      wget \
+      gdb \
+      coreutils \
  && rm -rf /var/lib/apt/lists/*
 
 # Non-root user with a stable UID so bind-mounted data volumes keep
