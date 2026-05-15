@@ -145,6 +145,30 @@ jobs:
           graf=${NEBULA_GRAFANA_HOST_PORT:-13000}
           prom=${NEBULA_PROMETHEUS_HOST_PORT:-19090}
 
+          # /healthz returns 503 while nebula-server is in WAL
+          # recovery (the boot stub serves /healthz/live=200 to keep
+          # docker's healthcheck happy, but /healthz only flips to
+          # 200 once the real index is loaded). At current snapshot
+          # size that's 2-4 minutes. The prior `Wait for healthchecks`
+          # step only polls docker's view (which uses /healthz/live)
+          # so it returns immediately — we need to wait here.
+          echo "== waiting for /healthz to flip past recovery =="
+          for i in $(seq 1 36); do  # 36 * 10s = 6 min cap
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 \
+              "http://${host}:${rest}/healthz" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "  /healthz=200 after $((i * 10))s"
+              break
+            fi
+            if [ "$i" = "36" ]; then
+              echo "::error::/healthz still $code after 6min — recovery stuck or wedge"
+              docker compose logs --tail=80 nebula-server || true
+              exit 1
+            fi
+            echo "  /healthz=$code (try $i/36)"
+            sleep 10
+          done
+
           echo "== /healthz =="
           curl -fsS "http://${host}:${rest}/healthz" && echo
           echo "== /metrics (head) =="
