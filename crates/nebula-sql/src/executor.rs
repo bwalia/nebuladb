@@ -102,9 +102,24 @@ impl Executor {
                         self.index.dim()
                     )));
                 }
+                // Same wedge-avoidance pattern router.rs:628
+                // already uses for REST `/vector/search`. The sync
+                // `search_vector` pins a tokio worker for the entire
+                // HNSW traversal; a burst of concurrent SQL distance
+                // queries saturated the runtime and tripped the
+                // healthcheck. `search_vector_blocking` runs the
+                // synchronous traversal on the blocking pool so
+                // async workers stay free.
                 Ok(self
                     .index
-                    .search_vector(vector, Some(&plan.bucket), top_k, None)?)
+                    .clone()
+                    .search_vector_blocking(
+                        vector.clone(),
+                        Some(plan.bucket.clone()),
+                        top_k,
+                        None,
+                    )
+                    .await?)
             }
         }
     }

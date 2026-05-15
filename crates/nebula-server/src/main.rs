@@ -65,6 +65,27 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber_init(Arc::clone(&log_bus), stderr);
     tracing::info!(workers, stderr, "nebula-server starting");
 
+    // Watchdog: convert silent tokio-runtime wedges into clean
+    // restarts. A heartbeat tokio task increments a counter every
+    // ~5s; a *separate* OS thread (which keeps running even if the
+    // tokio runtime is fully wedged) polls that counter and aborts
+    // the process if it stalls for `NEBULA_WATCHDOG_STALL_SECS`
+    // (default 300). Aborting fires SIGABRT (exit 134); compose's
+    // `restart: unless-stopped` then brings us back up.
+    //
+    // Why this is necessary even with PR #25 + PR #49 landed:
+    // *some* wedge mechanism is still present (~13h silent hang
+    // observed on 192.168.1.193 after the first scheduler-driven
+    // snapshot completed). Until the actual cause is fully fixed,
+    // this bounds the blast radius to a 5-minute outage instead of
+    // "undefined — call ops."
+    //
+    // Disable with `NEBULA_WATCHDOG_DISABLE=1` (tests, debugging,
+    // single-shot smoke jobs).
+    if std::env::var("NEBULA_WATCHDOG_DISABLE").ok().as_deref() != Some("1") {
+        spawn_runtime_watchdog();
+    }
+
     let bind: SocketAddr = std::env::var("NEBULA_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
@@ -810,4 +831,81 @@ fn tracing_subscriber_init(bus: Arc<LogBus>, stderr: bool) {
     // always been tolerant of that and we keep booting.
     let _ =
         tracing::subscriber::set_global_default(CapturingSubscriber::new(bus).with_stderr(stderr));
+}
+
+/// Last-line-of-defense watchdog against silent tokio runtime wedges.
+///
+/// Two coupled actors:
+/// 1. A tokio task that ticks every 5s and bumps a shared atomic
+///    counter. Lives on the runtime, so if the runtime stops making
+///    progress for any reason — parked workers, IO driver wedge,
+///    blocking-pool deadlock — this tick stops.
+/// 2. A *dedicated OS thread* that polls that counter every 15s.
+///    This thread is **not** a tokio worker; it uses `std::thread::sleep`,
+///    which is a kernel-level wait that runs regardless of what the
+///    async runtime is doing. If the counter doesn't advance for
+///    `NEBULA_WATCHDOG_STALL_SECS` seconds (default 300), it calls
+///    `std::process::abort()`. SIGABRT (exit 134) lands in docker;
+///    `restart: unless-stopped` picks the container back up.
+///
+/// This is NOT a fix for the underlying wedge — it bounds its blast
+/// radius. The proper fix is to identify and remove the wedge source.
+/// Tracked separately.
+fn spawn_runtime_watchdog() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let stall_secs: u64 = std::env::var("NEBULA_WATCHDOG_STALL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|v: &u64| *v >= 30)
+        .unwrap_or(300);
+
+    let beat = Arc::new(AtomicU64::new(0));
+
+    // (1) Heartbeat — on the tokio runtime. If the runtime wedges,
+    // this future stops being polled and the counter stops advancing.
+    let writer = Arc::clone(&beat);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tick.tick().await;
+            writer.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    // (2) Watcher — OS thread, NOT a tokio task. Survives any kind of
+    // runtime wedge because it uses kernel sleep, not tokio sleep.
+    let reader = beat;
+    let stall_limit = Duration::from_secs(stall_secs);
+    std::thread::Builder::new()
+        .name("nebula-watchdog".into())
+        .spawn(move || {
+            let poll = Duration::from_secs(15);
+            // Allow one grace window before declaring stall so a slow
+            // boot (WAL recovery) doesn't trip us during startup.
+            let mut last = 0u64;
+            let mut stalled = Duration::ZERO;
+            loop {
+                std::thread::sleep(poll);
+                let cur = reader.load(Ordering::Relaxed);
+                if cur != last {
+                    last = cur;
+                    stalled = Duration::ZERO;
+                    continue;
+                }
+                stalled += poll;
+                if stalled >= stall_limit {
+                    // Best-effort message to stderr — the tokio
+                    // logging pipeline is by definition wedged here.
+                    eprintln!(
+                        "[WATCHDOG] tokio runtime hasn't beat in {}s — aborting so `restart: unless-stopped` recovers",
+                        stalled.as_secs()
+                    );
+                    std::process::abort();
+                }
+            }
+        })
+        .expect("failed to spawn watchdog thread");
 }
