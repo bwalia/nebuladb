@@ -46,7 +46,7 @@ async fn ingest_and_close(dir: &std::path::Path, docs: &[(&str, &str)]) {
 
 /// Mode 1: WAL-only recovery. Ingest, drop, reopen, confirm every
 /// doc is back.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wal_only_recovery_round_trips_docs() {
     let dir = tempdir().unwrap();
     let corpus = [("a", "alpha"), ("b", "beta"), ("c", "gamma delta")];
@@ -74,7 +74,7 @@ async fn wal_only_recovery_round_trips_docs() {
 
 /// Mode 2: snapshot + WAL recovery. Ingest, snapshot, ingest more,
 /// drop, reopen. Every doc from both phases must be present.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_plus_wal_covers_pre_and_post_snapshot_writes() {
     let dir = tempdir().unwrap();
     {
@@ -127,7 +127,7 @@ async fn snapshot_plus_wal_covers_pre_and_post_snapshot_writes() {
 /// corrupt the tail, then reopen — mimicking "fsync didn't land
 /// the last record fully". The WAL's validator should truncate
 /// and recovery should succeed with N-1 records.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn torn_wal_tail_recovers_to_last_good_record() {
     use std::fs::OpenOptions;
     use std::io::{Seek, SeekFrom, Write};
@@ -194,7 +194,7 @@ async fn torn_wal_tail_recovers_to_last_good_record() {
 /// via `upsert_text`, so this is the regression guard for the
 /// parents-section wire format. If those bytes drift, every prod
 /// snapshot becomes unreadable on the next deploy.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_round_trips_parents_and_chunks() {
     let dir = tempdir().unwrap();
     let chunker = FixedSizeChunker::new(10, 2).unwrap();
@@ -266,7 +266,7 @@ async fn snapshot_round_trips_parents_and_chunks() {
 
 /// Compact drops old WAL after a successful snapshot. Verifies
 /// the "snapshot supersedes the WAL" promise.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_after_snapshot_frees_wal_bytes() {
     let dir = tempdir().unwrap();
     let idx = TextIndex::open_persistent(
