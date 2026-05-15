@@ -226,16 +226,33 @@ pub async fn rate_limit(
         connect_info.map(|ConnectInfo(a)| a),
         &cfg.trusted_proxies,
     );
-    let entry = limiter
-        .buckets
-        .entry(key.clone())
-        .or_insert_with(|| Mutex::new(Bucket::new(cfg.capacity)));
-
+    // SAFETY CRITICAL: `dashmap::Entry` returned by `.entry()` holds
+    // the shard's write lock for the entire lifetime of the guard.
+    // Earlier revisions of this function kept `entry` alive through
+    // the `next.run(req).await` below, which held the shard lock
+    // across the entire downstream request — any later request that
+    // hashed to the same shard wedged on
+    // `dashmap::lock::RawRwLock::lock_exclusive_slow` forever, taking
+    // the whole tokio runtime down with it. Verified via a watchdog
+    // gdb dump (one tokio worker stuck deep in
+    // `dashmap::{impl#4}::_yield_write_shard<String, …,
+    // nebula_server::ratelimit::Bucket>` while every other worker
+    // sat parked at `Context::park` with no work to schedule).
+    //
+    // Fix: hold the shard guard ONLY long enough to read out the
+    // `(allowed, retry_secs)` decision. The guard goes out of scope
+    // at the end of the inner block, before any `.await`, so no
+    // DashMap-level lock is alive across an async suspension point.
     let (allowed, retry_secs) = {
+        let entry = limiter
+            .buckets
+            .entry(key.clone())
+            .or_insert_with(|| Mutex::new(Bucket::new(cfg.capacity)));
         let mut bucket = entry.lock();
         let allowed = bucket.try_take(cfg);
         let retry = if allowed { 0 } else { bucket.retry_after_secs(cfg) };
         (allowed, retry)
+        // `entry` drops here → shard write lock released.
     };
 
     if allowed {
