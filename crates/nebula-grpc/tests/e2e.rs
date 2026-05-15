@@ -59,7 +59,10 @@ async fn channel(addr: SocketAddr) -> Channel {
         .expect("connect")
 }
 
-#[tokio::test]
+// Multi-thread runtime: TextIndex's write path uses
+// tokio::task::block_in_place (see crates/nebula-index/src/lib.rs:410)
+// which panics on the default single-threaded runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn grpc_upsert_and_semantic_search() {
     let (addr, _srv) = spawn_server().await;
     let ch = channel(addr).await;
@@ -94,7 +97,10 @@ async fn grpc_upsert_and_semantic_search() {
     assert!(hits.iter().all(|h| h.bucket == "docs"));
 }
 
-#[tokio::test]
+// Multi-thread runtime: TextIndex's write path uses
+// tokio::task::block_in_place (see crates/nebula-index/src/lib.rs:410)
+// which panics on the default single-threaded runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn grpc_rag_stream_delivers_context_then_deltas_then_done() {
     let (addr, _srv) = spawn_server().await;
     let ch = channel(addr).await;
@@ -151,7 +157,10 @@ async fn grpc_rag_stream_delivers_context_then_deltas_then_done() {
     assert!(saw_done, "stream ended without a Done marker");
 }
 
-#[tokio::test]
+// Multi-thread runtime: TextIndex's write path uses
+// tokio::task::block_in_place (see crates/nebula-index/src/lib.rs:410)
+// which panics on the default single-threaded runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn grpc_semantic_search_validates_empty_query() {
     let (addr, _srv) = spawn_server().await;
     let ch = channel(addr).await;
@@ -187,7 +196,10 @@ async fn spawn_follower() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     (addr, handle)
 }
 
-#[tokio::test]
+// Multi-thread runtime: TextIndex's write path uses
+// tokio::task::block_in_place (see crates/nebula-index/src/lib.rs:410)
+// which panics on the default single-threaded runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn follower_rejects_upsert() {
     let (addr, _srv) = spawn_follower().await;
     let ch = channel(addr).await;
@@ -205,7 +217,10 @@ async fn follower_rejects_upsert() {
     assert_eq!(err.message(), READ_ONLY_FOLLOWER);
 }
 
-#[tokio::test]
+// Multi-thread runtime: TextIndex's write path uses
+// tokio::task::block_in_place (see crates/nebula-index/src/lib.rs:410)
+// which panics on the default single-threaded runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn follower_rejects_delete() {
     let (addr, _srv) = spawn_follower().await;
     let ch = channel(addr).await;
@@ -223,7 +238,10 @@ async fn follower_rejects_delete() {
 
 /// gRPC DocumentService rejects writes to a bucket whose home is
 /// elsewhere, even on a leader node. Mirrors the REST 421 behaviour.
-#[tokio::test]
+// Multi-thread runtime: TextIndex's write path uses
+// tokio::task::block_in_place (see crates/nebula-index/src/lib.rs:410)
+// which panics on the default single-threaded runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn grpc_rejects_wrong_home_region_upsert() {
     let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
     let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());

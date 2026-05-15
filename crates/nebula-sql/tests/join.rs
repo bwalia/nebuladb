@@ -41,7 +41,9 @@ async fn engine() -> SqlEngine {
     SqlEngine::new(index)
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inner_join_on_metadata_column() {
     let eng = engine().await;
     let out = eng
@@ -76,7 +78,9 @@ async fn inner_join_on_metadata_column() {
     assert_eq!(totals, sorted);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn join_with_residual_filter_per_side() {
     let eng = engine().await;
     // Restrict to EU only on the left side; the join still constrains
@@ -94,7 +98,9 @@ async fn join_with_residual_filter_per_side() {
     assert_eq!(out.rows.len(), 4);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_outer_join() {
     let eng = engine().await;
     let err = eng
@@ -107,7 +113,9 @@ async fn rejects_outer_join() {
     assert!(err.to_string().contains("INNER JOIN"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_unqualified_where() {
     let eng = engine().await;
     let err = eng
@@ -121,7 +129,9 @@ async fn rejects_unqualified_where() {
     assert!(err.to_string().contains("qualify columns"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_multi_way_join() {
     let eng = engine().await;
     let err = eng

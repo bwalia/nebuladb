@@ -284,7 +284,10 @@ mod tests {
         assert!(epoch_is_fresh(&index, "any", 0));
     }
 
-    #[tokio::test]
+    // Multi-thread runtime: TextIndex::upsert_text uses
+    // tokio::task::block_in_place (see crates/nebula-index/src/lib.rs:410)
+    // which panics on the default single-threaded test runtime.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn epoch_check_rejects_older_incoming() {
         let index = idx();
         index
@@ -301,7 +304,7 @@ mod tests {
         assert!(!epoch_is_fresh(&index, "b", 4));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn owned_buckets_reflect_local_home_region() {
         let index = idx();
         // Two buckets: one homed here, one elsewhere.

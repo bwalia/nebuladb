@@ -15,7 +15,12 @@ fn embedder() -> Arc<dyn Embedder> {
     Arc::new(MockEmbedder::new(8))
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex::upsert_text uses
+// `tokio::task::block_in_place` (see crates/nebula-index/src/lib.rs:410)
+// which panics on the default single-threaded test runtime. The
+// production server explicitly builds a multi-thread runtime in
+// main.rs; these tests must match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backup_then_restore_round_trip() {
     // Source cluster: persistent index with two buckets and a few docs.
     let src_dir = tempdir().unwrap();
@@ -113,7 +118,12 @@ async fn backup_then_restore_round_trip() {
 
 /// Restore must refuse a target whose embedder doesn't match the
 /// manifest — silent acceptance would corrupt similarity scores.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex::upsert_text uses
+// `tokio::task::block_in_place` (see crates/nebula-index/src/lib.rs:410)
+// which panics on the default single-threaded test runtime. The
+// production server explicitly builds a multi-thread runtime in
+// main.rs; these tests must match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restore_rejects_embedder_mismatch() {
     let src_dir = tempdir().unwrap();
     let src = Arc::new(
@@ -164,7 +174,12 @@ async fn restore_rejects_embedder_mismatch() {
 }
 
 /// Restore into a non-empty data dir is rejected up front.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex::upsert_text uses
+// `tokio::task::block_in_place` (see crates/nebula-index/src/lib.rs:410)
+// which panics on the default single-threaded test runtime. The
+// production server explicitly builds a multi-thread runtime in
+// main.rs; these tests must match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restore_refuses_non_empty_data_dir() {
     let src_dir = tempdir().unwrap();
     let src = Arc::new(

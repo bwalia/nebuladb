@@ -66,7 +66,9 @@ async fn channel(addr: SocketAddr) -> Channel {
 
 /// Persist a leader, subscribe a fresh follower at BEGIN, write to
 /// the leader, verify the follower mirrors state.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn follower_mirrors_leader_writes() {
     let leader_dir = tempdir().unwrap();
     let leader = Arc::new(
@@ -151,7 +153,9 @@ async fn follower_mirrors_leader_writes() {
 /// Single-shot `run_once` path used by follower.rs internals. This
 /// test avoids the spawn-and-loop complexity and asserts the API
 /// surface that tests / tools will call directly.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_once_applies_pending_records_and_returns_cursor() {
     let leader_dir = tempdir().unwrap();
     let leader = Arc::new(
@@ -204,7 +208,9 @@ async fn run_once_applies_pending_records_and_returns_cursor() {
 /// The cursor store is updated after each applied record and
 /// points past the last one when the stream ends. Uses the
 /// in-memory store so the test can inspect what got saved.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cursor_store_advances_after_apply() {
     let leader_dir = tempdir().unwrap();
     let leader = Arc::new(
@@ -285,7 +291,9 @@ fn file_cursor_store_round_trips() {
 /// store, capture its saved cursor, spin up a *new* follower with
 /// the same store path, verify it resumes at that cursor rather
 /// than BEGIN.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn file_store_resumes_across_restart() {
     let leader_dir = tempdir().unwrap();
     let follower_meta = tempdir().unwrap();
@@ -377,7 +385,9 @@ async fn file_store_resumes_across_restart() {
 
 /// In-memory leader should refuse follower subscriptions with
 /// FAILED_PRECONDITION — no WAL means nothing to replicate.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_memory_leader_rejects_followers() {
     let leader = Arc::new(
         TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
@@ -421,7 +431,9 @@ async fn spawn_leader_with_region(
 
 /// Cross-region subscriber receives entries tagged with source region
 /// and the bucket name. The caller's own buckets are filtered out.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cross_region_stream_filters_caller_buckets() {
     use nebula_grpc::pb::{
         cross_region_replication_service_client::CrossRegionReplicationServiceClient,
@@ -485,7 +497,9 @@ async fn cross_region_stream_filters_caller_buckets() {
 
 /// Full cross-region round trip: spawn source + consumer task, write
 /// on the source, assert the consumer applied it locally.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cross_region_consumer_mirrors_source_writes() {
     use nebula_grpc::cross_region::{OwnedBuckets, RemotePeer, StatusSink};
     use std::collections::HashSet;
@@ -586,7 +600,9 @@ async fn cross_region_consumer_mirrors_source_writes() {
 }
 
 /// In-memory nodes can't replicate; the service must refuse politely.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cross_region_refuses_in_memory_leader() {
     use nebula_grpc::pb::{
         cross_region_replication_service_client::CrossRegionReplicationServiceClient,
