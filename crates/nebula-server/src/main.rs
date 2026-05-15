@@ -966,12 +966,16 @@ fn dump_forensics_to_stderr() {
     }
 
     // (2) gdb thread apply all bt — gives user-space Rust frames.
-    // 5s timeout: gdb attach can hang if ptrace is unavailable, and
-    // we'd rather abort cleanly than block here forever.
+    // 30s timeout: prior 5s budget timed out after gdb finished
+    // enumerating threads but before it could walk any stack
+    // (observed in wedge at 2026-05-15T20:09:39Z, exit status 124).
+    // 30s comfortably covers a 17-thread backtrace at 12 frames each
+    // even on a slow box; if gdb genuinely can't attach the call
+    // returns much faster than that, so the budget is mostly slack.
     let pid = std::process::id().to_string();
     let gdb = std::process::Command::new("timeout")
         .args([
-            "5",
+            "30",
             "gdb",
             "-batch",
             "-nx",
@@ -980,7 +984,13 @@ fn dump_forensics_to_stderr() {
             "-ex",
             "set pagination off",
             "-ex",
-            "thread apply all bt 30",
+            "set print thread-events off",
+            // Shorter per-thread bt (12 vs 30) so the total dump
+            // fits in the timeout. The top 12 frames are enough
+            // to identify the call path on every stack we care
+            // about (axum/tokio/hyper paths cap out well below 12).
+            "-ex",
+            "thread apply all bt 12",
             "-ex",
             "detach",
             "-ex",
