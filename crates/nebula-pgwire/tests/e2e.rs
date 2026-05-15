@@ -56,7 +56,9 @@ async fn connect(addr: std::net::SocketAddr) -> tokio_postgres::Client {
     client
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simple_select_returns_rows() {
     // `tokio-postgres::query` uses the *extended* protocol (Parse /
     // Bind / Execute). Our server speaks simple-query only — which is
@@ -87,7 +89,9 @@ async fn simple_select_returns_rows() {
     }
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn psql_style_set_statements_are_noop() {
     // `tokio-postgres` sends `SET client_encoding TO 'UTF8'` during
     // startup param negotiation in some configurations. Our server
@@ -104,7 +108,9 @@ async fn psql_style_set_statements_are_noop() {
         .expect("SHOW should succeed");
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn parse_error_surfaces_as_sqlstate() {
     let (addr, _handle) = boot_server().await;
     let client = connect(addr).await;
@@ -118,7 +124,9 @@ async fn parse_error_surfaces_as_sqlstate() {
     assert_eq!(db_err.code().code(), "42601", "got {}", db_err.code().code());
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn aggregate_query_runs_over_pgwire() {
     let (addr, _handle) = boot_server().await;
     let client = connect(addr).await;
@@ -165,7 +173,9 @@ async fn boot_follower() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) 
     (addr, handle)
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn follower_rejects_insert() {
     let (addr, _handle) = boot_follower().await;
     let client = connect(addr).await;
@@ -185,7 +195,9 @@ async fn follower_rejects_insert() {
 }
 
 /// A region-configured pgwire server refuses DML. Reads still work.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn region_configured_pgwire_refuses_writes() {
     let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
     let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
@@ -232,7 +244,9 @@ async fn region_configured_pgwire_refuses_writes() {
     handle.abort();
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn follower_allows_select() {
     let (addr, _handle) = boot_follower().await;
     let client = connect(addr).await;

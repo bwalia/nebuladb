@@ -21,7 +21,9 @@ async fn engine_with_docs(docs: &[(&str, &str, serde_json::Value)]) -> SqlEngine
     SqlEngine::new(index)
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn count_star_groups_by_region() {
     let eng = engine_with_docs(&[
         ("1", "widgets", serde_json::json!({"region": "eu"})),
@@ -46,7 +48,9 @@ async fn count_star_groups_by_region() {
     assert_eq!(out.rows[1].fields["n"], 1);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sum_and_avg_work_with_default_alias() {
     let eng = engine_with_docs(&[
         ("1", "x", serde_json::json!({"region": "eu", "v": 10})),
@@ -70,7 +74,9 @@ async fn sum_and_avg_work_with_default_alias() {
     assert_eq!(out.rows[1].fields["sum_v"], 5.0);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn min_max_on_strings() {
     let eng = engine_with_docs(&[
         ("1", "x", serde_json::json!({"region": "eu", "name": "beta"})),
@@ -90,7 +96,9 @@ async fn min_max_on_strings() {
     assert_eq!(out.rows[0].fields["last"], "gamma");
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn projection_must_be_in_group_by_or_aggregated() {
     let eng = engine_with_docs(&[("1", "x", serde_json::json!({"region": "eu"}))]).await;
     // `name` is neither grouped nor aggregated.
@@ -105,7 +113,9 @@ async fn projection_must_be_in_group_by_or_aggregated() {
     assert!(msg.contains("must be in GROUP BY") || msg.contains("aggregated"), "{msg}");
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_select_star_with_group_by() {
     let eng = engine_with_docs(&[("1", "x", serde_json::json!({"region": "eu"}))]).await;
     let err = eng
@@ -117,7 +127,9 @@ async fn rejects_select_star_with_group_by() {
     assert!(err.to_string().contains("SELECT *"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn order_by_must_reference_known_key() {
     let eng = engine_with_docs(&[("1", "x", serde_json::json!({"region": "eu"}))]).await;
     let err = eng

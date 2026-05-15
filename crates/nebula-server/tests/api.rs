@@ -38,7 +38,9 @@ async fn body_string(body: Body) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn healthz_is_public() {
     let app = build_router(app_state(&["secret"]));
     let res = app
@@ -54,7 +56,9 @@ async fn healthz_is_public() {
     assert!(body.contains(&expected), "body missing version: {body}");
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn healthz_live_is_public_and_minimal() {
     // /healthz/live is the docker liveness probe. It MUST stay
     // dependency-free: no auth, no AppState access. The boot stub
@@ -71,7 +75,9 @@ async fn healthz_live_is_public_and_minimal() {
     assert_eq!(body, "alive");
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_version_reports_build_identity() {
     let app = build_router(app_state(&[]));
     let res = app
@@ -88,7 +94,9 @@ async fn admin_version_reports_build_identity() {
     assert!(body.contains("\"arch\""));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn api_requires_auth_when_keys_configured() {
     let app = build_router(app_state(&["secret"]));
     let res = app
@@ -103,7 +111,9 @@ async fn api_requires_auth_when_keys_configured() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn api_accepts_valid_token() {
     let app = build_router(app_state(&["secret"]));
     let res = app
@@ -121,7 +131,9 @@ async fn api_accepts_valid_token() {
     assert_eq!(res.status(), StatusCode::OK);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upsert_get_search_delete_roundtrip() {
     let state = app_state(&[]);
     let app = build_router(state.clone());
@@ -205,7 +217,9 @@ async fn upsert_get_search_delete_roundtrip() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rag_non_stream_returns_json() {
     let app = build_router(app_state(&[]));
 
@@ -236,7 +250,9 @@ async fn rag_non_stream_returns_json() {
     assert!(body.contains("\"context\""));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rag_stream_emits_sse_events() {
     let app = build_router(app_state(&[]));
 
@@ -275,7 +291,9 @@ async fn rag_stream_emits_sse_events() {
     assert!(text.contains("event: done"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_exposes_counters() {
     let app = build_router(app_state(&[]));
     let _ = app
@@ -299,7 +317,9 @@ async fn metrics_exposes_counters() {
     assert!(body.contains("nebula_requests_total"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bad_top_k_returns_400() {
     let app = build_router(app_state(&[]));
     let res = app
@@ -314,7 +334,9 @@ async fn bad_top_k_returns_400() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upsert_document_creates_multiple_chunks() {
     let app = build_router(app_state(&[]));
     let res = app
@@ -351,7 +373,9 @@ async fn upsert_document_creates_multiple_chunks() {
     assert!(body.contains("d1#0"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_document_removes_all_chunks() {
     // Use a tiny chunker so one payload produces multiple chunks.
     use std::sync::Arc;
@@ -387,7 +411,9 @@ async fn delete_document_removes_all_chunks() {
     assert!(body.contains("\"chunks_removed\":2"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rag_stream_forwards_llm_deltas() {
     // MockLlm produces "Answer: <echoed user prompt>" split on spaces.
     // We assert that multiple answer_delta events arrive and that the
@@ -429,7 +455,9 @@ async fn rag_stream_forwards_llm_deltas() {
     assert!(text.contains("event: done"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_exposes_cache_counters_when_wired() {
     use std::sync::Arc;
 
@@ -472,7 +500,9 @@ async fn metrics_exposes_cache_counters_when_wired() {
     assert!(body.contains("nebula_embed_cache_inserts 1"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn metrics_omits_cache_lines_when_not_wired() {
     // Default `AppState::new` doesn't register cache stats. The
     // metrics endpoint must NOT render zeroed cache counters — that
@@ -487,7 +517,9 @@ async fn metrics_omits_cache_lines_when_not_wired() {
     assert!(!body.contains("nebula_embed_cache_hits"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rate_limiter_returns_429_after_burst() {
     // Capacity 3, refill 0.1/s → we burn the burst then get rejected.
     // Refill is slow enough that the fourth request lands while the
@@ -538,7 +570,9 @@ async fn rate_limiter_returns_429_after_burst() {
     assert!(!retry.is_empty(), "missing retry-after header");
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn jwt_accepts_valid_and_rejects_invalid() {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -630,7 +664,9 @@ async fn jwt_accepts_valid_and_rejects_invalid() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn allowlist_and_jwt_coexist() {
     // Both auth schemes enabled. Either should succeed.
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -689,7 +725,9 @@ async fn allowlist_and_jwt_coexist() {
     }
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bulk_upsert_inserts_many_in_one_call() {
     let app = build_router(app_state(&[]));
     // 50 items in one request — well under the 1000 cap.
@@ -724,7 +762,9 @@ async fn bulk_upsert_inserts_many_in_one_call() {
     assert_eq!(res.status(), StatusCode::OK);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bulk_upsert_rejects_empty_or_oversize() {
     let app = build_router(app_state(&[]));
     // Empty items array.
@@ -753,7 +793,9 @@ async fn bulk_upsert_rejects_empty_or_oversize() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_durability_reports_in_memory_status() {
     // Default app_state creates an in-memory TextIndex. Verify the
     // durability endpoint reports that honestly, and that snapshot
@@ -780,7 +822,9 @@ async fn admin_durability_reports_in_memory_status() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_stats_returns_json_snapshot() {
     let app = build_router(app_state(&[]));
     // Insert one doc + run one semantic search so a couple counters move.
@@ -818,7 +862,9 @@ async fn admin_stats_returns_json_snapshot() {
     assert!(body.contains("\"total_docs_live\":1"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_empty_bucket_drops_docs_only_in_target() {
     let app = build_router(app_state(&[]));
     for (b, i) in [("a", "1"), ("a", "2"), ("b", "1")] {
@@ -858,7 +904,9 @@ async fn admin_empty_bucket_drops_docs_only_in_target() {
     assert_eq!(res.status(), StatusCode::OK);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_buckets_reports_per_bucket_stats() {
     let app = build_router(app_state(&[]));
     for (bucket, id, region) in [("a", "1", "eu"), ("a", "2", "us"), ("b", "1", "eu")] {
@@ -887,7 +935,9 @@ async fn admin_buckets_reports_per_bucket_stats() {
     assert!(body.contains("\"region\""));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_explain_returns_typed_plan() {
     let app = build_router(app_state(&[]));
     let res = app
@@ -908,7 +958,9 @@ async fn sql_explain_returns_typed_plan() {
     assert!(body.contains("\"limit\":5"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_audit_records_writes_not_reads() {
     let app = build_router(app_state(&[]));
     // One write and one read.
@@ -952,7 +1004,9 @@ async fn admin_audit_records_writes_not_reads() {
     assert!(body.contains("\"status\":200"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_slow_records_slow_sql_queries() {
     // Force-install a slow log with a 0ms threshold so even a fast
     // MockEmbedder query gets captured — the default 10ms threshold
@@ -1001,7 +1055,9 @@ async fn admin_slow_records_slow_sql_queries() {
     assert!(body.contains("\"ok\":true"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_query_runs_semantic_match() {
     let state = app_state(&[]);
     let app = build_router(state);
@@ -1045,7 +1101,9 @@ async fn sql_query_runs_semantic_match() {
     assert!(!body.contains("\"region\":\"us\""));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_parse_error_returns_400() {
     let app = build_router(app_state(&[]));
     let res = app
@@ -1062,7 +1120,9 @@ async fn sql_parse_error_returns_400() {
     assert!(body.contains("sql_parse"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_missing_semantic_clause_returns_400() {
     let app = build_router(app_state(&[]));
     let res = app
@@ -1081,7 +1141,9 @@ async fn sql_missing_semantic_clause_returns_400() {
     assert!(body.contains("sql_invalid"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn vector_dim_mismatch_returns_400() {
     let app = build_router(app_state(&[]));
     let res = app
@@ -1129,7 +1191,9 @@ fn app_state_with_role(role: NodeRole) -> AppState {
     state
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn follower_rejects_writes_with_409() {
     let app = build_router(app_state_with_role(NodeRole::Follower));
     // Writes should 409 regardless of payload validity — the guard
@@ -1151,7 +1215,9 @@ async fn follower_rejects_writes_with_409() {
     );
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn follower_still_accepts_reads() {
     let app = build_router(app_state_with_role(NodeRole::Follower));
     // GET /healthz: always public, always 200.
@@ -1178,7 +1244,9 @@ async fn follower_still_accepts_reads() {
     );
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn follower_accepts_sql_query_despite_post() {
     // POST /api/v1/query is the SQL endpoint. The engine is SELECT-
     // only, so although the method is POST it's a read in disguise.
@@ -1206,7 +1274,9 @@ async fn follower_accepts_sql_query_despite_post() {
     );
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn standalone_accepts_writes_as_before() {
     let app = build_router(app_state_with_role(NodeRole::Standalone));
     let res = app
@@ -1222,7 +1292,9 @@ async fn standalone_accepts_writes_as_before() {
     assert_ne!(res.status(), StatusCode::CONFLICT);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_cluster_nodes_shape() {
     let app = build_router(app_state_with_role(NodeRole::Leader));
     let res = app
@@ -1242,7 +1314,9 @@ async fn admin_cluster_nodes_shape() {
     assert!(body.contains("\"peers\":[]"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_logs_stream_delivers_snapshot() {
     // Seed the ring buffer directly via the bus, then hit the SSE
     // endpoint with replay=true. We only need to read the first
@@ -1310,7 +1384,9 @@ async fn admin_logs_stream_delivers_snapshot() {
     assert!(accum.contains("snapshot_done"), "snapshot_done marker missing");
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_logs_stream_level_filter() {
     use nebula_server::{LogBus, LogEvent, LogLevel};
     use std::sync::Arc;
@@ -1365,7 +1441,9 @@ async fn admin_logs_stream_level_filter() {
     );
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_replication_handles_standalone() {
     // A standalone node has no WAL and no follower cursor. The
     // endpoint must still return 200 with all the optional fields
@@ -1387,7 +1465,9 @@ async fn admin_replication_handles_standalone() {
     assert!(body.contains("\"leader_newest_probed\":null"));
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_replication_reports_cursors() {
     // Follower with a known applied cursor; leader_newest is None
     // because no persistent index is wired in this standalone test.
@@ -1422,7 +1502,9 @@ async fn admin_replication_reports_cursors() {
 /// status endpoint reports completion. Source-of-truth test for the
 /// REST surface that the operator's CronJob will hit in production —
 /// the only thing not exercised vs S3 is the wire format.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_backup_round_trip_via_local_target() {
     use nebula_index::TextIndex;
     use nebula_vector::{HnswConfig, Metric};
@@ -1514,7 +1596,9 @@ async fn admin_backup_round_trip_via_local_target() {
 /// index, imports the export, and asserts the second index can serve
 /// identical reads. This is the shape the operator's rebalance
 /// coordinator drives across pods during a swap rebalance.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bucket_export_import_roundtrip() {
     // Source index — populate via the normal upsert path so the
     // HNSW, WAL-apply, and metadata code paths all get exercised.
@@ -1615,7 +1699,9 @@ async fn bucket_export_import_roundtrip() {
 /// REST wrong-home-region guard: writes to a bucket whose home is
 /// elsewhere return 421 with the expected region in the body. Reads
 /// are allowed anywhere.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rest_wrong_home_region_rejects_cross_region_writes() {
     use nebula_server::ClusterConfig;
     let state = {
@@ -1685,7 +1771,9 @@ async fn rest_wrong_home_region_rejects_cross_region_writes() {
 }
 
 /// When this node IS the home region, writes go through normally.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rest_wrong_home_region_allows_home_writes() {
     use nebula_server::ClusterConfig;
     let state = {
@@ -1733,7 +1821,9 @@ async fn rest_wrong_home_region_allows_home_writes() {
 /// cross-region status hub has entries. Phase 2.2 populates the hub
 /// from a real consumer task; here we populate it manually to lock
 /// in the wire shape.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_replication_includes_cross_region_remotes() {
     use nebula_server::ClusterConfig;
     let state = {
@@ -1767,7 +1857,9 @@ async fn admin_replication_includes_cross_region_remotes() {
 
 /// home-region endpoint reports `has_home: false` when no seed doc
 /// is present, letting clients fall back gracefully.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn home_region_reports_absence_when_unconfigured() {
     let app = build_router(app_state(&[]));
     let res = app
@@ -1789,7 +1881,9 @@ async fn home_region_reports_absence_when_unconfigured() {
 /// With a seed doc carrying home_region metadata, the endpoint
 /// round-trips the stored values. This is the contract the operator's
 /// failover controller depends on.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn home_region_round_trips_seed_doc() {
     let state = app_state(&[]);
     let app = build_router(state);
@@ -1837,7 +1931,9 @@ async fn home_region_round_trips_seed_doc() {
 /// Dim-mismatch guard: a client sending vectors of the wrong length
 /// should be rejected before any WAL append so the bucket never
 /// ends up partially imported.
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bucket_import_rejects_wrong_dim() {
     let state = app_state(&[]);
     let app = build_router(state);

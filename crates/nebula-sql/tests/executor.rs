@@ -22,7 +22,9 @@ async fn engine_with_docs(docs: &[(&str, &str, serde_json::Value)]) -> SqlEngine
     SqlEngine::new(index)
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn select_star_returns_rows_with_text() {
     let eng = engine_with_docs(&[
         ("1", "zero trust networking", serde_json::json!({"region": "eu"})),
@@ -41,7 +43,9 @@ async fn select_star_returns_rows_with_text() {
     assert!(!text.is_empty());
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn residual_filter_drops_non_matching_region() {
     let eng = engine_with_docs(&[
         ("1", "zero trust", serde_json::json!({"region": "eu"})),
@@ -63,7 +67,9 @@ async fn residual_filter_drops_non_matching_region() {
     }
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_list_filter_accepts_multiple_values() {
     let eng = engine_with_docs(&[
         ("1", "x", serde_json::json!({"region": "eu"})),
@@ -85,7 +91,9 @@ async fn in_list_filter_accepts_multiple_values() {
     }
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn projection_includes_virtual_columns() {
     let eng = engine_with_docs(&[(
         "1",
@@ -108,7 +116,9 @@ async fn projection_includes_virtual_columns() {
     assert_eq!(row.fields["nested.k"], 7);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn limit_truncates_after_filter() {
     let docs: Vec<(&str, &str, serde_json::Value)> = (0..20)
         .map(|i| -> (&str, &str, serde_json::Value) {
@@ -130,7 +140,9 @@ async fn limit_truncates_after_filter() {
     assert_eq!(out.rows.len(), 3);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn order_by_metadata_sorts() {
     let eng = engine_with_docs(&[
         ("1", "x", serde_json::json!({"region": "c"})),
@@ -154,7 +166,9 @@ async fn order_by_metadata_sorts() {
     assert_eq!(regions, vec!["a", "b", "c"]);
 }
 
-#[tokio::test]
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cache_returns_same_result_across_calls() {
     use nebula_sql::{cache::SemanticCacheConfig, SemanticCache};
 
