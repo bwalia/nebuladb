@@ -18,3 +18,5 @@ bytes.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+axum = { workspace = true }
+tokio-stream = { workspace = true }

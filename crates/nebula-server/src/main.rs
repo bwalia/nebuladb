@@ -349,6 +349,22 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     // LLM selection is driven by env so one binary covers all
     // backends. Precedence: explicit OpenAI key > Ollama base URL >
     // mock default.
+    // Streaming-body discipline: `timeout` is the connect timeout
+    // only; `read_timeout` is byte-idle (60s without a token ⇒ fail
+    // fast). The whole-response timeout that `reqwest::Client::timeout`
+    // sets is intentionally absent — it would silently abort a long
+    // generation mid-stream. Operators tune via env if needed.
+    let llm_connect_secs: u64 = std::env::var("NEBULA_LLM_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    let llm_read_secs: Option<u64> = std::env::var("NEBULA_LLM_READ_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .or(Some(60));
+    let connect_timeout = Duration::from_secs(llm_connect_secs);
+    let read_timeout = llm_read_secs.map(Duration::from_secs);
+
     let llm: Arc<dyn LlmClient> = if let Ok(key) = std::env::var("NEBULA_LLM_OPENAI_KEY") {
         let base = std::env::var("NEBULA_LLM_OPENAI_BASE")
             .unwrap_or_else(|_| "https://api.openai.com/v1".into());
@@ -357,7 +373,8 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             base_url: base,
             api_key: Some(key),
             model,
-            timeout: Duration::from_secs(120),
+            timeout: connect_timeout,
+            read_timeout,
         };
         Arc::new(OpenAiChatLlm::new(cfg)?)
     } else if let Ok(base) = std::env::var("NEBULA_LLM_OLLAMA_URL") {
@@ -365,7 +382,8 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         let cfg = OllamaConfig {
             base_url: base,
             model,
-            timeout: Duration::from_secs(120),
+            timeout: connect_timeout,
+            read_timeout,
         };
         Arc::new(OllamaLlm::new(cfg)?)
     } else {
@@ -931,7 +949,11 @@ fn spawn_runtime_watchdog() {
 ///    silently fails and we still get the /proc dump above.
 fn dump_forensics_to_stderr() {
     eprintln!("[WATCHDOG-DUMP] ==================== begin ====================");
-    eprintln!("[WATCHDOG-DUMP] pid={} time={:?}", std::process::id(), std::time::SystemTime::now());
+    eprintln!(
+        "[WATCHDOG-DUMP] pid={} time={:?}",
+        std::process::id(),
+        std::time::SystemTime::now()
+    );
 
     // (1) /proc/self/task/* — works without root for own threads.
     if let Ok(entries) = std::fs::read_dir("/proc/self/task") {
@@ -1004,10 +1026,16 @@ fn dump_forensics_to_stderr() {
             eprintln!("[WATCHDOG-DUMP] gdb completed");
         }
         Ok(s) => {
-            eprintln!("[WATCHDOG-DUMP] gdb exited {} (likely missing or ptrace denied)", s);
+            eprintln!(
+                "[WATCHDOG-DUMP] gdb exited {} (likely missing or ptrace denied)",
+                s
+            );
         }
         Err(e) => {
-            eprintln!("[WATCHDOG-DUMP] gdb spawn failed: {} — install `gdb` + cap_add SYS_PTRACE", e);
+            eprintln!(
+                "[WATCHDOG-DUMP] gdb spawn failed: {} — install `gdb` + cap_add SYS_PTRACE",
+                e
+            );
         }
     }
     eprintln!("[WATCHDOG-DUMP] ===================== end =====================");

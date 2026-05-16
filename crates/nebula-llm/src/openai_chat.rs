@@ -29,7 +29,12 @@ pub struct OpenAiChatConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
+    /// **Connect** timeout for the initial TCP/TLS handshake. Does
+    /// NOT cap the streaming body — see `read_timeout`. Same fix as
+    /// in `OllamaConfig`; rationale documented there.
     pub timeout: Duration,
+    /// Idle-byte timeout during streaming. `None` disables.
+    pub read_timeout: Option<Duration>,
 }
 
 impl OpenAiChatConfig {
@@ -38,7 +43,11 @@ impl OpenAiChatConfig {
             base_url: "https://api.openai.com/v1".into(),
             api_key: Some(api_key.into()),
             model: model.into(),
-            timeout: Duration::from_secs(120),
+            // 10s for connect to api.openai.com is plenty.
+            timeout: Duration::from_secs(10),
+            // 60s without a token from OpenAI ⇒ something's wrong;
+            // surface it instead of pretending the request is fine.
+            read_timeout: Some(Duration::from_secs(60)),
         }
     }
 }
@@ -59,10 +68,17 @@ impl OpenAiChatLlm {
                 .map_err(|e| LlmError::Decode(format!("invalid api key: {e}")))?;
             headers.insert(AUTHORIZATION, v);
         }
-        let http = reqwest::Client::builder()
+        // Critical: do NOT set `.timeout(config.timeout)` — see the
+        // matching comment in `nebula-llm::ollama::OllamaLlm::new`.
+        // The `reqwest::ClientBuilder::timeout` applies to the whole
+        // response body, which truncates streaming chat completions.
+        let mut builder = reqwest::Client::builder()
             .default_headers(headers)
-            .timeout(config.timeout)
-            .build()?;
+            .connect_timeout(config.timeout);
+        if let Some(rt) = config.read_timeout {
+            builder = builder.read_timeout(rt);
+        }
+        let http = builder.build()?;
         let model_label = format!("openai/{}", config.model);
         Ok(Self {
             http,
@@ -108,10 +124,7 @@ impl LlmClient for OpenAiChatLlm {
         &self.model_label
     }
 
-    async fn generate(
-        &self,
-        prompt: Prompt,
-    ) -> Result<BoxStream<'static, Result<LlmChunk>>> {
+    async fn generate(&self, prompt: Prompt) -> Result<BoxStream<'static, Result<LlmChunk>>> {
         if prompt.user.trim().is_empty() {
             return Err(LlmError::Empty);
         }
