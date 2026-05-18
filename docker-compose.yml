@@ -120,12 +120,20 @@ services:
     volumes:
       - redis-data:/data
     # `allkeys-lru` so memory pressure silently evicts the oldest
-    # embeddings rather than OOM-killing. 256mb is a sane dev cap;
-    # a 1536-dim f32 vector is 6 KB, so that's ~40k entries.
+    # embeddings rather than OOM-killing. The cap is split in two:
+    #   --maxmemory 384mb: the redis-internal eviction trigger
+    #   memory: 512m       : the cgroup-level hard limit
+    # We need ~25% headroom between them because redis evicts in
+    # batches and can briefly overshoot --maxmemory during heavy
+    # writes. With 256m / 320m on 192.168.1.193 the gap closed,
+    # eviction churn pegged CPU, and `mget` calls exceeded the
+    # client's 150ms NEBULA_REDIS_TIMEOUT_MS — surfacing as the
+    # `redis mget timed out` warns in nebula-server. Bumping to
+    # 384/512 gives eviction breathing room without losing the cap.
     command:
       - "redis-server"
       - "--maxmemory"
-      - "256mb"
+      - "384mb"
       - "--maxmemory-policy"
       - "allkeys-lru"
       - "--appendonly"
@@ -139,7 +147,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: 320m
+          memory: 512m
 
   # ---------------------------------------------------------------------------
   # The main Rust binary. One image, three ports (REST / gRPC / pgwire).
@@ -223,7 +231,16 @@ services:
       NEBULA_REDIS_URL: "redis://redis:6379"
       NEBULA_REDIS_PREFIX: "nebula:embed:"
       NEBULA_REDIS_TTL_SECS: "0"
-      NEBULA_REDIS_TIMEOUT_MS: "150"
+      # Client-side timeout per redis op. 500ms (was 150ms) — 150
+      # was too aggressive on a stack where redis can blip during
+      # eviction churn or a brief network hiccup, and every blip
+      # surfaced as `redis mget timed out; passing through` in the
+      # logs. Cache-miss-on-timeout is the right failure mode (the
+      # embedder still works), but not at the rate the old setting
+      # produced. The redis-side eviction headroom (384m/512m above)
+      # already removes the eviction-churn cause; this is the
+      # belt-and-braces ceiling.
+      NEBULA_REDIS_TIMEOUT_MS: "500"
 
       NEBULA_CHUNK_CHARS: "500"
       NEBULA_CHUNK_OVERLAP: "50"
@@ -383,7 +400,18 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          memory: 512m
+          # 2g, not 512m: the follower runs the same WAL-replay-on-boot
+          # path as the leader. Once the replicated dataset grows past
+          # a few hundred docs, boot recovery deserializes the snapshot
+          # + materializes the structured copy + builds the live index,
+          # peaking at roughly 3x the on-disk snapshot size. 512m
+          # got SIGKILL'd by the cgroup OOM killer on every restart
+          # once the dataset on 192.168.1.193 grew, leaving the follower
+          # in Restarting (137) permanently. Effect: showcase nginx
+          # round-robins to the dead follower upstream half the time
+          # and the user sees 502 / "no live upstreams". Sized with the
+          # same headroom logic as the leader (PR #25 + comment above).
+          memory: 2g
 
   # ---------------------------------------------------------------------------
   # Observability
