@@ -229,3 +229,52 @@ If we pursue Option C:
 3. **If measurement says Option B is required, accept the 2-3 week scope?** Snapshot format migration is the big-ticket item.
 
 I recommend (1) — a 1-day measurement + recommendation update — before any code. The next concrete step is a reproducible benchmark. Want me to write that script as a separate small PR?
+
+---
+
+## 9. Measurement results (2026-05-18)
+
+The benchmark from §4.1 was implemented as `crates/nebula-index/tests/recovery_bench.rs`. Run on the author's laptop (Apple Silicon), `--release` build, MockEmbedder dim=384, snapshot taken at the halfway mark to model production "snapshot + WAL tail" recovery:
+
+| Records | Buckets | Recovery wall time | Throughput |
+|---|---|---|---|
+| 5,000 | 20 | 12.85s | **389 rec/sec** |
+| 20,000 | 50 | 62.93s | **318 rec/sec** |
+
+Throughput is stable in the 300-400 rec/sec range, mildly degrading as the HNSW graph grows. Extrapolating to the production sizes that matter:
+
+| Scenario | Records | Predicted recovery |
+|---|---|---|
+| Steady state (50 MiB WAL cap) | ~50k | **~2 min** |
+| One day without compaction | ~500k | ~25 min |
+| The 192.168.1.193 pathological case (3 GiB WAL) | ~3M | ~2.5 hours ← **matches observed** |
+
+### What this changes
+
+The "Option B is required" hypothesis from §3 was **wrong for the typical production case**. With snapshots running on schedule, recovery touches ~50k records, and 2 minutes is already fine. The pathological hours-long recovery on `192.168.1.193` was caused by the snapshot scheduler being disabled (Bug C in PR #63) — **not** by the replay loop being structurally too slow.
+
+### Updated recommendation
+
+**Do nothing structural.** The right defense is keeping the snapshot scheduler healthy:
+
+1. **Keep Bug C fixed** — `.env.deploy.example` already documents that `NEBULA_SNAPSHOT_INTERVAL_SECS=0` is obsolete. Reaffirmed by this measurement.
+2. **Add monitoring** for "WAL bytes since last snapshot" — if it exceeds, say, 200 MiB, page someone. The endpoint `/admin/durability` already reports this; a Prometheus alert would close the loop. **This is the cheapest meaningful work.**
+3. **Defer Options A/B/C indefinitely.** If a future operational incident produces another multi-GB unsnapshotted WAL, the watchdog + healthcheck-grace from PR #63 prevents the kill-loop, and recovery still finishes — just slowly. Slow-but-correct is acceptable for an incident-response edge case.
+
+### Specifically rejected
+
+- **Option B (per-bucket HNSW), 2-3 weeks:** rejected. The investment doesn't earn its keep against a problem that mostly doesn't exist when the scheduler runs. Reopening the case requires either a real customer SLA on cold-recovery time or a measurement showing the steady-state path itself isn't fast enough.
+- **Option A (shard inner lock), 3-5 days:** rejected. Same reason — 2-3x of an already-fine 2 min is 40s. Not worth the regression risk of touching every apply site.
+- **Option C (batch apply), 1-2 days:** rejected. Smallest swing, but still touches the apply path and doesn't materially change the steady-state experience.
+
+### What the bench is for
+
+The bench file (`crates/nebula-index/tests/recovery_bench.rs`) stays in the tree as **a regression guard** rather than active investigation. If a future change to the apply path tanks throughput from 300+/sec to 30/sec, running the bench manually surfaces it before it ships. Run with:
+
+```bash
+cargo test --release -p nebula-index --test recovery_bench -- --ignored --nocapture
+```
+
+### What this ADR is now
+
+Closed-with-decision: **don't do this. Keep snapshots healthy. Watch WAL-since-snapshot in monitoring.** A Prometheus alert is the only follow-up worth tracking.
