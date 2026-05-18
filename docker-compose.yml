@@ -301,27 +301,41 @@ services:
       test: ["CMD-SHELL", "wget -q --timeout=2 --tries=1 -O /dev/null http://localhost:8080/healthz/live || exit 1"]
       interval: 10s
       timeout: 3s
-      retries: 10
-      # Recovery now runs *behind* a live HTTP listener, but keep a
-      # generous start_period anyway: it covers the build + initial
-      # boot before the boot stub is even up.
-      start_period: 60s
+      # 30 retries × 10s = 5 min of "post-start_period grace". On a
+      # host with a multi-GiB dataset, recovery competes with the
+      # in-container wget for CPU; under the pressure observed on
+      # 192.168.1.193 the healthcheck started failing AFTER
+      # start_period elapsed but BEFORE recovery finished. Docker
+      # then SIGTERMed a server that was making forward progress.
+      # Raised from 10 to 30 to absorb the slowest observed recovery
+      # (~13 min on a 4 GiB on-disk dataset).
+      retries: 30
+      # Recovery now runs *behind* a live HTTP listener, but
+      # start_period must cover the *full* expected recovery window
+      # for hosts with large datasets — not just the boot-stub hello.
+      # Was 60s; bumped to 600s (10 min). On hosts with a tiny dataset
+      # this is a no-op (healthcheck flips green within seconds);
+      # on the 192.168.1.193-style host with multi-GiB WAL it
+      # prevents docker from killing a recovering container mid-replay.
+      start_period: 600s
     deploy:
       resources:
         limits:
           cpus: "2.0"
-          # 8g, not 1g: cold-start recovery loads the latest snapshot
-          # via `load_latest_snapshot` → `bincode::deserialize` of the
-          # whole `HnswSnapshot` → `restore_from_snapshot`, which
-          # fully materializes the decompressed blob AND the structured
-          # copy AND the live index — roughly 3x the on-disk snapshot
-          # size in peak RAM. A 429 MB snapshot blew past the old 1g
-          # cap ~3s into recovery and the cgroup killed it on a loop
-          # (memory.events `max` counter, not a clean OOM-kill flag).
-          # This is a band-aid sized with headroom for snapshot
-          # growth; the real fix is streaming the *read* path the way
-          # PR #25 streamed the write path — see follow-up issue.
-          memory: 8g
+          # 16g, not 8g: 192.168.1.193 grew its dataset past what 8g
+          # can absorb during cold-recovery. The peak transient is
+          # roughly 3x the on-disk snapshot — load_latest_snapshot
+          # decompresses the whole `nsnap` (~GB), bincode-deserializes
+          # into the structured copy, and `restore_from_snapshot`
+          # materializes the live HNSW arena before the structured
+          # copy can be dropped. With a 4 GiB on-disk data dir we
+          # were peaking at ~87% of 8g during recovery, leaving the
+          # healthcheck no scheduling headroom and triggering a
+          # SIGTERM cycle. 16g gives recovery room to breathe.
+          # The real fix — streaming the snapshot READ path the same
+          # way PR #25 streamed the write path — is tracked in a
+          # follow-up; this is the band-aid until that ships.
+          memory: 16g
 
   # ---------------------------------------------------------------------------
   # Optional follower replica. Tails the leader's WAL over gRPC and
@@ -391,11 +405,14 @@ services:
     healthcheck:
       # Same /healthz/live split as the leader — the follower also
       # runs WAL recovery on boot, so the same kill-loop risk applies.
+      # Same retry/start_period sizing rationale as the leader: a
+      # multi-GiB recovery on a contended box can't finish inside a
+      # 60s grace + 100s of retries.
       test: ["CMD-SHELL", "wget -q --timeout=2 --tries=1 -O /dev/null http://localhost:8080/healthz/live || exit 1"]
       interval: 10s
       timeout: 3s
-      retries: 10
-      start_period: 60s
+      retries: 30
+      start_period: 600s
     deploy:
       resources:
         limits:
