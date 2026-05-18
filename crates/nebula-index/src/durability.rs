@@ -313,9 +313,22 @@ pub fn load_latest_snapshot(
     let header: SnapshotHeader = bincode::deserialize(&header_bytes)
         .map_err(|e| IndexError::Invalid(format!("snapshot header decode: {e}")))?;
 
-    let mut hnsw_bytes = Vec::new();
-    dec.read_to_end(&mut hnsw_bytes).map_err(io_to_index)?;
-    let hnsw: HnswSnapshot = bincode::deserialize(&hnsw_bytes)
+    // Stream-decode the HNSW body straight from the zstd decoder
+    // instead of slurping it into a Vec first. The previous
+    // `read_to_end` + `deserialize(&hnsw_bytes)` form held the
+    // *entire decompressed blob* in memory simultaneously with the
+    // deserialized `HnswSnapshot`, peaking at roughly 2x the
+    // decompressed size. On 192.168.1.193 with a 1.07 GiB on-disk
+    // snapshot this peak crossed the leader's 8 GiB cgroup cap and
+    // contributed to the cold-recovery kill loop addressed in
+    // PR #63's compose patch.
+    //
+    // `bincode::deserialize_from` consumes the reader incrementally
+    // — peak memory is now ~1x the deserialized struct size, no
+    // intermediate Vec. PR #25 applied the same discipline to the
+    // write path; this is the matching read-path fix the comment in
+    // docker-compose.yml has been promising.
+    let hnsw: HnswSnapshot = bincode::deserialize_from(&mut dec)
         .map_err(|e| IndexError::Invalid(format!("snapshot hnsw decode: {e}")))?;
 
     Ok(Some((header, hnsw)))
