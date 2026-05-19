@@ -101,10 +101,64 @@ jobs:
         # built locally in the next step.
         run: docker compose pull --ignore-buildable || true
 
-      - name: docker compose up -d --build
+      - name: docker compose up (recreate db nodes only when their binary changed)
+        # `docker compose up --build` recreates a container whenever its
+        # image ID changes. The image ID changes on ANY edit under
+        # `crates/` — including added tests/benches that are never compiled
+        # into the `nebula-server` binary — so docs/bench/test-only merges
+        # used to recreate the leader and restart its multi-HOUR WAL
+        # recovery from scratch (clients see 503 the whole time).
+        #
+        # Fix: compare the actual `nebula-server` binary baked into the
+        # running leader's image against the freshly built one. Only
+        # recreate the db nodes (leader + follower, which share the image
+        # and both pay the recovery cost) when that binary truly changed.
+        # Sidecars always converge. Defaults to RECREATE on any uncertainty.
         run: |
           set -euo pipefail
-          docker compose up -d --build --remove-orphans
+
+          # Image the leader currently runs on — captured BEFORE rebuild.
+          # A running container pins its image, so this ID stays resolvable
+          # even after the tag moves to the newly built image.
+          cur_img=$(docker inspect nebula-server --format '{{.Image}}' 2>/dev/null || echo "")
+
+          # Build images up front. This does not touch running containers.
+          docker compose build
+
+          new_img=$(docker image inspect nebuladb/server:dev --format '{{.Id}}' 2>/dev/null || echo "")
+
+          # sha256 of the server binary inside an image, computed in a
+          # throwaway container so the live (possibly recovering) leader is
+          # never disturbed. Empty on any failure.
+          bin_hash() {
+            [ -n "$1" ] || { echo ""; return; }
+            docker run --rm --entrypoint sha256sum "$1" \
+              /usr/local/bin/nebula-server 2>/dev/null | awk '{print $1}'
+          }
+
+          recreate_db=1
+          if [ -n "$cur_img" ] && [ -n "$new_img" ]; then
+            old_h=$(bin_hash "$cur_img")
+            new_h=$(bin_hash "$new_img")
+            if [ -n "$old_h" ] && [ "$old_h" = "$new_h" ]; then
+              recreate_db=0
+            fi
+            echo "leader binary: was=${old_h:-?} now=${new_h:-?} -> recreate_db=$recreate_db"
+          else
+            echo "no live leader image to compare (cur='$cur_img' new='$new_img') -> recreate_db=1"
+          fi
+
+          if [ "$recreate_db" = "1" ]; then
+            echo "== full converge (leader/follower WILL recreate) =="
+            docker compose up -d --build --remove-orphans
+          else
+            echo "== leader binary unchanged: converging sidecars, leaving db nodes running =="
+            sidecars=$(docker compose config --services | grep -vxE 'nebula-server|nebula-follower' || true)
+            # shellcheck disable=SC2086
+            docker compose up -d --build $sidecars
+            # Ensure db nodes exist, but never recreate a running one.
+            docker compose up -d --no-recreate nebula-server nebula-follower
+          fi
           docker compose ps
 
       - name: Wait for healthchecks
@@ -145,34 +199,59 @@ jobs:
           graf=${NEBULA_GRAFANA_HOST_PORT:-13000}
           prom=${NEBULA_PROMETHEUS_HOST_PORT:-19090}
 
-          # /healthz returns 503 while nebula-server is in WAL
-          # recovery (the boot stub serves /healthz/live=200 to keep
-          # docker's healthcheck happy, but /healthz only flips to
-          # 200 once the real index is loaded). At current snapshot
-          # size that's 2-4 minutes. The prior `Wait for healthchecks`
-          # step only polls docker's view (which uses /healthz/live)
-          # so it returns immediately — we need to wait here.
-          echo "== waiting for /healthz to flip past recovery =="
-          for i in $(seq 1 36); do  # 36 * 10s = 6 min cap
+          # nebula-server binds a boot listener immediately:
+          #   /healthz/live -> 200 the moment the process is up
+          #   /healthz      -> 503 {"status":"recovering",...} until
+          #                    WAL recovery + index load completes.
+          # Recovery of a large on-disk snapshot takes HOURS, not the
+          # 2-4 minutes this step used to assume. A 503 from /healthz
+          # while the process is live and reporting "recovering" is a
+          # SUCCESSFUL deploy that is warming up — failing the job (and
+          # thereby leaving operators to manually re-run, which only
+          # recreates the container and restarts recovery from scratch)
+          # is exactly the kill-loop we are trying to avoid. Only a dead
+          # or wedged process — /healthz/live not 200 — is a real failure.
+          #
+          #   /healthz=200                       -> fully ready, full smoke
+          #   /healthz=503 + /healthz/live=200   -> recovering, deploy OK
+          #   /healthz/live!=200                 -> dead/wedged, fail
+          echo "== probing nebula-server readiness (short window) =="
+          code=000; live=000; ready=0; recovering=0
+          for i in $(seq 1 18); do  # 18 * 10s = 3 min cap
             code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 \
               "http://${host}:${rest}/healthz" || echo "000")
             if [ "$code" = "200" ]; then
-              echo "  /healthz=200 after $((i * 10))s"
+              echo "  /healthz=200 after $((i * 10))s — fully ready"
+              ready=1
               break
             fi
-            if [ "$i" = "36" ]; then
-              echo "::error::/healthz still $code after 6min — recovery stuck or wedge"
-              docker compose logs --tail=80 nebula-server || true
-              exit 1
+            live=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 \
+              "http://${host}:${rest}/healthz/live" || echo "000")
+            if [ "$code" = "503" ] && [ "$live" = "200" ]; then
+              echo "  /healthz=503 but /healthz/live=200 — up and recovering"
+              recovering=1
+              break
             fi
-            echo "  /healthz=$code (try $i/36)"
+            echo "  /healthz=$code /healthz/live=$live (try $i/18)"
             sleep 10
           done
 
-          echo "== /healthz =="
-          curl -fsS "http://${host}:${rest}/healthz" && echo
-          echo "== /metrics (head) =="
-          curl -fsS "http://${host}:${rest}/metrics" | head -5
+          if [ "$ready" = "0" ] && [ "$recovering" = "0" ]; then
+            echo "::error::nebula-server not live after 3min — process dead or wedged (last /healthz=$code /healthz/live=$live)"
+            docker compose logs --tail=80 nebula-server || true
+            exit 1
+          fi
+
+          if [ "$ready" = "1" ]; then
+            echo "== /healthz =="
+            curl -fsS "http://${host}:${rest}/healthz" && echo
+            echo "== /metrics (head) =="
+            curl -fsS "http://${host}:${rest}/metrics" | head -5
+          else
+            echo "::notice::nebula-server is recovering — skipping readiness-gated REST checks (/healthz, /metrics). Recovery continues in the background and /healthz flips to 200 once the index finishes loading."
+            echo "== /healthz (recovering body) =="
+            curl -sS "http://${host}:${rest}/healthz" || true; echo
+          fi
           echo "== showcase =="
           curl -fsS -o /dev/null -w "showcase http %{http_code}\n" "http://${host}:${show}/"
           echo "== grafana =="
