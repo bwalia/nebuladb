@@ -101,10 +101,64 @@ jobs:
         # built locally in the next step.
         run: docker compose pull --ignore-buildable || true
 
-      - name: docker compose up -d --build
+      - name: docker compose up (recreate db nodes only when their binary changed)
+        # `docker compose up --build` recreates a container whenever its
+        # image ID changes. The image ID changes on ANY edit under
+        # `crates/` — including added tests/benches that are never compiled
+        # into the `nebula-server` binary — so docs/bench/test-only merges
+        # used to recreate the leader and restart its multi-HOUR WAL
+        # recovery from scratch (clients see 503 the whole time).
+        #
+        # Fix: compare the actual `nebula-server` binary baked into the
+        # running leader's image against the freshly built one. Only
+        # recreate the db nodes (leader + follower, which share the image
+        # and both pay the recovery cost) when that binary truly changed.
+        # Sidecars always converge. Defaults to RECREATE on any uncertainty.
         run: |
           set -euo pipefail
-          docker compose up -d --build --remove-orphans
+
+          # Image the leader currently runs on — captured BEFORE rebuild.
+          # A running container pins its image, so this ID stays resolvable
+          # even after the tag moves to the newly built image.
+          cur_img=$(docker inspect nebula-server --format '{{.Image}}' 2>/dev/null || echo "")
+
+          # Build images up front. This does not touch running containers.
+          docker compose build
+
+          new_img=$(docker image inspect nebuladb/server:dev --format '{{.Id}}' 2>/dev/null || echo "")
+
+          # sha256 of the server binary inside an image, computed in a
+          # throwaway container so the live (possibly recovering) leader is
+          # never disturbed. Empty on any failure.
+          bin_hash() {
+            [ -n "$1" ] || { echo ""; return; }
+            docker run --rm --entrypoint sha256sum "$1" \
+              /usr/local/bin/nebula-server 2>/dev/null | awk '{print $1}'
+          }
+
+          recreate_db=1
+          if [ -n "$cur_img" ] && [ -n "$new_img" ]; then
+            old_h=$(bin_hash "$cur_img")
+            new_h=$(bin_hash "$new_img")
+            if [ -n "$old_h" ] && [ "$old_h" = "$new_h" ]; then
+              recreate_db=0
+            fi
+            echo "leader binary: was=${old_h:-?} now=${new_h:-?} -> recreate_db=$recreate_db"
+          else
+            echo "no live leader image to compare (cur='$cur_img' new='$new_img') -> recreate_db=1"
+          fi
+
+          if [ "$recreate_db" = "1" ]; then
+            echo "== full converge (leader/follower WILL recreate) =="
+            docker compose up -d --build --remove-orphans
+          else
+            echo "== leader binary unchanged: converging sidecars, leaving db nodes running =="
+            sidecars=$(docker compose config --services | grep -vxE 'nebula-server|nebula-follower' || true)
+            # shellcheck disable=SC2086
+            docker compose up -d --build $sidecars
+            # Ensure db nodes exist, but never recreate a running one.
+            docker compose up -d --no-recreate nebula-server nebula-follower
+          fi
           docker compose ps
 
       - name: Wait for healthchecks
