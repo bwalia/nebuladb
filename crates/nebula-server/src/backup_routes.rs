@@ -127,9 +127,58 @@ fn now_iso() -> String {
 }
 
 fn elapsed(started_iso: &str) -> Option<u64> {
-    // Cheap: re-parse a fixed-format ISO. Good enough for an admin field.
-    let _ = started_iso; // we'd parse + diff; stub with Instant for now.
-    Some(0)
+    let started = iso_to_epoch_secs(started_iso)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(now.saturating_sub(started))
+}
+
+/// Inverse of `now_iso`: parses the fixed `YYYY-MM-DDTHH:MM:SSZ`
+/// format we emit and returns seconds since the Unix epoch.
+/// Returns `None` for any deviation from that exact shape.
+fn iso_to_epoch_secs(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() != 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T'
+        || b[13] != b':' || b[16] != b':' || b[19] != b'Z'
+    {
+        return None;
+    }
+    let y: i32 = s.get(0..4)?.parse().ok()?;
+    let mo: u32 = s.get(5..7)?.parse().ok()?;
+    let d: u32 = s.get(8..10)?.parse().ok()?;
+    let hh: u64 = s.get(11..13)?.parse().ok()?;
+    let mm: u64 = s.get(14..16)?.parse().ok()?;
+    let ss: u64 = s.get(17..19)?.parse().ok()?;
+    if !(1..=12).contains(&mo) || d == 0 || d > 31 || hh > 23 || mm > 59 || ss > 59 {
+        return None;
+    }
+    let days = ymd_to_days(y, mo, d)?;
+    days.checked_mul(86_400)?.checked_add(hh * 3600 + mm * 60 + ss)
+}
+
+/// Days from 1970-01-01 to the given calendar date. None for dates
+/// before the epoch — `now_iso` only emits dates after it, so the
+/// caller treats that as "unparseable, fall back to None".
+fn ymd_to_days(y: i32, mo: u32, d: u32) -> Option<u64> {
+    if y < 1970 {
+        return None;
+    }
+    let mut days: u64 = 0;
+    for yr in 1970..y {
+        days += if is_leap(yr) { 366 } else { 365 };
+    }
+    let months: [u32; 12] = if is_leap(y) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    for &len in months.iter().take((mo - 1) as usize) {
+        days += len as u64;
+    }
+    days += (d - 1) as u64;
+    Some(days)
 }
 
 fn days_to_ymd(mut days: i64) -> (i32, u32, u32) {
@@ -446,4 +495,47 @@ fn ulid_like() -> String {
     // Append a tiny PID-flavored suffix so two jobs minted in the
     // same millisecond don't collide.
     format!("{:013x}-{:04x}", ms, std::process::id() & 0xffff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn iso_round_trip_at_unix_epoch() {
+        assert_eq!(iso_to_epoch_secs("1970-01-01T00:00:00Z"), Some(0));
+    }
+
+    #[test]
+    fn iso_round_trip_at_known_date() {
+        // 2024-01-01T00:00:00Z = 1704067200 (54 leap years between 1970 and 2024).
+        assert_eq!(iso_to_epoch_secs("2024-01-01T00:00:00Z"), Some(1_704_067_200));
+    }
+
+    #[test]
+    fn iso_round_trip_via_now_iso() {
+        let started = now_iso();
+        let parsed = iso_to_epoch_secs(&started).expect("now_iso emits parseable ISO");
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Within a few seconds of wall-clock now.
+        assert!(now_secs.saturating_sub(parsed) < 3, "parsed={parsed}, now={now_secs}");
+    }
+
+    #[test]
+    fn iso_rejects_malformed() {
+        assert_eq!(iso_to_epoch_secs(""), None);
+        assert_eq!(iso_to_epoch_secs("2024-13-01T00:00:00Z"), None); // bad month
+        assert_eq!(iso_to_epoch_secs("2024-01-01T00:00:00"), None); // missing Z
+        assert_eq!(iso_to_epoch_secs("2024-01-01 00:00:00Z"), None); // space, not T
+    }
+
+    #[test]
+    fn elapsed_returns_zero_for_just_now() {
+        let now = now_iso();
+        // Should be 0 or 1 second — definitely not Some(0) as a stub.
+        assert!(matches!(elapsed(&now), Some(0) | Some(1)));
+    }
 }

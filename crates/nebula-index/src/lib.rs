@@ -451,12 +451,15 @@ impl TextIndex {
             g.by_key.remove(&key);
         }
 
+        // Probe insert with the candidate id; only commit `next_id`
+        // after the HNSW accepts it. A failed insert (dimension
+        // mismatch, duplicate id) used to leak the bumped counter
+        // into the snapshot, sparsifying internal ids over time.
         let new_internal_id = Id(g.next_id);
-        g.next_id += 1;
-
         if let Err(e) = self.hnsw.insert(new_internal_id, &vector) {
             return Err(e.into());
         }
+        g.next_id += 1;
 
         g.by_key.insert(key, new_internal_id);
         g.docs.insert(
@@ -566,13 +569,15 @@ impl TextIndex {
                     g.docs.remove(&old_id);
                     g.by_key.remove(&key);
                 }
+                // Bump `next_id` only after the HNSW accepts the
+                // insert. Otherwise a failure here permanently burns
+                // an internal id and the snapshot's `next_id` drifts
+                // ahead of the actual document count.
                 let new_id = Id(g.next_id);
-                g.next_id += 1;
                 if self.hnsw.insert(new_id, vec).is_err() {
-                    // Roll back the id allocation we already bumped. No
-                    // map writes to undo — we haven't done them yet.
                     continue;
                 }
+                g.next_id += 1;
                 g.by_key.insert(key, new_id);
                 g.docs.insert(
                     new_id,
@@ -733,8 +738,11 @@ impl TextIndex {
         let mut parent_set: AHashSet<String> = AHashSet::with_capacity(chunks.len());
         for chunk in chunks {
             let external_id = format!("{doc_id}#{}", chunk.index);
+            // Probe insert before bumping `next_id`. A mid-document
+            // HNSW failure used to leak the failing chunk's id even
+            // though no map state referenced it, drifting the snapshot
+            // counter past the live document count.
             let id = Id(g.next_id);
-            g.next_id += 1;
             if let Err(e) = self.hnsw.insert(id, &chunk.vector) {
                 for prev_external in &parent_set {
                     let pk = (bucket.to_string(), prev_external.clone());
@@ -745,6 +753,7 @@ impl TextIndex {
                 }
                 return Err(IndexError::Core(e));
             }
+            g.next_id += 1;
             g.by_key
                 .insert((bucket.to_string(), external_id.clone()), id);
             g.docs.insert(
