@@ -15,7 +15,20 @@ COPY package.json package-lock.json ./
 # builds where some npm/bsdtar combinations hit "Exit handler never
 # called" under the npm cache layer. `--include=dev` keeps the build
 # tooling (tsc, vite) in the install even if NODE_ENV=production.
-RUN npm ci --no-audit --no-fund --include=dev
+#
+# Failure-mode trap: npm 10.8.2's "Exit handler never called!" path
+# (seen on registry TLS errors and occasional flakes) prints to
+# stderr but exits 0. That gets cached as a successful layer, and
+# the next stage explodes with "tsc: not found" half a build later.
+# We harden the layer two ways: (1) raise fetch retries so a single
+# DNS / TLS blip doesn't tip us into the bad codepath, and (2)
+# verify the key dev-dep bins landed before declaring success — if
+# they didn't, fail the layer loudly so the cache stays clean and
+# the operator sees the real cause in the next attempt.
+RUN npm ci --no-audit --no-fund --include=dev \
+    --fetch-retries=5 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000 \
+ && test -x node_modules/.bin/tsc \
+ && test -x node_modules/.bin/vite
 COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js index.html ./
 COPY src ./src
 RUN npm run build
