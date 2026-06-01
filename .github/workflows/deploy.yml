@@ -38,6 +38,13 @@ jobs:
       # docker compose looks for `.env` next to the compose file; we
       # write it from `.env.deploy.example` in the first step.
       ENV_TEMPLATE: .env.deploy.example
+      # This runner sits behind a TLS-inspecting proxy (Zscaler), which
+      # makes the showcase image's `npm ci` fail with
+      # UNABLE_TO_GET_ISSUER_CERT_LOCALLY. Hand the host's system CA
+      # bundle to the build as the `proxy_ca` secret — it already
+      # contains the Zscaler root the host trusts for its own egress.
+      # On a clean host this is just the public bundle (harmless).
+      PROXY_CA_FILE: /etc/ssl/certs/ca-certificates.crt
 
     steps:
       - name: Checkout

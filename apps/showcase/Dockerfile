@@ -18,17 +18,57 @@ COPY package.json package-lock.json ./
 #
 # Failure-mode trap: npm 10.8.2's "Exit handler never called!" path
 # (seen on registry TLS errors and occasional flakes) prints to
-# stderr but exits 0. That gets cached as a successful layer, and
-# the next stage explodes with "tsc: not found" half a build later.
-# We harden the layer two ways: (1) raise fetch retries so a single
-# DNS / TLS blip doesn't tip us into the bad codepath, and (2)
-# verify the key dev-dep bins landed before declaring success — if
-# they didn't, fail the layer loudly so the cache stays clean and
-# the operator sees the real cause in the next attempt.
-RUN npm ci --no-audit --no-fund --include=dev \
-    --fetch-retries=5 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=60000 \
- && test -x node_modules/.bin/tsc \
- && test -x node_modules/.bin/vite
+# stderr and then either exits 0 or hangs. An exit 0 gets cached as
+# a successful layer and the next stage explodes with "tsc: not
+# found" half a build later; a hang stalls the whole job until the
+# CI ceiling kills it.
+#
+# npm's *internal* --fetch-retries can't save us here: the bug
+# aborts the npm process before that retry logic engages, so a high
+# --fetch-retry-maxtimeout just lets a hung fetch stack up and burn
+# the build clock (that's what tipped the last attempt into a
+# timeout). Instead we retry at the shell level: cap each attempt
+# with `timeout` so a hung run is killed and retried rather than
+# stalling, wipe node_modules between attempts so partial/corrupt
+# state can't poison the next try, and gate success on the dev-dep
+# bins actually being present — an exit-0-but-corrupt install fails
+# the check and retries instead of caching a broken layer. After 3
+# attempts we exit 1 loudly so the bad layer stays uncached and the
+# operator sees the real npm error.
+#
+# TLS-inspecting proxies: the root cause behind the original
+# UNABLE_TO_GET_ISSUER_CERT_LOCALLY flake is a corporate proxy
+# presenting a CA that node's bundled trust store doesn't know. Pass
+# that CA as a BuildKit secret (id=proxy_ca) and we point node at it
+# via NODE_EXTRA_CA_CERTS for the install. The secret is optional
+# (required=false): on clean networks — GitHub hosted runners, local
+# dev — no secret is supplied, the file is empty, and we skip it.
+# Secret mounts never land in an image layer, and it's scoped to
+# this RUN because only the registry fetch needs it; `npm run build`
+# is offline.
+RUN --mount=type=secret,id=proxy_ca,target=/run/secrets/proxy_ca.crt,required=false \
+    set -e; \
+    if [ -s /run/secrets/proxy_ca.crt ]; then \
+      export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca.crt; \
+      echo "Using proxy CA from build secret for npm fetches"; \
+    fi; \
+    for attempt in 1 2 3; do \
+      echo "npm ci attempt ${attempt}/3"; \
+      rm -rf node_modules; \
+      if timeout 300 npm ci --no-audit --no-fund --include=dev \
+             --fetch-retries=2 --fetch-retry-mintimeout=5000 --fetch-retry-maxtimeout=20000 \
+         && test -x node_modules/.bin/tsc \
+         && test -x node_modules/.bin/vite; then \
+        echo "npm ci succeeded on attempt ${attempt}"; \
+        break; \
+      fi; \
+      if [ "${attempt}" = 3 ]; then \
+        echo "npm ci failed after 3 attempts (likely npm 'Exit handler never called!')" >&2; \
+        exit 1; \
+      fi; \
+      echo "npm ci attempt ${attempt} failed; clearing node_modules and retrying" >&2; \
+      sleep 5; \
+    done
 COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js index.html ./
 COPY src ./src
 RUN npm run build

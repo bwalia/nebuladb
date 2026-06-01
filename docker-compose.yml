@@ -558,6 +558,15 @@ services:
     build:
       context: ./apps/showcase
       dockerfile: Dockerfile
+      # TLS-inspecting proxies (e.g. Zscaler on the self-hosted `int`
+      # runner) make npm's registry fetch fail with
+      # UNABLE_TO_GET_ISSUER_CERT_LOCALLY. The Dockerfile trusts a CA
+      # passed as the `proxy_ca` build secret. PROXY_CA_FILE defaults
+      # to /dev/null (size 0 -> Dockerfile skips it), so clean
+      # networks build unchanged; the proxied runner exports
+      # PROXY_CA_FILE to its CA bundle.
+      secrets:
+        - proxy_ca
     image: nebuladb/showcase:dev
     container_name: nebula-showcase
     <<: [*default-restart, *default-logging]
@@ -660,6 +669,14 @@ services:
         limits:
           cpus: "0.5"
           memory: 256m
+
+secrets:
+  # CA bundle for TLS-inspecting proxies, consumed only by the
+  # showcase image build. Defaults to /dev/null so an unset
+  # PROXY_CA_FILE is a no-op on clean networks; set PROXY_CA_FILE to a
+  # PEM bundle (e.g. the Zscaler root CA) on a proxied build host.
+  proxy_ca:
+    file: ${PROXY_CA_FILE:-/dev/null}
 
 volumes:
   ollama-models:
