@@ -328,14 +328,19 @@ services:
           # decompresses the whole `nsnap` (~GB), bincode-deserializes
           # into the structured copy, and `restore_from_snapshot`
           # materializes the live HNSW arena before the structured
-          # copy can be dropped. With a 4 GiB on-disk data dir we
-          # were peaking at ~87% of 8g during recovery, leaving the
-          # healthcheck no scheduling headroom and triggering a
-          # SIGTERM cycle. 16g gives recovery room to breathe.
-          # The real fix — streaming the snapshot READ path the same
-          # way PR #25 streamed the write path — is tracked in a
-          # follow-up; this is the band-aid until that ships.
-          memory: 16g
+          # copy can be dropped. The on-disk data dir is now ~11 GB and
+          # the materialized in-RAM index (HNSW graph + 384-dim vectors
+          # + stored docs + text index) sits right around ~16 GiB, so a
+          # 16g cap pinned the cgroup at its limit (memory.events `max`
+          # in the thousands), thrashed reclaim, dragged recovery out to
+          # ~hours, and the leader exited shortly after each recovery
+          # instead of staying up. The on-disk data dir is ~11 GB and the
+          # cold-recovery transient runs ~3x that (~33 GB), so 40g clears
+          # the peak with real margin; 32g sat right at the transient edge
+          # and could still thrash. Snapshot READ streaming already shipped
+          # (PR #65); the remaining cost is the live arena itself, which
+          # is RAM-resident until on-disk / quantized HNSW lands.
+          memory: 40g
 
   # ---------------------------------------------------------------------------
   # Optional follower replica. Tails the leader's WAL over gRPC and
@@ -417,18 +422,19 @@ services:
       resources:
         limits:
           cpus: "1.0"
-          # 2g, not 512m: the follower runs the same WAL-replay-on-boot
-          # path as the leader. Once the replicated dataset grows past
-          # a few hundred docs, boot recovery deserializes the snapshot
-          # + materializes the structured copy + builds the live index,
-          # peaking at roughly 3x the on-disk snapshot size. 512m
-          # got SIGKILL'd by the cgroup OOM killer on every restart
-          # once the dataset on 192.168.1.193 grew, leaving the follower
-          # in Restarting (137) permanently. Effect: showcase nginx
-          # round-robins to the dead follower upstream half the time
-          # and the user sees 502 / "no live upstreams". Sized with the
-          # same headroom logic as the leader (PR #25 + comment above).
-          memory: 2g
+          # 40g, identical to the leader: the follower runs the same
+          # WAL-replay-on-boot path and builds the SAME full in-RAM index
+          # from the replicated dataset, so its working set AND its cold-
+          # recovery transient (~3x the on-disk snapshot) are the same as
+          # the leader's — not a fraction of it. Earlier small caps (512m,
+          # then 2g) got SIGKILL'd by the cgroup OOM killer on every
+          # restart once the dataset on 192.168.1.193 grew, leaving the
+          # follower in Restarting (137) permanently. Effect: showcase
+          # nginx round-robins to the dead follower upstream half the time
+          # and the user sees 502 / "no live upstreams". Kept symmetric
+          # with the leader so a full replica never OOMs where the leader
+          # would not.
+          memory: 40g
 
   # ---------------------------------------------------------------------------
   # Observability
