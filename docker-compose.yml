@@ -337,10 +337,16 @@ services:
           # instead of staying up. The on-disk data dir is ~11 GB and the
           # cold-recovery transient runs ~3x that (~33 GB), so 40g clears
           # the peak with real margin; 32g sat right at the transient edge
-          # and could still thrash. Snapshot READ streaming already shipped
-          # (PR #65); the remaining cost is the live arena itself, which
-          # is RAM-resident until on-disk / quantized HNSW lands.
-          memory: 40g
+          # and could still thrash. 40g was STILL too tight: the live arena
+          # grew to ~39 GiB (2.2M docs), leaving ~2.5% headroom, and the
+          # periodic snapshot's transient + the request pile-up it causes
+          # (it holds the index read lock for minutes) tipped the cgroup
+          # over 40g -> OOM-kill (SIGKILL/137) every ~18 min. 56g gives
+          # ~17 GiB headroom over the current arena. NOTE: the arena is
+          # RAM-resident and grows with the dataset, so this cap must track
+          # it (watch nebula_memory_resident_bytes / the NebulaMemoryNearCap
+          # alert); the permanent footprint fix is on-disk/quantized HNSW.
+          memory: 56g
 
   # ---------------------------------------------------------------------------
   # Optional follower replica. Tails the leader's WAL over gRPC and
@@ -432,9 +438,9 @@ services:
           # follower in Restarting (137) permanently. Effect: showcase
           # nginx round-robins to the dead follower upstream half the time
           # and the user sees 502 / "no live upstreams". Kept symmetric
-          # with the leader so a full replica never OOMs where the leader
-          # would not.
-          memory: 40g
+          # with the leader (56g) so a full replica never OOMs where the
+          # leader would not — same arena, same snapshot-transient profile.
+          memory: 56g
 
   # ---------------------------------------------------------------------------
   # Observability

@@ -141,7 +141,21 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                         "error": "server is still in WAL recovery; retry shortly",
                     })),
                 )
-            });
+            })
+            // Send `Connection: close` on every boot-stub response. axum 0.7
+            // spawns each accepted connection as a DETACHED task, so aborting
+            // the serve future at handoff drops the listener but NOT the
+            // already-open connection handlers — a client holding a keepalive
+            // connection (nginx pool, Prometheus) keeps being served the stub's
+            // stale 503 forever after the real router has bound. Closing the
+            // connection after each response forces every client to reconnect,
+            // and the reconnect lands on the real router. Observed in prod:
+            // Prometheus stuck on `503` post-recovery until its sidecar was
+            // restarted; this is the durable fix.
+            .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
+                axum::http::header::CONNECTION,
+                axum::http::HeaderValue::from_static("close"),
+            ));
         // Runs until the task is aborted at handoff time (below). We do
         // NOT use `with_graceful_shutdown`: axum 0.7 waits for every open
         // connection to drain, and nginx's upstream keepalive pool keeps

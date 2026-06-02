@@ -194,6 +194,7 @@ async fn metrics_handler(State(s): State<AppState>) -> (StatusCode, [(&'static s
     }
 
     render_durability_metrics(&mut body, &s);
+    render_memory_metrics(&mut body);
 
     (
         StatusCode::OK,
@@ -255,6 +256,36 @@ fn render_durability_metrics(body: &mut String, s: &AppState) {
     let _ = writeln!(body, "# HELP nebula_snapshot_scheduler_enabled 1 if the snapshot scheduler has any trigger enabled, 0 if disabled (Bug C)");
     let _ = writeln!(body, "# TYPE nebula_snapshot_scheduler_enabled gauge");
     let _ = writeln!(body, "nebula_snapshot_scheduler_enabled {enabled}");
+}
+
+/// cgroup memory accounting, exposed so an alert can fire BEFORE the
+/// resident HNSW arena grows into the cgroup cap and the kernel OOM-kills
+/// the process (which docker masks as a clean restart — see the
+/// NebulaMemoryNearCap alert). These are cheap reads of two small cgroup
+/// files (no lock, no disk-walk), so they stay on the hot scrape path.
+/// cgroup v2 first, then v1; silently emit nothing if neither is present
+/// (e.g. running outside a container in tests).
+fn render_memory_metrics(body: &mut String) {
+    use std::fmt::Write as _;
+    let read_u64 = |p: &str| -> Option<u64> {
+        std::fs::read_to_string(p).ok()?.trim().parse::<u64>().ok()
+    };
+    // current usage
+    let current = read_u64("/sys/fs/cgroup/memory.current")
+        .or_else(|| read_u64("/sys/fs/cgroup/memory/memory.usage_in_bytes"));
+    // hard limit ("max" can be the literal "max" => unlimited => skip)
+    let limit = read_u64("/sys/fs/cgroup/memory.max")
+        .or_else(|| read_u64("/sys/fs/cgroup/memory/memory.limit_in_bytes"));
+    if let Some(c) = current {
+        let _ = writeln!(body, "# HELP nebula_memory_resident_bytes Process cgroup memory usage in bytes");
+        let _ = writeln!(body, "# TYPE nebula_memory_resident_bytes gauge");
+        let _ = writeln!(body, "nebula_memory_resident_bytes {c}");
+    }
+    if let Some(l) = limit {
+        let _ = writeln!(body, "# HELP nebula_memory_limit_bytes cgroup memory hard limit in bytes");
+        let _ = writeln!(body, "# TYPE nebula_memory_limit_bytes gauge");
+        let _ = writeln!(body, "nebula_memory_limit_bytes {l}");
+    }
 }
 
 // ---------- documents ----------

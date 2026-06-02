@@ -167,7 +167,14 @@ pub fn write_snapshot_streaming(
     {
         let file = File::create(&part_path).map_err(io_to_index)?;
         let mut writer = BufWriter::new(file);
-        let mut enc = zstd::Encoder::new(&mut writer, 3)
+        // zstd level 1 (was 3): the snapshot holds the index read lock for
+        // the whole serialize, and level-3 compression of a multi-GB arena
+        // dominates that hold (~8 min observed), which starves writers and
+        // piles up in-flight requests until the cgroup OOM-kills the leader.
+        // Level 1 is ~4x faster for ~10-20% larger files — a good trade when
+        // the lock-hold is the production-limiting factor. Decompression is
+        // level-agnostic, so existing/new snapshots read back unchanged.
+        let mut enc = zstd::Encoder::new(&mut writer, 1)
             .map_err(|e| IndexError::Invalid(format!("zstd enc: {e}")))?;
         // Layout: [u64 header_len] [header_bytes] [hnsw_bytes]
         enc.write_all(&header_len.to_le_bytes())
