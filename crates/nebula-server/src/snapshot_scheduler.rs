@@ -100,7 +100,7 @@ impl SnapshotSchedulerConfig {
         self.wal_bytes_threshold > 0
     }
 
-    pub(crate) fn any_trigger_enabled(&self) -> bool {
+    pub fn any_trigger_enabled(&self) -> bool {
         self.time_trigger_enabled() || self.size_trigger_enabled()
     }
 }

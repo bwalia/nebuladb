@@ -422,6 +422,30 @@ impl Wal {
         })
     }
 
+    /// On-disk bytes held in segments whose seq is `>= start_seq`,
+    /// i.e. WAL data that a snapshot taken at `start_seq` did NOT
+    /// supersede.
+    ///
+    /// Granularity is per-segment, not per-record: `start_seq` is a
+    /// *segment* seq (this is exactly what `snapshot` records in
+    /// `wal_seq_at_snapshot` via [`current_seq`], and what `compact`
+    /// uses to decide which segments are superseded). Segments older
+    /// than `start_seq` are dropped by compaction; everything in the
+    /// snapshot's own segment and newer is "since the snapshot". This
+    /// includes the handful of pre-snapshot records that share the
+    /// current segment, so the figure is a slight over-estimate bounded
+    /// by one segment's size — acceptable for an alerting signal and
+    /// consistent with how compaction reasons about the same boundary.
+    pub fn bytes_since_seq(&self, start_seq: u64) -> Result<u64> {
+        let mut bytes = 0u64;
+        for seg in list_segments(&self.dir)? {
+            if seg.seq >= start_seq {
+                bytes += fs::metadata(&seg.path)?.len();
+            }
+        }
+        Ok(bytes)
+    }
+
     pub fn dir(&self) -> &Path {
         &self.dir
     }

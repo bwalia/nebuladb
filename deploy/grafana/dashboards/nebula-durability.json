@@ -1,0 +1,132 @@
+{
+  "title": "NebulaDB — Durability health",
+  "uid": "nebula-durability",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "tags": ["nebuladb", "durability", "wal", "snapshot"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Snapshot scheduler",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "description": "1 = at least one snapshot trigger enabled, 0 = disabled (the Bug C footgun from PR #63 — recovery later takes hours). Backed by NebulaSnapshotSchedulerDisabled.",
+      "targets": [
+        { "expr": "nebula_snapshot_scheduler_enabled{service=\"nebula-server\"}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DISABLED", "color": "red" }, "1": { "text": "enabled", "color": "green" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Snapshot age",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "description": "Wall time since the most recent committed snapshot. No data = no snapshot taken yet. Backed by NebulaSnapshotAgeHigh (>2h).",
+      "targets": [
+        { "expr": "nebula_snapshot_age_seconds{service=\"nebula-server\"}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 3600 },
+              { "color": "red", "value": 7200 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "WAL (total)",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "description": "Total bytes in the WAL on disk. 0 for in-memory nodes.",
+      "targets": [
+        { "expr": "nebula_wal_bytes{service=\"nebula-server\"}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "WAL since snapshot",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "description": "Bytes a cold recovery would replay (per-segment granularity). Backed by NebulaWalUnsnapshottedHigh (>200 MiB).",
+      "targets": [
+        { "expr": "nebula_wal_bytes_since_snapshot{service=\"nebula-server\"}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 52428800 },
+              { "color": "red", "value": 209715200 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "WAL size",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "description": "Total WAL vs unsnapshotted WAL over time. A growing 'since snapshot' line that never resets means the scheduler isn't snapshotting.",
+      "targets": [
+        {
+          "expr": "nebula_wal_bytes{service=\"nebula-server\"}",
+          "refId": "A",
+          "legendFormat": "wal total"
+        },
+        {
+          "expr": "nebula_wal_bytes_since_snapshot{service=\"nebula-server\"}",
+          "refId": "B",
+          "legendFormat": "since snapshot"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Snapshot age & scheduler",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "description": "Snapshot age should saw-tooth back toward zero on each snapshot. A flat-climbing line, or scheduler dropping to 0, is the alerting condition.",
+      "targets": [
+        {
+          "expr": "nebula_snapshot_age_seconds{service=\"nebula-server\"}",
+          "refId": "A",
+          "legendFormat": "snapshot age (s)"
+        },
+        {
+          "expr": "nebula_snapshot_scheduler_enabled{service=\"nebula-server\"}",
+          "refId": "B",
+          "legendFormat": "scheduler enabled"
+        }
+      ]
+    }
+  ]
+}

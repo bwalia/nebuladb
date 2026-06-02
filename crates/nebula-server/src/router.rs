@@ -192,11 +192,69 @@ async fn metrics_handler(State(s): State<AppState>) -> (StatusCode, [(&'static s
         let _ = writeln!(body, "# TYPE nebula_embed_cache_inserts counter");
         let _ = writeln!(body, "nebula_embed_cache_inserts {inserts}");
     }
+
+    render_durability_metrics(&mut body, &s);
+
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],
         body,
     )
+}
+
+/// Append WAL / snapshot durability gauges to the `/metrics` body.
+///
+/// Lives here (not in `Metrics::render`) because these read live
+/// state off `AppState` — the index's WAL + on-disk snapshots and the
+/// scheduler-enabled flag — rather than in-process counters.
+///
+/// Emission rules (kept consistent so alerts don't see bogus values):
+/// - In-memory index (`wal_stats()` is `None`): emit
+///   `nebula_wal_bytes 0` and `nebula_wal_bytes_since_snapshot 0`, and
+///   OMIT `nebula_snapshot_age_seconds` (there is no snapshot — a huge
+///   bogus age would falsely trip `NebulaSnapshotAgeHigh`).
+/// - Persistent but no snapshot yet: WAL gauges are real,
+///   `nebula_snapshot_age_seconds` is still omitted.
+/// - `nebula_snapshot_scheduler_enabled` is always emitted (0/1); it's
+///   the Bug C signal and must never silently disappear.
+fn render_durability_metrics(body: &mut String, s: &AppState) {
+    use std::fmt::Write as _;
+    use std::time::SystemTime;
+
+    let wal_bytes = s.index.wal_stats().map(|w| w.total_bytes).unwrap_or(0);
+    let _ = writeln!(body, "# HELP nebula_wal_bytes Total bytes in the WAL on disk (0 when in-memory only)");
+    let _ = writeln!(body, "# TYPE nebula_wal_bytes gauge");
+    let _ = writeln!(body, "nebula_wal_bytes {wal_bytes}");
+
+    // Bytes appended after the newest committed snapshot's segment seq.
+    // Per-segment granularity (slight over-estimate bounded by one
+    // segment) — see nebula_index::TextIndex::wal_bytes_since_snapshot.
+    let bytes_since = s.index.wal_bytes_since_snapshot().unwrap_or(0);
+    let _ = writeln!(
+        body,
+        "# HELP nebula_wal_bytes_since_snapshot Bytes in WAL segments at/after the newest snapshot's seq (per-segment granularity; 0 when in-memory)"
+    );
+    let _ = writeln!(body, "# TYPE nebula_wal_bytes_since_snapshot gauge");
+    let _ = writeln!(body, "nebula_wal_bytes_since_snapshot {bytes_since}");
+
+    // Snapshot age: only emitted when a snapshot actually exists, so a
+    // node with no snapshot doesn't report a bogus multi-decade age.
+    if let Some(header) = s.index.latest_snapshot_header() {
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let taken_secs = header.taken_at_ms / 1000;
+        let age = now_secs.saturating_sub(taken_secs);
+        let _ = writeln!(body, "# HELP nebula_snapshot_age_seconds Wall time since the most recent committed snapshot");
+        let _ = writeln!(body, "# TYPE nebula_snapshot_age_seconds gauge");
+        let _ = writeln!(body, "nebula_snapshot_age_seconds {age}");
+    }
+
+    let enabled = u8::from(s.snapshot_scheduler_enabled);
+    let _ = writeln!(body, "# HELP nebula_snapshot_scheduler_enabled 1 if the snapshot scheduler has any trigger enabled, 0 if disabled (Bug C)");
+    let _ = writeln!(body, "# TYPE nebula_snapshot_scheduler_enabled gauge");
+    let _ = writeln!(body, "nebula_snapshot_scheduler_enabled {enabled}");
 }
 
 // ---------- documents ----------

@@ -334,6 +334,37 @@ pub fn load_latest_snapshot(
     Ok(Some((header, hnsw)))
 }
 
+/// Load only the [`SnapshotHeader`] of the newest committed
+/// snapshot, skipping the HNSW body entirely. Returns `None` when
+/// no snapshots exist.
+///
+/// This is the cheap path for `/metrics`: a scrape only needs
+/// `wal_seq_at_snapshot` + `taken_at_ms`, and decoding the full
+/// (potentially 1 GiB) HNSW body on every scrape would be absurd.
+/// The on-disk layout is `[u64 header_len][header_bytes][hnsw...]`,
+/// so we read the length prefix + header and stop.
+pub fn read_latest_snapshot_header(dir: &Path) -> Result<Option<SnapshotHeader>> {
+    let Some(ok_path) = newest_snapshot(dir)? else {
+        return Ok(None);
+    };
+    let stem = ok_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| IndexError::Invalid("bad snapshot filename".into()))?;
+    let data_path = dir.join(stem);
+    let file = File::open(&data_path).map_err(io_to_index)?;
+    let reader = BufReader::new(file);
+    let mut dec = zstd::Decoder::new(reader).map_err(io_to_index)?;
+    let mut header_len_buf = [0u8; 8];
+    dec.read_exact(&mut header_len_buf).map_err(io_to_index)?;
+    let header_len = u64::from_le_bytes(header_len_buf) as usize;
+    let mut header_bytes = vec![0u8; header_len];
+    dec.read_exact(&mut header_bytes).map_err(io_to_index)?;
+    let header: SnapshotHeader = bincode::deserialize(&header_bytes)
+        .map_err(|e| IndexError::Invalid(format!("snapshot header decode: {e}")))?;
+    Ok(Some(header))
+}
+
 /// Return the path of the newest committed snapshot's `.ok`
 /// marker, or `None` if no complete snapshots exist.
 fn newest_snapshot(dir: &Path) -> Result<Option<PathBuf>> {
