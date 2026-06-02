@@ -45,7 +45,7 @@ futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 axum = { version = "0.7", features = ["macros"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "limit", "timeout"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "limit", "timeout", "set-header"] }
 hyper = "1"
 http = "1"
 http-body-util = "0.1"

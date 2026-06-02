@@ -357,6 +357,47 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         Some(snapshot_scheduler::spawn(Arc::clone(&index), snapshot_cfg))
     };
 
+    // Durability-metrics sampler (#69 hardening). The WAL/snapshot
+    // gauges used to be computed synchronously on every `/metrics`
+    // scrape — ~8s of blocking disk I/O over a multi-GB WAL (wal_stats,
+    // two snapshot-header decodes, a per-segment fs::metadata walk) —
+    // which timed out Prometheus and hammered the disk every 15s. Move
+    // it off the hot path: a background task refreshes a shared atomic
+    // cache every 30s; `/metrics` just loads the atomics.
+    //
+    // Only spawned for a persistent index (in-memory has no WAL, so the
+    // cache stays at its all-zero default, which renders correctly).
+    // The reads are blocking, so each refresh runs on `spawn_blocking`
+    // — never blocking the async runtime, and the underlying index
+    // calls only take short read locks / do disk I/O. An initial sample
+    // runs immediately so the gauges aren't zero for the first 30s.
+    let durability_cache = Arc::new(nebula_server::state::DurabilityMetricsCache::default());
+    if index.is_persistent() {
+        let cache = Arc::clone(&durability_cache);
+        let idx = Arc::clone(&index);
+        // Initial sample, off the runtime, before serving traffic.
+        {
+            let cache = Arc::clone(&cache);
+            let idx = Arc::clone(&idx);
+            let _ = tokio::task::spawn_blocking(move || cache.sample_from_index(&idx)).await;
+        }
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            // Skip the immediate first tick; we already sampled above.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let cache = Arc::clone(&cache);
+                let idx = Arc::clone(&idx);
+                if let Err(e) =
+                    tokio::task::spawn_blocking(move || cache.sample_from_index(&idx)).await
+                {
+                    tracing::warn!("durability-metrics sampler task panicked: {e}");
+                }
+            }
+        });
+    }
+
     let api_keys: AHashSet<String> = std::env::var("NEBULA_API_KEYS")
         .unwrap_or_default()
         .split(',')
@@ -541,7 +582,8 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     .with_sql(Arc::clone(&sql_engine))
     .with_cluster(Arc::clone(&cluster))
     .with_log_bus(Arc::clone(&log_bus))
-    .with_snapshot_scheduler_enabled(snapshot_scheduler_enabled);
+    .with_snapshot_scheduler_enabled(snapshot_scheduler_enabled)
+    .with_durability_cache(Arc::clone(&durability_cache));
     if let Some(fc) = follower_cursor.as_ref() {
         state = state.with_follower_cursor(Arc::clone(fc));
     }

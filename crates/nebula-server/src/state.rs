@@ -54,6 +54,62 @@ impl FollowerCursor {
     }
 }
 
+/// Cached snapshot of the WAL/snapshot durability gauges (#69), kept
+/// off the `/metrics` hot path. A background sampler in `main.rs`
+/// recomputes these every ~30s via `spawn_blocking` (each refresh does
+/// ~seconds of blocking disk I/O over a multi-GB WAL); `/metrics` then
+/// just loads these atomics instead of walking the WAL on every scrape.
+///
+/// All-zero defaults are the correct "in-memory / not yet sampled"
+/// state: `wal_bytes` / `wal_bytes_since_snapshot` of 0 render as the
+/// real in-memory values, and `snapshot_taken_at_ms == 0` means "no
+/// snapshot exists" so the `nebula_snapshot_age_seconds` line is
+/// omitted (a bogus multi-decade age would falsely trip the alert).
+#[derive(Default, Debug)]
+pub struct DurabilityMetricsCache {
+    /// Total bytes in the WAL on disk. Mirrors `wal_stats().total_bytes`.
+    pub wal_bytes: AtomicU64,
+    /// Bytes in WAL segments at/after the newest snapshot's seq.
+    /// Mirrors `index.wal_bytes_since_snapshot()`.
+    pub wal_bytes_since_snapshot: AtomicU64,
+    /// Unix millis the newest committed snapshot was taken, or `0` when
+    /// no snapshot exists. Used as the "has snapshot" sentinel.
+    pub snapshot_taken_at_ms: AtomicU64,
+}
+
+impl DurabilityMetricsCache {
+    /// Recompute the three cached values from a (persistent) index and
+    /// store them. Does the blocking disk I/O inline — callers must run
+    /// it off the async runtime (`spawn_blocking` / a std thread). The
+    /// underlying index calls take only short read locks / do disk I/O.
+    ///
+    /// `latest_snapshot_header()` is called exactly ONCE here (the old
+    /// inline render path called it twice).
+    pub fn sample_from_index(&self, index: &nebula_index::TextIndex) {
+        let wal_bytes = index.wal_stats().map(|w| w.total_bytes).unwrap_or(0);
+        let bytes_since = index.wal_bytes_since_snapshot().unwrap_or(0);
+        let taken_at_ms = index
+            .latest_snapshot_header()
+            .map(|h| h.taken_at_ms)
+            .unwrap_or(0);
+        self.wal_bytes.store(wal_bytes, Ordering::Relaxed);
+        self.wal_bytes_since_snapshot
+            .store(bytes_since, Ordering::Relaxed);
+        self.snapshot_taken_at_ms
+            .store(taken_at_ms, Ordering::Relaxed);
+    }
+
+    /// Load all three cached values: `(wal_bytes, wal_bytes_since_snapshot,
+    /// snapshot_taken_at_ms)`. `snapshot_taken_at_ms == 0` means none.
+    pub fn load(&self) -> (u64, u64, u64) {
+        (
+            self.wal_bytes.load(Ordering::Relaxed),
+            self.wal_bytes_since_snapshot.load(Ordering::Relaxed),
+            self.snapshot_taken_at_ms.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// Tee adapter: splits a `CursorStore::save` into the real durable
 /// store + an atomic snapshot read by /admin/replication. Load
 /// comes only from the durable half — the atomic is a pure mirror
@@ -186,6 +242,12 @@ pub struct AppState {
     /// takes hours. Defaults to `false` (tests / in-memory dev runs
     /// that never spawn a scheduler).
     pub snapshot_scheduler_enabled: bool,
+    /// Cached WAL/snapshot durability gauges (#69). A background
+    /// sampler in `main.rs` refreshes these every ~30s off the hot
+    /// path; `/metrics` reads them instantly. Defaults to all-zero
+    /// (the correct "in-memory / not yet sampled" state). Shared via
+    /// `Arc` so the sampler task and the handler see the same atomics.
+    pub durability_cache: Arc<DurabilityMetricsCache>,
 }
 
 impl AppState {
@@ -218,11 +280,20 @@ impl AppState {
             backup_jobs: Arc::new(crate::backup_routes::JobRing::new()),
             raft: None,
             snapshot_scheduler_enabled: false,
+            durability_cache: Arc::new(DurabilityMetricsCache::default()),
         }
     }
 
     pub fn with_snapshot_scheduler_enabled(mut self, enabled: bool) -> Self {
         self.snapshot_scheduler_enabled = enabled;
+        self
+    }
+
+    /// Wire in a shared durability-metrics cache (the one the
+    /// background sampler in `main.rs` updates). Tests can also use
+    /// this to seed the cache before scraping `/metrics`.
+    pub fn with_durability_cache(mut self, cache: Arc<DurabilityMetricsCache>) -> Self {
+        self.durability_cache = cache;
         self
     }
 

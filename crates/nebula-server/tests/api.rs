@@ -354,8 +354,14 @@ async fn metrics_durability_gauges_nonzero_when_persistent() {
             .unwrap(),
     );
     // Pretend the scheduler is live so the flag path is exercised too.
-    let state = AppState::new(index, AppConfig::default())
-        .with_snapshot_scheduler_enabled(true);
+    // The durability gauges now come from a background-sampled cache
+    // rather than live disk reads on the scrape, so the production
+    // sampler isn't running in this test — seed the cache the same way
+    // `main.rs` does, from the index, after the write below.
+    let cache = Arc::new(nebula_server::state::DurabilityMetricsCache::default());
+    let state = AppState::new(Arc::clone(&index), AppConfig::default())
+        .with_snapshot_scheduler_enabled(true)
+        .with_durability_cache(Arc::clone(&cache));
     let app = build_router(state);
 
     // Write a doc through the API so the WAL gets a record.
@@ -371,6 +377,10 @@ async fn metrics_durability_gauges_nonzero_when_persistent() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
+    // Refresh the cache from the now-non-empty WAL (the background
+    // sampler does this every 30s in production).
+    cache.sample_from_index(&index);
+
     let res = app
         .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
         .await
@@ -385,6 +395,47 @@ async fn metrics_durability_gauges_nonzero_when_persistent() {
     assert!(body.contains("nebula_snapshot_scheduler_enabled 1"));
     // Still no snapshot committed -> age line omitted.
     assert!(!body.contains("nebula_snapshot_age_seconds"));
+}
+
+// The durability gauges now render purely from the cached atomics, not
+// from live disk reads. Seed the cache directly (no index/WAL needed)
+// and assert the gauge lines reflect those exact values — and that a
+// non-zero `snapshot_taken_at_ms` makes the age line appear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_durability_gauges_render_from_cache() {
+    use std::sync::atomic::Ordering;
+
+    let cache = Arc::new(nebula_server::state::DurabilityMetricsCache::default());
+    cache.wal_bytes.store(4096, Ordering::Relaxed);
+    cache.wal_bytes_since_snapshot.store(1024, Ordering::Relaxed);
+    // A snapshot taken ~100s ago (in unix millis).
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    cache
+        .snapshot_taken_at_ms
+        .store(now_ms - 100_000, Ordering::Relaxed);
+
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    let state = AppState::new(index, AppConfig::default()).with_durability_cache(cache);
+    let app = build_router(state);
+
+    let res = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+
+    assert!(body.contains("# TYPE nebula_wal_bytes gauge"));
+    assert_eq!(scrape_gauge(&body, "nebula_wal_bytes"), Some(4096));
+    assert!(body.contains("# TYPE nebula_wal_bytes_since_snapshot gauge"));
+    assert_eq!(scrape_gauge(&body, "nebula_wal_bytes_since_snapshot"), Some(1024));
+    // Snapshot exists in the cache -> age line emitted, ~100s.
+    assert!(body.contains("# TYPE nebula_snapshot_age_seconds gauge"));
+    let age = scrape_gauge(&body, "nebula_snapshot_age_seconds").unwrap();
+    assert!((95..=120).contains(&age), "expected age ~100s, got {age}");
 }
 
 /// Pull the value of a single-line Prometheus gauge `name <value>`
