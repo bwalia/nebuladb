@@ -1078,6 +1078,32 @@ impl TextIndex {
         self.wal.as_ref().and_then(|w| w.stats().ok())
     }
 
+    /// WAL bytes that postdate the most recent committed snapshot's
+    /// captured segment seq — i.e. data a cold recovery would have to
+    /// replay. `None` for in-memory indexes (no WAL). `Some(total)`
+    /// when persistent but no snapshot exists yet (nothing has been
+    /// superseded, so all WAL bytes are "since the snapshot").
+    ///
+    /// Granularity is per-segment; see [`nebula_wal::Wal::bytes_since_seq`].
+    pub fn wal_bytes_since_snapshot(&self) -> Option<u64> {
+        let wal = self.wal.as_ref()?;
+        let snapshot_seq = self
+            .latest_snapshot_header()
+            .map(|h| h.wal_seq_at_snapshot)
+            .unwrap_or(0);
+        wal.bytes_since_seq(snapshot_seq).ok()
+    }
+
+    /// Header of the newest committed snapshot (no HNSW body decode),
+    /// or `None` if the index is in-memory or has no snapshot yet.
+    /// Surfaced to `/metrics` for `nebula_snapshot_age_seconds`.
+    pub fn latest_snapshot_header(&self) -> Option<durability::SnapshotHeader> {
+        let data_dir = self.data_dir.as_ref()?;
+        durability::read_latest_snapshot_header(&data_dir.join("snapshots"))
+            .ok()
+            .flatten()
+    }
+
     /// `true` if this index is durably persisting mutations.
     pub fn is_persistent(&self) -> bool {
         self.wal.is_some()

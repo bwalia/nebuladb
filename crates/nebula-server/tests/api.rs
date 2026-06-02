@@ -317,6 +317,85 @@ async fn metrics_exposes_counters() {
     assert!(body.contains("nebula_requests_total"));
 }
 
+// In-memory index: wal_stats() is None. The durability gauges must
+// still render (with the right TYPE lines and 0 values), and the
+// snapshot-age line must be ABSENT rather than a bogus huge number.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_exposes_durability_gauges_in_memory() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+
+    assert!(body.contains("# TYPE nebula_wal_bytes gauge"));
+    assert!(body.contains("nebula_wal_bytes 0"));
+    assert!(body.contains("# TYPE nebula_wal_bytes_since_snapshot gauge"));
+    assert!(body.contains("nebula_wal_bytes_since_snapshot 0"));
+    assert!(body.contains("# TYPE nebula_snapshot_scheduler_enabled gauge"));
+    // app_state() never spawns a scheduler -> flag defaults to false.
+    assert!(body.contains("nebula_snapshot_scheduler_enabled 0"));
+    // No snapshot exists for an in-memory index: the age line must be
+    // omitted entirely (a bogus age would falsely trip the alert).
+    assert!(!body.contains("nebula_snapshot_age_seconds"));
+}
+
+// Persistent index backed by a tempdir: after a write the WAL is
+// non-empty, so nebula_wal_bytes / nebula_wal_bytes_since_snapshot
+// must be > 0. No snapshot is taken, so age stays absent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_durability_gauges_nonzero_when_persistent() {
+    let dir = tempfile::tempdir().unwrap();
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(
+        TextIndex::open_persistent(emb, Metric::Cosine, HnswConfig::default(), dir.path())
+            .unwrap(),
+    );
+    // Pretend the scheduler is live so the flag path is exercised too.
+    let state = AppState::new(index, AppConfig::default())
+        .with_snapshot_scheduler_enabled(true);
+    let app = build_router(state);
+
+    // Write a doc through the API so the WAL gets a record.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"1","text":"hello world"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let res = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+
+    // WAL now holds at least the magic header + one record.
+    let wal_bytes: u64 = scrape_gauge(&body, "nebula_wal_bytes").unwrap();
+    assert!(wal_bytes > 0, "expected non-zero WAL bytes, body:\n{body}");
+    let since: u64 = scrape_gauge(&body, "nebula_wal_bytes_since_snapshot").unwrap();
+    assert!(since > 0, "expected non-zero bytes-since-snapshot");
+    assert!(body.contains("nebula_snapshot_scheduler_enabled 1"));
+    // Still no snapshot committed -> age line omitted.
+    assert!(!body.contains("nebula_snapshot_age_seconds"));
+}
+
+/// Pull the value of a single-line Prometheus gauge `name <value>`
+/// out of a rendered body, ignoring the `# HELP` / `# TYPE` lines.
+fn scrape_gauge(body: &str, name: &str) -> Option<u64> {
+    body.lines()
+        .find(|l| l.starts_with(name) && !l.starts_with('#'))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|v| v.parse().ok())
+}
+
 // Multi-thread runtime required: TextIndex writes use
 // tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

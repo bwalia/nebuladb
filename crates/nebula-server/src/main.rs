@@ -329,13 +329,18 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     // snapshots — which in practice means forever, leaving the next
     // cold recovery to replay everything since the dawn of the data
     // dir. Tunables are env-driven; see snapshot_scheduler.rs.
+    let snapshot_cfg = SnapshotSchedulerConfig::from_env();
+    // Mirror the exact conditions under which `run()` stays alive:
+    // not in raft mode (raft drives its own snapshots), at least one
+    // trigger configured, and a real WAL to snapshot. Computed from
+    // the SAME config object we hand to `spawn` so the metric can't
+    // drift from the scheduler's actual state.
+    let snapshot_scheduler_enabled =
+        raft_handle.is_none() && snapshot_cfg.any_trigger_enabled() && index.wal_stats().is_some();
     let snapshot_handle = if raft_handle.is_some() {
         None
     } else {
-        Some(snapshot_scheduler::spawn(
-            Arc::clone(&index),
-            SnapshotSchedulerConfig::from_env(),
-        ))
+        Some(snapshot_scheduler::spawn(Arc::clone(&index), snapshot_cfg))
     };
 
     let api_keys: AHashSet<String> = std::env::var("NEBULA_API_KEYS")
@@ -521,7 +526,8 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     .with_chunker(chunker)
     .with_sql(Arc::clone(&sql_engine))
     .with_cluster(Arc::clone(&cluster))
-    .with_log_bus(Arc::clone(&log_bus));
+    .with_log_bus(Arc::clone(&log_bus))
+    .with_snapshot_scheduler_enabled(snapshot_scheduler_enabled);
     if let Some(fc) = follower_cursor.as_ref() {
         state = state.with_follower_cursor(Arc::clone(fc));
     }

@@ -1,0 +1,50 @@
+# WAL / snapshot durability alerts (issue #69).
+#
+# These exist to catch the "Bug C" footgun from PR #63: an obsolete
+# .env can silently disable the snapshot scheduler, after which the WAL
+# grows unbounded and the next cold recovery takes hours. The
+# scheduler-enabled gauge catches that directly; the other two catch
+# the downstream symptom (WAL growing without a fresh snapshot) even if
+# the scheduler is nominally "enabled" but stalled.
+#
+# Metrics are emitted by nebula-server on /metrics — see
+# crates/nebula-server/src/router.rs (render_durability_metrics).
+groups:
+  - name: nebula-wal-snapshot-health
+    rules:
+      - alert: NebulaSnapshotSchedulerDisabled
+        expr: nebula_snapshot_scheduler_enabled == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Snapshot scheduler is disabled on {{ $labels.instance }}"
+          description: >-
+            The scheduler env vars (NEBULA_SNAPSHOT_INTERVAL_SECS,
+            NEBULA_SNAPSHOT_WAL_BYTES) are set to 0 — the obsolete Bug C
+            workaround. Remove them; cold recovery will take hours
+            otherwise. See PR #63.
+
+      - alert: NebulaWalUnsnapshottedHigh
+        expr: nebula_wal_bytes_since_snapshot > 200 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WAL has accumulated {{ $value | humanize1024 }}B without a snapshot on {{ $labels.instance }}"
+          description: >-
+            The compose default snapshot trigger fires at 50 MiB or
+            15 min, whichever first. If we're 4x past that, the
+            scheduler isn't running. Check /admin/durability and the
+            snapshot logs.
+
+      - alert: NebulaSnapshotAgeHigh
+        expr: nebula_snapshot_age_seconds > 7200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Last snapshot is {{ $value | humanizeDuration }} old on {{ $labels.instance }}"
+          description: >-
+            Compose default schedules a snapshot every 15 min. 2h+
+            means the scheduler is stalled or disabled.

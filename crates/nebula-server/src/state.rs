@@ -177,6 +177,15 @@ pub struct AppState {
     /// Phase 2.5c will gate write-path routing on this — when present,
     /// REST/pgwire/gRPC writes go through `Raft::client_write`.
     pub raft: Option<Arc<nebula_raft::RaftHandle>>,
+    /// Whether the background snapshot scheduler has at least one
+    /// trigger enabled. Computed from the SAME `SnapshotSchedulerConfig`
+    /// that's used to spawn the scheduler (see `main.rs`), so it can't
+    /// drift from reality. Surfaced as `nebula_snapshot_scheduler_enabled`
+    /// on `/metrics` to catch the "Bug C" footgun where an obsolete
+    /// `.env` silently disables snapshots and a later cold recovery
+    /// takes hours. Defaults to `false` (tests / in-memory dev runs
+    /// that never spawn a scheduler).
+    pub snapshot_scheduler_enabled: bool,
 }
 
 impl AppState {
@@ -208,7 +217,13 @@ impl AppState {
             cross_region_status: crate::cross_region_status::CrossRegionStatusHub::new(),
             backup_jobs: Arc::new(crate::backup_routes::JobRing::new()),
             raft: None,
+            snapshot_scheduler_enabled: false,
         }
+    }
+
+    pub fn with_snapshot_scheduler_enabled(mut self, enabled: bool) -> Self {
+        self.snapshot_scheduler_enabled = enabled;
+        self
     }
 
     pub fn with_raft(mut self, raft: Arc<nebula_raft::RaftHandle>) -> Self {
