@@ -352,16 +352,17 @@ services:
           # instead of staying up. The on-disk data dir is ~11 GB and the
           # cold-recovery transient runs ~3x that (~33 GB), so 40g clears
           # the peak with real margin; 32g sat right at the transient edge
-          # and could still thrash. 40g was STILL too tight: the live arena
-          # grew to ~39 GiB (2.2M docs), leaving ~2.5% headroom, and the
-          # periodic snapshot's transient + the request pile-up it causes
-          # (it holds the index read lock for minutes) tipped the cgroup
-          # over 40g -> OOM-kill (SIGKILL/137) every ~18 min. 56g gives
-          # ~17 GiB headroom over the current arena. NOTE: the arena is
-          # RAM-resident and grows with the dataset, so this cap must track
-          # it (watch nebula_memory_resident_bytes / the NebulaMemoryNearCap
-          # alert); the permanent footprint fix is on-disk/quantized HNSW.
-          memory: 56g
+          # and could still thrash. 40g/56g were STILL too tight: the live
+          # arena is ~48 GiB (2.28M docs) and measured peak during a snapshot
+          # hit 49 GiB, so 56g sat at ~86% (NebulaMemoryNearCap firing) and
+          # the OOM-kill (SIGKILL/137) recurred as the arena grew. 64g gives
+          # ~16 GiB runway over the current arena (snapshot transient is only
+          # ~1 GiB; the risk is arena GROWTH, not the snapshot). NOTE: the
+          # arena is RAM-resident and grows with the dataset, so this cap
+          # MUST track it — watch nebula_memory_resident_bytes /
+          # NebulaMemoryNearCap (85%) and raise before it crashes; the
+          # permanent footprint fix is on-disk/quantized HNSW.
+          memory: 64g
 
   # ---------------------------------------------------------------------------
   # Optional follower replica. Tails the leader's WAL over gRPC and
@@ -458,7 +459,7 @@ services:
           # and the user sees 502 / "no live upstreams". Kept symmetric
           # with the leader (56g) so a full replica never OOMs where the
           # leader would not — same arena, same snapshot-transient profile.
-          memory: 56g
+          memory: 64g
 
   # ---------------------------------------------------------------------------
   # Observability
