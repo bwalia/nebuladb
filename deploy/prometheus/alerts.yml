@@ -48,3 +48,35 @@ groups:
           description: >-
             Compose default schedules a snapshot every 15 min. 2h+
             means the scheduler is stalled or disabled.
+
+  # Memory-headroom alerts. The HNSW arena is RAM-resident and grows with
+  # the dataset; when it approaches the cgroup cap, the periodic snapshot's
+  # transient OOM-kills the leader (SIGKILL/137, which docker masks as a
+  # clean exit-0 restart). These fire BEFORE that so the cap can be raised
+  # (or the data sharded) ahead of the crash.
+  - name: nebula-memory-headroom
+    rules:
+      - alert: NebulaMemoryNearCap
+        expr: nebula_memory_resident_bytes / nebula_memory_limit_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "nebula-server memory at {{ $value | humanizePercentage }} of cgroup cap on {{ $labels.instance }}"
+          description: >-
+            Resident memory is within 15% of the cgroup limit. A snapshot's
+            transient allocation can tip this over the cap into an OOM kill
+            (masked by docker as a clean restart). Raise the db-node memory
+            limit in docker-compose.yml or reduce the dataset before it
+            crashes.
+
+      - alert: NebulaMemoryCritical
+        expr: nebula_memory_resident_bytes / nebula_memory_limit_bytes > 0.93
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "nebula-server memory CRITICAL at {{ $value | humanizePercentage }} of cap on {{ $labels.instance }}"
+          description: >-
+            Resident memory is within 7% of the cgroup cap — an OOM kill on
+            the next snapshot is likely. Raise the cap now.

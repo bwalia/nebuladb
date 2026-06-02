@@ -272,14 +272,29 @@ services:
       NEBULA_SLOW_QUERY_THRESHOLD_MS: "${NEBULA_SLOW_QUERY_THRESHOLD_MS:-10}"
       NEBULA_SLOW_QUERY_CAPACITY: "${NEBULA_SLOW_QUERY_CAPACITY:-32}"
 
-      # Background snapshot scheduler. Without periodic snapshots,
-      # cold WAL recovery replays everything since the dawn of the
-      # data dir — minutes on a multi-GB WAL. Defaults: snapshot
-      # every 15 min or whenever WAL exceeds 50 MiB, whichever
-      # comes first; compact-after-snapshot on.
-      NEBULA_SNAPSHOT_INTERVAL_SECS: "${NEBULA_SNAPSHOT_INTERVAL_SECS:-900}"
-      NEBULA_SNAPSHOT_WAL_BYTES: "${NEBULA_SNAPSHOT_WAL_BYTES:-52428800}"
+      # Background snapshot scheduler. The snapshot holds the index read
+      # lock for the whole serialize, during which writers (and, via
+      # parking_lot write-preference, readers) block — the runtime stalls
+      # until it finishes. So snapshots must be INFREQUENT and FAST:
+      #  - interval 1h (was 15m): the unavoidable ~2-min stall happens
+      #    hourly, not every 15 min. With ~39 GiB resident the old 15-min
+      #    cadence + 50 MiB size trigger fired constantly and the snapshot
+      #    (zstd-3, ~8 min) never completed before the watchdog/OOM killed
+      #    it — `snapshot completed` count was 0 across every restart.
+      #  - WAL-bytes trigger 1 GiB (was 50 MiB): same reason; bound recovery
+      #    replay to ~1 GiB without snapshotting on every few writes.
+      # Paired with zstd level 1 (durability.rs) so the lock-hold is ~2 min,
+      # comfortably under NEBULA_WATCHDOG_STALL_SECS below. The permanent
+      # fix (no stall at all) is a non-blocking COW/fork snapshot — tracked.
+      NEBULA_SNAPSHOT_INTERVAL_SECS: "${NEBULA_SNAPSHOT_INTERVAL_SECS:-3600}"
+      NEBULA_SNAPSHOT_WAL_BYTES: "${NEBULA_SNAPSHOT_WAL_BYTES:-1073741824}"
       NEBULA_SNAPSHOT_COMPACT: "${NEBULA_SNAPSHOT_COMPACT:-on}"
+      # Runtime-wedge watchdog (aborts on a stalled tokio runtime). Raised
+      # 300s -> 600s: a snapshot legitimately stalls the runtime for ~2 min
+      # while it holds the index lock, and the old 300s limit fired DURING
+      # the snapshot (SIGABRT/134) before it could complete. 600s clears the
+      # snapshot hold with margin while still bounding a genuine deadlock.
+      NEBULA_WATCHDOG_STALL_SECS: "${NEBULA_WATCHDOG_STALL_SECS:-600}"
 
       RUST_LOG: "info,nebula_server=debug"
     healthcheck:
@@ -337,10 +352,16 @@ services:
           # instead of staying up. The on-disk data dir is ~11 GB and the
           # cold-recovery transient runs ~3x that (~33 GB), so 40g clears
           # the peak with real margin; 32g sat right at the transient edge
-          # and could still thrash. Snapshot READ streaming already shipped
-          # (PR #65); the remaining cost is the live arena itself, which
-          # is RAM-resident until on-disk / quantized HNSW lands.
-          memory: 40g
+          # and could still thrash. 40g was STILL too tight: the live arena
+          # grew to ~39 GiB (2.2M docs), leaving ~2.5% headroom, and the
+          # periodic snapshot's transient + the request pile-up it causes
+          # (it holds the index read lock for minutes) tipped the cgroup
+          # over 40g -> OOM-kill (SIGKILL/137) every ~18 min. 56g gives
+          # ~17 GiB headroom over the current arena. NOTE: the arena is
+          # RAM-resident and grows with the dataset, so this cap must track
+          # it (watch nebula_memory_resident_bytes / the NebulaMemoryNearCap
+          # alert); the permanent footprint fix is on-disk/quantized HNSW.
+          memory: 56g
 
   # ---------------------------------------------------------------------------
   # Optional follower replica. Tails the leader's WAL over gRPC and
@@ -399,10 +420,13 @@ services:
       NEBULA_TRUSTED_PROXIES: "${NEBULA_TRUSTED_PROXIES:-}"
       # Follower runs the same snapshot scheduler so its own WAL
       # (built from replicated records) stays compactable. Same
-      # defaults as the leader.
-      NEBULA_SNAPSHOT_INTERVAL_SECS: "${NEBULA_SNAPSHOT_INTERVAL_SECS:-900}"
-      NEBULA_SNAPSHOT_WAL_BYTES: "${NEBULA_SNAPSHOT_WAL_BYTES:-52428800}"
+      # infrequent+fast cadence and watchdog margin as the leader (see
+      # the leader block for the rationale — snapshot holds the index
+      # lock and stalls the runtime, so it must finish under the watchdog).
+      NEBULA_SNAPSHOT_INTERVAL_SECS: "${NEBULA_SNAPSHOT_INTERVAL_SECS:-3600}"
+      NEBULA_SNAPSHOT_WAL_BYTES: "${NEBULA_SNAPSHOT_WAL_BYTES:-1073741824}"
       NEBULA_SNAPSHOT_COMPACT: "${NEBULA_SNAPSHOT_COMPACT:-on}"
+      NEBULA_WATCHDOG_STALL_SECS: "${NEBULA_WATCHDOG_STALL_SECS:-600}"
       # No Redis / LLM on the follower in the demo — reads don't
       # need them, and adding them would double the memory for no
       # benefit in the default stack.
@@ -432,9 +456,9 @@ services:
           # follower in Restarting (137) permanently. Effect: showcase
           # nginx round-robins to the dead follower upstream half the time
           # and the user sees 502 / "no live upstreams". Kept symmetric
-          # with the leader so a full replica never OOMs where the leader
-          # would not.
-          memory: 40g
+          # with the leader (56g) so a full replica never OOMs where the
+          # leader would not — same arena, same snapshot-transient profile.
+          memory: 56g
 
   # ---------------------------------------------------------------------------
   # Observability

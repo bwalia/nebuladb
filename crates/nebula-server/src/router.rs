@@ -194,6 +194,7 @@ async fn metrics_handler(State(s): State<AppState>) -> (StatusCode, [(&'static s
     }
 
     render_durability_metrics(&mut body, &s);
+    render_memory_metrics(&mut body);
 
     (
         StatusCode::OK,
@@ -204,24 +205,30 @@ async fn metrics_handler(State(s): State<AppState>) -> (StatusCode, [(&'static s
 
 /// Append WAL / snapshot durability gauges to the `/metrics` body.
 ///
-/// Lives here (not in `Metrics::render`) because these read live
-/// state off `AppState` — the index's WAL + on-disk snapshots and the
-/// scheduler-enabled flag — rather than in-process counters.
+/// Reads ONLY from `AppState::durability_cache` — a set of atomics a
+/// background sampler in `main.rs` refreshes every ~30s. This used to
+/// walk the WAL (`wal_stats()` + per-segment `fs::metadata` over a
+/// multi-GB WAL + two `latest_snapshot_header()` decodes) on every
+/// scrape, which took ~8s of blocking disk I/O and timed out Prometheus
+/// every 15s. Now it's a few atomic loads — no index calls, no disk.
 ///
 /// Emission rules (kept consistent so alerts don't see bogus values):
-/// - In-memory index (`wal_stats()` is `None`): emit
-///   `nebula_wal_bytes 0` and `nebula_wal_bytes_since_snapshot 0`, and
-///   OMIT `nebula_snapshot_age_seconds` (there is no snapshot — a huge
-///   bogus age would falsely trip `NebulaSnapshotAgeHigh`).
+/// - In-memory index / not yet sampled: the cache is all-zero, so we
+///   emit `nebula_wal_bytes 0` and `nebula_wal_bytes_since_snapshot 0`,
+///   and OMIT `nebula_snapshot_age_seconds` (there is no snapshot — a
+///   huge bogus age would falsely trip `NebulaSnapshotAgeHigh`).
 /// - Persistent but no snapshot yet: WAL gauges are real,
-///   `nebula_snapshot_age_seconds` is still omitted.
+///   `snapshot_taken_at_ms == 0` so `nebula_snapshot_age_seconds` is
+///   still omitted.
 /// - `nebula_snapshot_scheduler_enabled` is always emitted (0/1); it's
-///   the Bug C signal and must never silently disappear.
+///   the Bug C signal and must never silently disappear. Still read
+///   directly off `s.snapshot_scheduler_enabled` (already cheap).
 fn render_durability_metrics(body: &mut String, s: &AppState) {
     use std::fmt::Write as _;
     use std::time::SystemTime;
 
-    let wal_bytes = s.index.wal_stats().map(|w| w.total_bytes).unwrap_or(0);
+    let (wal_bytes, bytes_since, snapshot_taken_at_ms) = s.durability_cache.load();
+
     let _ = writeln!(body, "# HELP nebula_wal_bytes Total bytes in the WAL on disk (0 when in-memory only)");
     let _ = writeln!(body, "# TYPE nebula_wal_bytes gauge");
     let _ = writeln!(body, "nebula_wal_bytes {wal_bytes}");
@@ -229,7 +236,6 @@ fn render_durability_metrics(body: &mut String, s: &AppState) {
     // Bytes appended after the newest committed snapshot's segment seq.
     // Per-segment granularity (slight over-estimate bounded by one
     // segment) — see nebula_index::TextIndex::wal_bytes_since_snapshot.
-    let bytes_since = s.index.wal_bytes_since_snapshot().unwrap_or(0);
     let _ = writeln!(
         body,
         "# HELP nebula_wal_bytes_since_snapshot Bytes in WAL segments at/after the newest snapshot's seq (per-segment granularity; 0 when in-memory)"
@@ -237,14 +243,16 @@ fn render_durability_metrics(body: &mut String, s: &AppState) {
     let _ = writeln!(body, "# TYPE nebula_wal_bytes_since_snapshot gauge");
     let _ = writeln!(body, "nebula_wal_bytes_since_snapshot {bytes_since}");
 
-    // Snapshot age: only emitted when a snapshot actually exists, so a
-    // node with no snapshot doesn't report a bogus multi-decade age.
-    if let Some(header) = s.index.latest_snapshot_header() {
+    // Snapshot age: only emitted when a snapshot actually exists
+    // (taken_at_ms != 0), so a node with no snapshot doesn't report a
+    // bogus multi-decade age. `now` is cheap, so it's computed here at
+    // render time rather than cached.
+    if snapshot_taken_at_ms != 0 {
         let now_secs = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let taken_secs = header.taken_at_ms / 1000;
+        let taken_secs = snapshot_taken_at_ms / 1000;
         let age = now_secs.saturating_sub(taken_secs);
         let _ = writeln!(body, "# HELP nebula_snapshot_age_seconds Wall time since the most recent committed snapshot");
         let _ = writeln!(body, "# TYPE nebula_snapshot_age_seconds gauge");
@@ -255,6 +263,36 @@ fn render_durability_metrics(body: &mut String, s: &AppState) {
     let _ = writeln!(body, "# HELP nebula_snapshot_scheduler_enabled 1 if the snapshot scheduler has any trigger enabled, 0 if disabled (Bug C)");
     let _ = writeln!(body, "# TYPE nebula_snapshot_scheduler_enabled gauge");
     let _ = writeln!(body, "nebula_snapshot_scheduler_enabled {enabled}");
+}
+
+/// cgroup memory accounting, exposed so an alert can fire BEFORE the
+/// resident HNSW arena grows into the cgroup cap and the kernel OOM-kills
+/// the process (which docker masks as a clean restart — see the
+/// NebulaMemoryNearCap alert). These are cheap reads of two small cgroup
+/// files (no lock, no disk-walk), so they stay on the hot scrape path.
+/// cgroup v2 first, then v1; silently emit nothing if neither is present
+/// (e.g. running outside a container in tests).
+fn render_memory_metrics(body: &mut String) {
+    use std::fmt::Write as _;
+    let read_u64 = |p: &str| -> Option<u64> {
+        std::fs::read_to_string(p).ok()?.trim().parse::<u64>().ok()
+    };
+    // current usage
+    let current = read_u64("/sys/fs/cgroup/memory.current")
+        .or_else(|| read_u64("/sys/fs/cgroup/memory/memory.usage_in_bytes"));
+    // hard limit ("max" can be the literal "max" => unlimited => skip)
+    let limit = read_u64("/sys/fs/cgroup/memory.max")
+        .or_else(|| read_u64("/sys/fs/cgroup/memory/memory.limit_in_bytes"));
+    if let Some(c) = current {
+        let _ = writeln!(body, "# HELP nebula_memory_resident_bytes Process cgroup memory usage in bytes");
+        let _ = writeln!(body, "# TYPE nebula_memory_resident_bytes gauge");
+        let _ = writeln!(body, "nebula_memory_resident_bytes {c}");
+    }
+    if let Some(l) = limit {
+        let _ = writeln!(body, "# HELP nebula_memory_limit_bytes cgroup memory hard limit in bytes");
+        let _ = writeln!(body, "# TYPE nebula_memory_limit_bytes gauge");
+        let _ = writeln!(body, "nebula_memory_limit_bytes {l}");
+    }
 }
 
 // ---------- documents ----------
