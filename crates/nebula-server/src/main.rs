@@ -105,13 +105,11 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     //                         nginx read pool fails over to the
     //                         follower instead of waiting on timeout)
     //
-    // The docker healthcheck is configured to use /healthz/live so the
-    // container stays "healthy" through recovery. /healthz still
-    // returns 503 (legible to humans and to nginx via
-    // `proxy_next_upstream http_503`) so the read pool routes around
-    // a recovering leader.
+    // The docker healthcheck uses /healthz/live so the container stays
+    // "healthy" through recovery, while /healthz returns 503
+    // {"status":"recovering"} (legible to humans and curl smoke tests)
+    // until the real router takes over below.
     let boot_started = std::time::Instant::now();
-    let (boot_shutdown_tx, boot_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let boot_listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(
         "nebula-server boot listener bound on {bind} (serving 503 until recovery completes)"
@@ -144,11 +142,12 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                     })),
                 )
             });
-        let _ = axum::serve(boot_listener, boot_router)
-            .with_graceful_shutdown(async move {
-                let _ = boot_shutdown_rx.await;
-            })
-            .await;
+        // Runs until the task is aborted at handoff time (below). We do
+        // NOT use `with_graceful_shutdown`: axum 0.7 waits for every open
+        // connection to drain, and nginx's upstream keepalive pool keeps
+        // idle connections to :8080 open indefinitely, so a graceful drain
+        // would hang forever and the real listener would never bind.
+        let _ = axum::serve(boot_listener, boot_router).await;
     });
 
     let raw_embedder: Arc<dyn Embedder> = match std::env::var("NEBULA_OPENAI_API_KEY").ok() {
@@ -778,15 +777,23 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             Vec::new()
         };
 
-    // Hand off from the boot stub to the real router. Signal the
-    // stub to stop accepting new connections, wait for it to drain
-    // (it owns the listener; we can't rebind until it drops it),
-    // then bind the real listener. The unbind window is microseconds
-    // and tokio's `TcpListener::bind` sets SO_REUSEADDR so the rebind
-    // is immediate.
-    let _ = boot_shutdown_tx.send(());
+    // Hand off from the boot stub to the real router. We ABORT the stub
+    // task rather than gracefully draining it: axum 0.7's
+    // `with_graceful_shutdown` blocks until every open connection closes,
+    // and nginx's upstream keepalive pool keeps idle connections to :8080
+    // open indefinitely — so a graceful drain hangs forever, the real
+    // listener never binds, and the leader stays stuck serving 503
+    // "recovering" even though recovery already finished. Aborting drops
+    // the serve future, releasing the listener immediately; we await the
+    // handle so the listener is fully dropped before we rebind. tokio's
+    // `TcpListener::bind` sets SO_REUSEADDR so the rebind is immediate.
+    boot_handle.abort();
     if let Err(e) = boot_handle.await {
-        tracing::warn!(error = ?e, "boot listener task did not exit cleanly");
+        // Cancellation is expected (we just aborted it); only surface a
+        // genuine panic in the stub task.
+        if !e.is_cancelled() {
+            tracing::warn!(error = ?e, "boot listener task panicked during handoff");
+        }
     }
     tracing::info!("nebula-server listening on {bind}");
     let listener = tokio::net::TcpListener::bind(bind).await?;
