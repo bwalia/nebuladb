@@ -178,6 +178,13 @@ pub struct TextIndex {
     wal: Option<Arc<Wal>>,
     /// Parent dir for snapshots. Always `Some` iff `wal` is `Some`.
     data_dir: Option<PathBuf>,
+    /// Directory snapshots are written to / loaded from. `Some` iff
+    /// `wal` is `Some`. Defaults to `data_dir/snapshots`, but is
+    /// overridable via the `NEBULA_SNAPSHOT_DIR` env at construction
+    /// so a leader/follower pair can share one snapshots volume
+    /// (design 0007 §4). When unset, behavior is identical to the
+    /// historical `data_dir/snapshots` layout.
+    snapshot_dir: Option<PathBuf>,
 }
 
 impl TextIndex {
@@ -195,7 +202,19 @@ impl TextIndex {
             }),
             wal: None,
             data_dir: None,
+            snapshot_dir: None,
         })
+    }
+
+    /// Resolve the snapshots directory for a persistent index:
+    /// `NEBULA_SNAPSHOT_DIR` if set (so a leader/follower pair can
+    /// share one volume — design 0007 §4), else the historical
+    /// `data_dir/snapshots`. The default keeps current behavior when
+    /// the env is unset.
+    fn resolve_snapshot_dir(data_dir: &Path) -> PathBuf {
+        std::env::var("NEBULA_SNAPSHOT_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| data_dir.join("snapshots"))
     }
 
     /// Durable variant: opens (or creates) a WAL in `data_dir/wal`,
@@ -213,10 +232,25 @@ impl TextIndex {
         config: HnswConfig,
         data_dir: impl AsRef<Path>,
     ) -> Result<Self> {
+        Self::open_persistent_in(embedder, metric, config, data_dir, None)
+    }
+
+    /// Like [`Self::open_persistent`] but with an explicit snapshots
+    /// directory override. `snapshot_dir = None` resolves the dir the
+    /// same way the default path does: `NEBULA_SNAPSHOT_DIR` if set,
+    /// else `data_dir/snapshots`. Threading the dir in explicitly lets
+    /// tests be hermetic without mutating the process-global env.
+    pub fn open_persistent_in(
+        embedder: Arc<dyn Embedder>,
+        metric: Metric,
+        config: HnswConfig,
+        data_dir: impl AsRef<Path>,
+        snapshot_dir: Option<PathBuf>,
+    ) -> Result<Self> {
         let dim = embedder.dim();
         let data_dir = data_dir.as_ref().to_path_buf();
         let wal_dir = data_dir.join("wal");
-        let snapshots_dir = data_dir.join("snapshots");
+        let snapshots_dir = snapshot_dir.unwrap_or_else(|| Self::resolve_snapshot_dir(&data_dir));
         std::fs::create_dir_all(&wal_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
         std::fs::create_dir_all(&snapshots_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
 
@@ -258,6 +292,7 @@ impl TextIndex {
             inner: RwLock::new(inner),
             wal: Some(Arc::clone(&wal)),
             data_dir: Some(data_dir),
+            snapshot_dir: Some(snapshots_dir),
         };
 
         // Replay WAL records that postdate the snapshot. We only
@@ -1005,8 +1040,8 @@ impl TextIndex {
     }
 
     pub fn snapshot(&self) -> Result<SnapshotOutcome> {
-        let data_dir = self
-            .data_dir
+        let snapshots_dir = self
+            .snapshot_dir
             .as_ref()
             .ok_or_else(|| IndexError::Invalid("index is in-memory; no data_dir".into()))?;
         let wal = self
@@ -1036,7 +1071,7 @@ impl TextIndex {
 
         let g = self.inner.read();
         let path = durability::write_snapshot_streaming(
-            &data_dir.join("snapshots"),
+            snapshots_dir,
             wal_seq,
             g.next_id,
             &g.docs,
@@ -1056,20 +1091,50 @@ impl TextIndex {
     /// snapshot's captured seq. Safe to call any time; does
     /// nothing if no snapshot exists yet.
     pub fn compact_wal(&self) -> Result<usize> {
-        let (Some(data_dir), Some(wal)) = (self.data_dir.as_ref(), self.wal.as_ref()) else {
+        self.compact_wal_inner(true)
+    }
+
+    /// Like [`Self::compact_wal`] but never prunes old snapshot files
+    /// from the snapshots dir. Used by a leader in the offloaded
+    /// snapshot mode (design 0007 §4): it compacts its WAL against a
+    /// snapshot the *follower* published into the shared dir, but it
+    /// does NOT own those files, so it must not delete them — only the
+    /// snapshotter (follower / standalone) prunes.
+    pub fn compact_wal_no_prune(&self) -> Result<usize> {
+        self.compact_wal_inner(false)
+    }
+
+    fn compact_wal_inner(&self, prune: bool) -> Result<usize> {
+        let (Some(snapshots_dir), Some(wal)) = (self.snapshot_dir.as_ref(), self.wal.as_ref())
+        else {
             return Ok(0);
         };
-        let snapshots_dir = data_dir.join("snapshots");
-        let Some((header, _)) = durability::load_latest_snapshot(&snapshots_dir)? else {
+        let Some((header, _)) = durability::load_latest_snapshot(snapshots_dir)? else {
             return Ok(0);
         };
-        // Also prune older snapshots so we don't accumulate them
-        // indefinitely.
-        let _ = durability::prune_old_snapshots(&snapshots_dir)?;
+        if prune {
+            // Also prune older snapshots so we don't accumulate them
+            // indefinitely. Only the owner of the snapshots dir does
+            // this.
+            let _ = durability::prune_old_snapshots(snapshots_dir)?;
+        }
         let removed = wal
             .compact(header.wal_seq_at_snapshot)
             .map_err(durability::wal_err)?;
         Ok(removed)
+    }
+
+    /// Delete snapshot files older than the newest one in the
+    /// configured snapshots dir, WITHOUT touching the WAL. Used by a
+    /// follower in the offloaded snapshot mode (design 0007 §4): it
+    /// owns the shared snapshots, but has no authoritative WAL to
+    /// compact, so it prunes snapshots directly. Returns the number of
+    /// files removed; no-op for in-memory indexes.
+    pub fn prune_snapshots(&self) -> Result<usize> {
+        let Some(snapshots_dir) = self.snapshot_dir.as_ref() else {
+            return Ok(0);
+        };
+        durability::prune_old_snapshots(snapshots_dir)
     }
 
     /// Return WAL size / segment stats for the admin endpoint.
@@ -1098,10 +1163,18 @@ impl TextIndex {
     /// or `None` if the index is in-memory or has no snapshot yet.
     /// Surfaced to `/metrics` for `nebula_snapshot_age_seconds`.
     pub fn latest_snapshot_header(&self) -> Option<durability::SnapshotHeader> {
-        let data_dir = self.data_dir.as_ref()?;
-        durability::read_latest_snapshot_header(&data_dir.join("snapshots"))
+        let snapshots_dir = self.snapshot_dir.as_ref()?;
+        durability::read_latest_snapshot_header(snapshots_dir)
             .ok()
             .flatten()
+    }
+
+    /// Directory snapshots are written to / loaded from. `None` for
+    /// in-memory indexes. Resolved at construction from
+    /// `NEBULA_SNAPSHOT_DIR` (else `data_dir/snapshots`). The
+    /// role-aware scheduler passes this to `snapshot_to`.
+    pub fn snapshot_dir(&self) -> Option<&Path> {
+        self.snapshot_dir.as_deref()
     }
 
     /// `true` if this index is durably persisting mutations.
@@ -1483,5 +1556,76 @@ mod tests {
         assert!(idx.get("a", "2").is_none());
         assert!(idx.get("b", "1").is_some(), "b must be untouched");
         assert_eq!(idx.empty_bucket("nonexistent"), 0);
+    }
+
+    fn persistent_index(data_dir: &Path, snapshot_dir: Option<PathBuf>) -> TextIndex {
+        let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(64));
+        TextIndex::open_persistent_in(
+            emb,
+            Metric::Cosine,
+            HnswConfig::default(),
+            data_dir,
+            snapshot_dir,
+        )
+        .unwrap()
+    }
+
+    /// `snapshot_to` stamps the header with the EXACT caller-supplied
+    /// mark_seq — the primitive a follower relies on to mark a snapshot
+    /// with the leader-WAL seq it has applied (design 0007 §4).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn snapshot_to_stamps_explicit_mark_seq() {
+        let data = tempfile::tempdir().unwrap();
+        let snaps = data.path().join("snapshots");
+        let idx = persistent_index(data.path(), Some(snaps.clone()));
+        idx.upsert_text("docs", "a", "hello", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        let mark = 4242;
+        let out = idx.snapshot_to(&snaps, mark).unwrap();
+        assert_eq!(out.wal_seq_captured, mark);
+
+        // Round-trip the header off disk.
+        let header = durability::read_latest_snapshot_header(&snaps)
+            .unwrap()
+            .expect("snapshot header present");
+        assert_eq!(header.wal_seq_at_snapshot, mark);
+    }
+
+    /// An explicit snapshot_dir override writes/reads snapshots there
+    /// (not in `data_dir/snapshots`), and recovery loads from it. This
+    /// threads the dir through construction so the test is hermetic —
+    /// no process-global env mutation (design 0007 §4 task 1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn snapshot_dir_override_writes_reads_and_recovers() {
+        let data = tempfile::tempdir().unwrap();
+        let alt = tempfile::tempdir().unwrap();
+        let alt_snaps = alt.path().to_path_buf();
+
+        let idx = persistent_index(data.path(), Some(alt_snaps.clone()));
+        assert_eq!(idx.snapshot_dir(), Some(alt_snaps.as_path()));
+        idx.upsert_text("docs", "a", "persisted", serde_json::json!({}))
+            .await
+            .unwrap();
+        let out = idx.snapshot().unwrap();
+        // Snapshot landed in the override dir, NOT data_dir/snapshots.
+        assert!(out.path.starts_with(&alt_snaps));
+        let default_dir = data.path().join("snapshots");
+        let default_has_snap = std::fs::read_dir(&default_dir)
+            .map(|rd| rd.filter_map(|e| e.ok()).any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .ends_with(".nsnap.ok")
+            }))
+            .unwrap_or(false);
+        assert!(!default_has_snap, "no snapshot should land in the default dir");
+
+        drop(idx);
+        // Recovery from the same override dir restores the document.
+        let recovered = persistent_index(data.path(), Some(alt_snaps.clone()));
+        assert_eq!(recovered.get("docs", "a").unwrap().text, "persisted");
+        let header = recovered.latest_snapshot_header().expect("header via override dir");
+        assert_eq!(header.wal_seq_at_snapshot, out.wal_seq_captured);
     }
 }

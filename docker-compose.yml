@@ -197,6 +197,12 @@ services:
       # a snapshot is taken on demand via the Admin tab. Remove this
       # volume (or unset NEBULA_DATA_DIR below) to run fully in-memory.
       - nebula-data:/var/lib/nebuladb
+      # Shared snapshots volume (design 0007 §4). The FOLLOWER takes the
+      # snapshots and publishes them here; the LEADER reads them from
+      # here to compact its WAL. Both nodes mount the SAME volume so the
+      # leader never has to take a snapshot itself (no multi-minute
+      # index-lock stall on the write-serving node).
+      - nebula-snapshots:/var/lib/nebuladb/snapshots-shared
     environment:
       NEBULA_BIND: "0.0.0.0:8080"
       NEBULA_GRPC_BIND: "0.0.0.0:50051"
@@ -289,6 +295,15 @@ services:
       NEBULA_SNAPSHOT_INTERVAL_SECS: "${NEBULA_SNAPSHOT_INTERVAL_SECS:-3600}"
       NEBULA_SNAPSHOT_WAL_BYTES: "${NEBULA_SNAPSHOT_WAL_BYTES:-1073741824}"
       NEBULA_SNAPSHOT_COMPACT: "${NEBULA_SNAPSHOT_COMPACT:-on}"
+      # Shared snapshots dir (design 0007 §4): leader and follower point
+      # NEBULA_SNAPSHOT_DIR at the same volume mounted above. The leader
+      # reads the follower's published snapshots from here to compact.
+      NEBULA_SNAPSHOT_DIR: "${NEBULA_SNAPSHOT_DIR:-/var/lib/nebuladb/snapshots-shared}"
+      # Offload snapshotting to the follower: the leader runs in
+      # compact-only mode and NEVER calls snapshot() (never holds the
+      # index read lock for minutes — removes the per-snapshot stall).
+      # Leader-only opt-in; the follower derives its role automatically.
+      NEBULA_SNAPSHOT_OFFLOAD: "${NEBULA_SNAPSHOT_OFFLOAD:-on}"
       # Runtime-wedge watchdog (aborts on a stalled tokio runtime). Raised
       # 300s -> 600s: a snapshot legitimately stalls the runtime for ~2 min
       # while it holds the index lock, and the old 300s limit fired DURING
@@ -403,6 +418,10 @@ services:
       # restarts resume from the last-applied record instead of
       # replaying from BEGIN.
       - nebula-follower-data:/var/lib/nebuladb
+      # Shared snapshots volume (design 0007 §4) — same volume the
+      # leader mounts. The follower OWNS snapshotting: it writes here
+      # and prunes here; the leader only reads.
+      - nebula-snapshots:/var/lib/nebuladb/snapshots-shared
     environment:
       NEBULA_BIND: "0.0.0.0:8080"
       NEBULA_GRPC_BIND: "0.0.0.0:50051"
@@ -432,6 +451,11 @@ services:
       NEBULA_SNAPSHOT_INTERVAL_SECS: "${NEBULA_SNAPSHOT_INTERVAL_SECS:-3600}"
       NEBULA_SNAPSHOT_WAL_BYTES: "${NEBULA_SNAPSHOT_WAL_BYTES:-1073741824}"
       NEBULA_SNAPSHOT_COMPACT: "${NEBULA_SNAPSHOT_COMPACT:-on}"
+      # Shared snapshots dir (design 0007 §4): the follower writes its
+      # snapshots here, stamped with the leader-WAL seq it has applied.
+      # No NEBULA_SNAPSHOT_OFFLOAD needed — the follower derives the
+      # FollowerSnapshot mode from NEBULA_NODE_ROLE=follower above.
+      NEBULA_SNAPSHOT_DIR: "${NEBULA_SNAPSHOT_DIR:-/var/lib/nebuladb/snapshots-shared}"
       NEBULA_WATCHDOG_STALL_SECS: "${NEBULA_WATCHDOG_STALL_SECS:-600}"
       # No Redis / LLM on the follower in the demo — reads don't
       # need them, and adding them would double the memory for no
@@ -618,3 +642,7 @@ volumes:
   grafana-data:
   nebula-data:
   nebula-follower-data:
+  # Shared snapshots volume (design 0007 §4): mounted on BOTH db nodes.
+  # The follower publishes snapshots here; the leader reads them to
+  # compact its WAL without ever snapshotting itself.
+  nebula-snapshots:
