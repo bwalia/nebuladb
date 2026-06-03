@@ -1135,7 +1135,13 @@ impl TextIndex {
         else {
             return Ok(0);
         };
-        let Some((header, _)) = durability::load_latest_snapshot(snapshots_dir)? else {
+        // Header-only read: compaction only needs `wal_seq_at_snapshot`.
+        // Loading the FULL snapshot here (decompress + deserialize the
+        // multi-GB arena) is catastrophic in LeaderCompactOnly mode, which
+        // runs this every poll (~30s) — it would peg the leader on the
+        // snapshot every cycle. `read_latest_snapshot_header` streams just
+        // the header off the front of the file.
+        let Some(header) = durability::read_latest_snapshot_header(snapshots_dir)? else {
             return Ok(0);
         };
         if prune {
