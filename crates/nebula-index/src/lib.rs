@@ -255,8 +255,34 @@ impl TextIndex {
         std::fs::create_dir_all(&snapshots_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
 
         // Load snapshot first, then replay only later WAL records.
+        //
+        // Migration fallback: if the configured snapshot dir (e.g. a newly
+        // introduced shared NEBULA_SNAPSHOT_DIR — design 0007 §4) has no
+        // snapshot yet, also look in the legacy per-node `data_dir/snapshots`.
+        // Without this, switching to a shared dir while the local WAL has
+        // ALREADY been compacted past the legacy snapshot's seq would
+        // silently recover an INCOMPLETE index (replay starts at 0 but the
+        // pre-snapshot segments are gone). The fallback lets a first boot on
+        // the new dir find the old snapshot; the follower then republishes
+        // into the shared dir and subsequent boots use it.
+        let legacy_snapshots_dir = data_dir.join("snapshots");
+        let loaded_snapshot = match durability::load_latest_snapshot(&snapshots_dir)? {
+            Some(s) => Some(s),
+            None if snapshots_dir != legacy_snapshots_dir => {
+                let s = durability::load_latest_snapshot(&legacy_snapshots_dir)?;
+                if s.is_some() {
+                    tracing::warn!(
+                        legacy = %legacy_snapshots_dir.display(),
+                        configured = %snapshots_dir.display(),
+                        "no snapshot in configured dir; recovering from legacy dir (one-time migration)"
+                    );
+                }
+                s
+            }
+            None => None,
+        };
         let (inner, hnsw, snapshot_wal_seq) =
-            match durability::load_latest_snapshot(&snapshots_dir)? {
+            match loaded_snapshot {
                 Some((header, hnsw_snap)) => {
                     if hnsw_snap.dim != dim {
                         return Err(IndexError::Invalid(format!(
