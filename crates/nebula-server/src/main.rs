@@ -351,10 +351,57 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     // drift from the scheduler's actual state.
     let snapshot_scheduler_enabled =
         raft_handle.is_none() && snapshot_cfg.any_trigger_enabled() && index.wal_stats().is_some();
+
+    // Cluster role + peers parse up front so a typo fails boot rather
+    // than silently degrading. The follower_cursor atomic is only
+    // created when we're actually a follower — leaders and standalones
+    // never need it. Parsed here (before the scheduler spawn) because
+    // the role selects the scheduler's SnapshotMode (design 0007 §4)
+    // and the follower hands its cursor to the FollowerSnapshot mode.
+    let cluster = Arc::new(
+        ClusterConfig::from_env()
+            .map_err(|e| -> Box<dyn std::error::Error> { format!("cluster config: {e}").into() })?,
+    );
+    let follower_cursor: Option<Arc<FollowerCursor>> = if cluster.is_follower() {
+        Some(Arc::new(FollowerCursor::default()))
+    } else {
+        None
+    };
+
+    // Select the snapshot strategy (design 0007 §4):
+    //   * Follower → FollowerSnapshot: it owns snapshotting, stamping
+    //     each snapshot with the leader-WAL seq it has applied
+    //     (`follower_cursor`) into the shared dir.
+    //   * Leader + NEBULA_SNAPSHOT_OFFLOAD on → LeaderCompactOnly: it
+    //     never snapshots (never holds the index lock for minutes),
+    //     only compacts its WAL against the follower's snapshots.
+    //   * else (Standalone, or a leader with offload OFF) → Standalone:
+    //     snapshot locally as today. A leader with offload OFF falls
+    //     back to self-snapshotting so a misconfigured pair is still
+    //     durable — the safe, current-behavior default.
+    let snapshot_offload_on = std::env::var("NEBULA_SNAPSHOT_OFFLOAD")
+        .map(|v| matches!(v.as_str(), "on" | "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let snapshot_mode = match (cluster.role, follower_cursor.as_ref()) {
+        (nebula_server::NodeRole::Follower, Some(cursor)) => {
+            snapshot_scheduler::SnapshotMode::FollowerSnapshot {
+                cursor: Arc::clone(cursor),
+            }
+        }
+        (nebula_server::NodeRole::Leader, _) if snapshot_offload_on => {
+            snapshot_scheduler::SnapshotMode::LeaderCompactOnly
+        }
+        _ => snapshot_scheduler::SnapshotMode::Standalone,
+    };
+
     let snapshot_handle = if raft_handle.is_some() {
         None
     } else {
-        Some(snapshot_scheduler::spawn(Arc::clone(&index), snapshot_cfg))
+        Some(snapshot_scheduler::spawn(
+            Arc::clone(&index),
+            snapshot_cfg,
+            snapshot_mode,
+        ))
     };
 
     // Durability-metrics sampler (#69 hardening). The WAL/snapshot
@@ -542,20 +589,6 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         }
         eng
     });
-
-    // Cluster role + peers parse up front so a typo fails boot
-    // rather than silently degrading. The follower_cursor atomic
-    // is only created when we're actually a follower — leaders
-    // and standalones never need it.
-    let cluster = Arc::new(
-        ClusterConfig::from_env()
-            .map_err(|e| -> Box<dyn std::error::Error> { format!("cluster config: {e}").into() })?,
-    );
-    let follower_cursor: Option<Arc<FollowerCursor>> = if cluster.is_follower() {
-        Some(Arc::new(FollowerCursor::default()))
-    } else {
-        None
-    };
 
     // Per-request timeout for non-streaming routes. Off by default
     // so existing slow ingestions (bulk upsert with cold embedder)

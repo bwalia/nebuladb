@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use nebula_embed::{Embedder, MockEmbedder};
 use nebula_index::TextIndex;
-use nebula_server::snapshot_scheduler::{self, SnapshotSchedulerConfig};
+use nebula_server::snapshot_scheduler::{self, SnapshotMode, SnapshotSchedulerConfig};
 use nebula_vector::{HnswConfig, Metric};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -41,7 +41,7 @@ async fn scheduler_takes_a_snapshot_when_interval_elapses() {
         compact: true,
     };
 
-    let handle = snapshot_scheduler::spawn(Arc::clone(&index), cfg);
+    let handle = snapshot_scheduler::spawn(Arc::clone(&index), cfg, SnapshotMode::Standalone);
 
     // Give the loop time to fire at least once.
     tokio::time::sleep(Duration::from_millis(400)).await;
@@ -93,7 +93,7 @@ async fn size_trigger_does_not_refire_without_growth() {
         poll_interval: Duration::from_millis(50),
         compact: false, // simulate the "follower lag → compact no-op" state
     };
-    let handle = snapshot_scheduler::spawn(Arc::clone(&index), cfg);
+    let handle = snapshot_scheduler::spawn(Arc::clone(&index), cfg, SnapshotMode::Standalone);
     // Let the scheduler poll many times. With the bug it would fire
     // every poll (~12 times in 600ms). With the fix it should fire
     // at most once (the initial growth), then stay quiet.
@@ -132,7 +132,7 @@ async fn scheduler_exits_when_disabled() {
         poll_interval: Duration::from_secs(1),
         compact: false,
     };
-    let handle = snapshot_scheduler::spawn(index, cfg);
+    let handle = snapshot_scheduler::spawn(index, cfg, SnapshotMode::Standalone);
     // 100ms is plenty for the scheduler to see "no WAL" and exit.
     let done = tokio::time::timeout(Duration::from_millis(500), handle).await;
     assert!(done.is_ok(), "scheduler did not exit promptly for in-mem index");

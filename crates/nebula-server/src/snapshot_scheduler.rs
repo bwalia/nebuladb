@@ -28,6 +28,30 @@ use std::time::{Duration, Instant};
 
 use nebula_index::TextIndex;
 
+/// Which durability strategy the scheduler runs — design 0007 §4.
+/// Selected once at startup from the node's cluster role + the
+/// `NEBULA_SNAPSHOT_OFFLOAD` opt-in (see `main.rs`).
+pub enum SnapshotMode {
+    /// Single node: snapshot locally on trigger, then (optionally)
+    /// compact. Unchanged from the historical behavior — a standalone
+    /// deployment accepts the brief writer stall as the price of
+    /// having no warm replica to offload to.
+    Standalone,
+    /// Write-serving leader with an offload follower. NEVER snapshots
+    /// (never holds the index read lock for minutes). Each poll it
+    /// only `compact_wal_no_prune()`s against the latest snapshot the
+    /// follower published into the shared dir. It does not own those
+    /// snapshots, so it never prunes them.
+    LeaderCompactOnly,
+    /// Warm standby that owns snapshotting. On trigger it stamps a
+    /// snapshot with the leader-WAL seq it has applied (its
+    /// replication cursor) into the shared dir, then prunes its own
+    /// old snapshots. It never compacts — it has no authoritative WAL.
+    FollowerSnapshot {
+        cursor: std::sync::Arc<crate::state::FollowerCursor>,
+    },
+}
+
 /// Tunables, all env-overridable in [`SnapshotSchedulerConfig::from_env`].
 #[derive(Debug, Clone)]
 pub struct SnapshotSchedulerConfig {
@@ -113,11 +137,12 @@ impl SnapshotSchedulerConfig {
 pub fn spawn(
     index: Arc<TextIndex>,
     cfg: SnapshotSchedulerConfig,
+    mode: SnapshotMode,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move { run(index, cfg).await })
+    tokio::spawn(async move { run(index, cfg, mode).await })
 }
 
-async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig) {
+async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig, mode: SnapshotMode) {
     if !cfg.any_trigger_enabled() {
         tracing::info!("snapshot scheduler disabled (no triggers configured)");
         return;
@@ -127,11 +152,17 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig) {
         tracing::info!("snapshot scheduler disabled (index has no WAL)");
         return;
     }
+    let mode_name = match &mode {
+        SnapshotMode::Standalone => "standalone",
+        SnapshotMode::LeaderCompactOnly => "leader-compact-only",
+        SnapshotMode::FollowerSnapshot { .. } => "follower-snapshot",
+    };
     tracing::info!(
         interval_secs = cfg.interval.as_secs(),
         wal_bytes_threshold = cfg.wal_bytes_threshold,
         poll_secs = cfg.poll_interval.as_secs(),
         compact = cfg.compact,
+        mode = mode_name,
         "snapshot scheduler started"
     );
     let mut last_snapshot = Instant::now();
@@ -149,6 +180,34 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig) {
         .unwrap_or(0);
     loop {
         tokio::time::sleep(cfg.poll_interval).await;
+
+        // Leader: compact-only, every poll, ungated by triggers.
+        // `compact_wal_no_prune` takes NO index lock and no-ops when
+        // there's no newer snapshot in the shared dir — so it's cheap
+        // to run unconditionally and never stalls the serving path.
+        // It never prunes: the follower owns the shared snapshots.
+        if let SnapshotMode::LeaderCompactOnly = mode {
+            let idx = Arc::clone(&index);
+            let outcome = tokio::task::spawn_blocking(move || {
+                idx.compact_wal_no_prune()
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            })
+            .await;
+            match outcome {
+                Ok(Ok(removed)) => {
+                    if removed > 0 {
+                        tracing::info!(
+                            segments_removed = removed,
+                            "leader compacted WAL against follower snapshot"
+                        );
+                    }
+                }
+                Ok(Err(e)) => tracing::error!(error = %e, "leader compact failed"),
+                Err(e) => tracing::error!(error = ?e, "leader compact task panicked"),
+            }
+            continue;
+        }
+
         let wal_bytes = index
             .wal_stats()
             .map(|s| s.total_bytes)
@@ -163,6 +222,18 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig) {
         if !(time_fired || size_fired) {
             continue;
         }
+
+        // Follower not yet caught up to the leader: skip this cycle so
+        // we never stamp a snapshot with seq 0 (which would cover
+        // nothing yet let a leader compact its WAL away).
+        if let SnapshotMode::FollowerSnapshot { cursor } = &mode {
+            let (seg, _off) = cursor.load();
+            if seg == 0 {
+                tracing::info!("follower snapshot skipped (cursor seq 0, not caught up)");
+                continue;
+            }
+        }
+
         let reason = if size_fired && time_fired {
             "size+time"
         } else if size_fired {
@@ -179,21 +250,49 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig) {
         );
         let idx = Arc::clone(&index);
         let compact = cfg.compact;
+        // Capture the follower cursor seq (if any) before moving into
+        // the blocking task.
+        let follower_seq = match &mode {
+            SnapshotMode::FollowerSnapshot { cursor } => Some(cursor.load().0),
+            _ => None,
+        };
         // Snapshot + compact are synchronous and touch disk. Move
         // them to the blocking pool so the tokio runtime stays free
         // to serve requests in the meantime.
         let outcome = tokio::task::spawn_blocking(move || {
-            let snap = idx.snapshot()?;
-            let removed = if compact { idx.compact_wal()? } else { 0 };
-            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((snap, removed))
+            let snap = match follower_seq {
+                // Follower: stamp the snapshot with the leader-WAL seq
+                // we've applied and write it to the configured (shared)
+                // dir. Then prune our own old snapshots. Never compact
+                // — we have no authoritative WAL.
+                Some(seg) => {
+                    let dir = idx
+                        .snapshot_dir()
+                        .ok_or("follower index has no snapshot dir")?
+                        .to_path_buf();
+                    let snap = idx.snapshot_to(&dir, seg)?;
+                    // Prune our own old snapshots (we own the shared
+                    // dir). Do NOT compact: a follower has no
+                    // authoritative WAL.
+                    let _ = idx.prune_snapshots()?;
+                    snap
+                }
+                // Standalone: snapshot locally, then compact (which
+                // also prunes). Unchanged historical behavior.
+                None => {
+                    let snap = idx.snapshot()?;
+                    let _ = if compact { idx.compact_wal()? } else { 0 };
+                    snap
+                }
+            };
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(snap)
         })
         .await;
         match outcome {
-            Ok(Ok((snap, removed))) => {
+            Ok(Ok(snap)) => {
                 tracing::info!(
                     path = %snap.path.display(),
                     wal_seq_captured = snap.wal_seq_captured,
-                    segments_removed = removed,
                     "snapshot scheduler completed"
                 );
                 last_snapshot = Instant::now();
@@ -251,5 +350,147 @@ mod tests {
             ..SnapshotSchedulerConfig::default()
         };
         assert!(!cfg.compact);
+    }
+
+    use crate::state::FollowerCursor;
+    use nebula_embed::{Embedder, MockEmbedder};
+    use nebula_index::TextIndex;
+    use nebula_vector::{HnswConfig, Metric};
+    use std::path::Path;
+
+    fn persistent_index(data_dir: &Path, snapshots: &Path) -> Arc<TextIndex> {
+        let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(64));
+        Arc::new(
+            TextIndex::open_persistent_in(
+                emb,
+                Metric::Cosine,
+                HnswConfig::default(),
+                data_dir,
+                Some(snapshots.to_path_buf()),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn count_snapshots(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(".nsnap.ok"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    // Fast-firing config so a single poll triggers a snapshot.
+    fn fast_cfg() -> SnapshotSchedulerConfig {
+        SnapshotSchedulerConfig {
+            interval: Duration::from_millis(1),
+            wal_bytes_threshold: 0, // size trigger off; time trigger fires immediately
+            poll_interval: Duration::from_millis(20),
+            compact: true,
+        }
+    }
+
+    /// A `FollowerSnapshot` run produces a snapshot stamped with the
+    /// follower cursor's segment seq, in the shared dir.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn follower_snapshot_stamps_cursor_seq() {
+        let data = tempfile::tempdir().unwrap();
+        let shared = tempfile::tempdir().unwrap();
+        let idx = persistent_index(data.path(), shared.path());
+        idx.upsert_text("docs", "a", "x", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        let cursor = Arc::new(FollowerCursor::default());
+        cursor.store(7, 0); // applied through leader-WAL seg 7
+
+        let handle = spawn(
+            Arc::clone(&idx),
+            fast_cfg(),
+            SnapshotMode::FollowerSnapshot {
+                cursor: Arc::clone(&cursor),
+            },
+        );
+        // Give it a few polls to fire.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        handle.abort();
+
+        assert!(count_snapshots(shared.path()) >= 1, "follower should snapshot");
+        let header = idx.latest_snapshot_header().expect("snapshot header");
+        assert_eq!(header.wal_seq_at_snapshot, 7, "stamped with cursor seg");
+    }
+
+    /// A `FollowerSnapshot` run with cursor seq 0 (not yet caught up)
+    /// must NOT produce a snapshot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn follower_snapshot_skips_when_cursor_zero() {
+        let data = tempfile::tempdir().unwrap();
+        let shared = tempfile::tempdir().unwrap();
+        let idx = persistent_index(data.path(), shared.path());
+        idx.upsert_text("docs", "a", "x", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        let cursor = Arc::new(FollowerCursor::default()); // seq 0
+
+        let handle = spawn(
+            Arc::clone(&idx),
+            fast_cfg(),
+            SnapshotMode::FollowerSnapshot { cursor },
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        handle.abort();
+
+        assert_eq!(count_snapshots(shared.path()), 0, "no seq-0 snapshot");
+    }
+
+    /// A `LeaderCompactOnly` run NEVER writes a new snapshot, but DOES
+    /// compact its WAL when a snapshot exists in the shared dir.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leader_compact_only_never_snapshots_but_compacts() {
+        let data = tempfile::tempdir().unwrap();
+        let shared = tempfile::tempdir().unwrap();
+        let idx = persistent_index(data.path(), shared.path());
+
+        // Write enough records to roll multiple WAL segments so there's
+        // something to compact away once a snapshot covers them.
+        for i in 0..50 {
+            idx.upsert_text("docs", &format!("k{i}"), "payload", serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        let wal_before = idx.wal_stats().unwrap().segment_count;
+
+        // Simulate the follower publishing a snapshot into the shared
+        // dir that covers the current WAL seq.
+        let seq = nebula_wal::current_seq(&data.path().join("wal"))
+            .unwrap()
+            .unwrap_or(0);
+        idx.snapshot_to(shared.path(), seq).unwrap();
+        let snaps_before = count_snapshots(shared.path());
+        assert_eq!(snaps_before, 1);
+
+        let handle = spawn(
+            Arc::clone(&idx),
+            fast_cfg(),
+            SnapshotMode::LeaderCompactOnly,
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        handle.abort();
+
+        // No NEW snapshot was produced by the leader.
+        assert_eq!(
+            count_snapshots(shared.path()),
+            snaps_before,
+            "leader must not snapshot"
+        );
+        // It compacted: WAL segments at/after the snapshot seq dropped.
+        let wal_after = idx.wal_stats().unwrap().segment_count;
+        assert!(
+            wal_after <= wal_before,
+            "leader should have compacted ({wal_before} -> {wal_after})"
+        );
     }
 }
