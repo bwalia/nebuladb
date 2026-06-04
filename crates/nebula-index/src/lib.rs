@@ -1279,21 +1279,31 @@ impl TextIndex {
         let g = self.inner.read();
         // Per-bucket accumulator. A struct is clearer than a 3-tuple
         // and silences clippy::type_complexity.
-        struct Acc {
+        //
+        // Everything borrows from the guard: at multi-million-doc
+        // scale the previous owned version cloned the bucket name
+        // and every metadata key PER DOC (~10 String allocations ×
+        // corpus size), stretching the scan — and therefore the
+        // read-lock hold — to >10s. With a writer queued behind us,
+        // parking_lot's writer priority then blocks every NEW reader
+        // (SQL, search) for the whole scan. Borrowing keeps the
+        // walk allocation-free; we clone only the unique bucket
+        // names / keys once, at output assembly.
+        struct Acc<'a> {
             docs: usize,
-            parents: AHashSet<String>,
-            keys: AHashMap<String, usize>,
+            parents: AHashSet<&'a str>,
+            keys: AHashMap<&'a str, usize>,
         }
-        let mut per_bucket: AHashMap<String, Acc> = AHashMap::new();
+        let mut per_bucket: AHashMap<&str, Acc<'_>> = AHashMap::new();
         for doc in g.docs.values() {
-            let entry = per_bucket.entry(doc.bucket.clone()).or_insert_with(|| Acc {
+            let entry = per_bucket.entry(doc.bucket.as_str()).or_insert_with(|| Acc {
                 docs: 0,
                 parents: AHashSet::new(),
                 keys: AHashMap::new(),
             });
             entry.docs += 1;
             if let Some(parent) = &doc.parent_doc_id {
-                entry.parents.insert(parent.clone());
+                entry.parents.insert(parent.as_str());
             }
             // Count top-level metadata keys only. Nested JSON would
             // require a recursive walk; metadata is conventionally
@@ -1301,7 +1311,7 @@ impl TextIndex {
             // signal we're actually trying to expose.
             if let serde_json::Value::Object(map) = &doc.metadata {
                 for k in map.keys() {
-                    *entry.keys.entry(k.clone()).or_insert(0) += 1;
+                    *entry.keys.entry(k.as_str()).or_insert(0) += 1;
                 }
             }
         }
@@ -1309,16 +1319,16 @@ impl TextIndex {
         let mut out: Vec<BucketStats> = per_bucket
             .into_iter()
             .map(|(bucket, acc)| {
-                let mut kv: Vec<(String, usize)> = acc.keys.into_iter().collect();
+                let mut kv: Vec<(&str, usize)> = acc.keys.into_iter().collect();
                 // Sort by frequency desc, then key name for stable
                 // output in the UI (no "columns jumping around").
-                kv.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                kv.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
                 kv.truncate(top_metadata_keys);
                 BucketStats {
-                    bucket,
+                    bucket: bucket.to_owned(),
                     docs: acc.docs,
                     parent_docs: acc.parents.len(),
-                    metadata_keys: kv,
+                    metadata_keys: kv.into_iter().map(|(k, n)| (k.to_owned(), n)).collect(),
                 }
             })
             .collect();

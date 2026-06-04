@@ -1269,23 +1269,47 @@ fn default_top_keys() -> usize {
     20
 }
 
+/// How long a cached `/admin/buckets` result is served before the
+/// next request triggers a fresh scan. The Admin tab polls every ~3s,
+/// so a 15s TTL turns an unbounded pile-up of corpus scans into at
+/// most four polls per scan — stats lag by up to 15s, which is fine
+/// for a dashboard panel.
+const BUCKET_STATS_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+
 async fn admin_buckets(
     State(s): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<BucketsQuery>,
 ) -> Result<Json<Vec<nebula_index::BucketStats>>, ApiError> {
     // `bucket_stats` is a full corpus scan — it iterates every doc
-    // in every bucket and tallies metadata keys. At ~84k docs in
-    // `leads` it's a multi-hundred-ms synchronous walk under the
-    // index read lock. The showcase Admin tab polls this endpoint
-    // every ~3s; with a couple of browser clients open the sustained
-    // pinning of tokio workers saturates the runtime — same wedge
-    // mechanism as sync search (see router.rs:628 et al). Move the
-    // scan to the blocking pool so async workers stay free.
-    let idx = std::sync::Arc::clone(&s.index);
+    // in every bucket and tallies metadata keys, holding the index
+    // read lock throughout. At ~84k docs that was a multi-hundred-ms
+    // walk; at millions of docs it outlives the Admin tab's ~3s poll
+    // interval, so without a gate the scans stack without bound, the
+    // read lock is held continuously, and a queued writer wedges
+    // every new reader (SQL queries stop responding — incident
+    // 2026-06-04). Two defenses:
+    //   1. spawn_blocking keeps the scan off the async workers
+    //      (the original fix — same wedge mechanism as sync search,
+    //      see router.rs:628 et al).
+    //   2. the cache mutex is held across the scan: concurrent polls
+    //      wait for the in-flight scan instead of starting their
+    //      own, then everyone inside the TTL gets the cached copy.
     let top_keys = q.top_keys;
+    let mut cache = s.bucket_stats_cache.lock().await;
+    if let Some(entry) = cache.as_ref() {
+        if entry.top_keys == top_keys && entry.at.elapsed() < BUCKET_STATS_TTL {
+            return Ok(Json(entry.stats.clone()));
+        }
+    }
+    let idx = std::sync::Arc::clone(&s.index);
     let stats = tokio::task::spawn_blocking(move || idx.bucket_stats(top_keys))
         .await
         .map_err(|e| ApiError::Internal(format!("bucket_stats task: {e}")))?;
+    *cache = Some(crate::state::BucketStatsCacheEntry {
+        at: std::time::Instant::now(),
+        top_keys,
+        stats: stats.clone(),
+    });
     Ok(Json(stats))
 }
 

@@ -316,6 +316,26 @@ pub struct AppState {
     /// to an even 0.5/0.5 split for every bucket; override globally or
     /// per-bucket via [`Self::with_hybrid_weights`].
     pub hybrid_weights: Arc<HybridWeights>,
+    /// TTL cache + single-flight gate for `/admin/buckets`.
+    /// `bucket_stats` is a full corpus scan under the index read
+    /// lock; the showcase Admin tab polls every ~3s, and at
+    /// multi-million-doc scale each scan outlives the poll interval —
+    /// scans stack without bound and the lock is held read
+    /// continuously, wedging writers (and, via writer priority,
+    /// every new reader: SQL stops responding). The handler holds
+    /// this async mutex across the scan so at most ONE scan runs at
+    /// a time, and serves the cached result inside the TTL. Keyed by
+    /// the `top_keys` request param so a non-default introspection
+    /// call can't poison the UI's cache.
+    pub bucket_stats_cache: Arc<tokio::sync::Mutex<Option<BucketStatsCacheEntry>>>,
+}
+
+/// One cached `/admin/buckets` response. See
+/// [`AppState::bucket_stats_cache`].
+pub struct BucketStatsCacheEntry {
+    pub at: std::time::Instant,
+    pub top_keys: usize,
+    pub stats: Vec<nebula_index::BucketStats>,
 }
 
 impl AppState {
@@ -354,6 +374,7 @@ impl AppState {
             reranker: Arc::new(NoopReranker),
             query_expander: Arc::new(NoopQueryExpander),
             hybrid_weights: Arc::new(HybridWeights::default()),
+            bucket_stats_cache: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
