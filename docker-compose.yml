@@ -619,12 +619,14 @@ services:
       # up even when half the stack is down is a feature.
       nebula-server:
         condition: service_started
-    healthcheck:
-      # Gatus's own health endpoint.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health || exit 1"]
-      interval: 15s
-      timeout: 3s
-      retries: 5
+    # No container healthcheck. The `twinproduction/gatus` image is
+    # distroless — no `sh`, no `wget` — so a `CMD-SHELL` healthcheck can
+    # never execute and the container sits permanently `unhealthy`. That
+    # broke `docker compose up --wait` in the e2e job (which gates on
+    # ALL containers reaching healthy/running) even though every real
+    # NebulaDB service was healthy. Gatus monitors the OTHER services;
+    # nothing usefully depends on gatus's own container health, so we
+    # let it report `running` instead of faking a check it can't run.
     deploy:
       resources:
         limits:

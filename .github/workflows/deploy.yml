@@ -81,7 +81,7 @@ jobs:
             "${NEBULA_OLLAMA_HOST_PORT:-21434}"
             "${NEBULA_REDIS_HOST_PORT:-16379}"
             "${NEBULA_PROMETHEUS_HOST_PORT:-19090}"
-            "${NEBULA_GRAFANA_HOST_PORT:-13000}"
+            "${NEBULA_GRAFANA_HOST_PORT:-13030}"
             "${NEBULA_SHOWCASE_PORT:-15173}"
           )
           fail=0
@@ -203,7 +203,7 @@ jobs:
           host=192.168.1.193
           rest=${NEBULA_REST_HOST_PORT:-18080}
           show=${NEBULA_SHOWCASE_PORT:-15173}
-          graf=${NEBULA_GRAFANA_HOST_PORT:-13000}
+          graf=${NEBULA_GRAFANA_HOST_PORT:-13030}
           prom=${NEBULA_PROMETHEUS_HOST_PORT:-19090}
 
           # nebula-server binds a boot listener immediately:
@@ -280,7 +280,7 @@ jobs:
             echo "| nebula gRPC | ${host}:${NEBULA_GRPC_HOST_PORT:-50051} |"
             echo "| nebula pgwire | ${host}:${NEBULA_PG_HOST_PORT:-25433} |"
             echo "| showcase UI | http://${host}:${NEBULA_SHOWCASE_PORT:-15173} |"
-            echo "| grafana | http://${host}:${NEBULA_GRAFANA_HOST_PORT:-13000} (admin/admin) |"
+            echo "| grafana | http://${host}:${NEBULA_GRAFANA_HOST_PORT:-13030} (admin/admin) |"
             echo "| prometheus | http://${host}:${NEBULA_PROMETHEUS_HOST_PORT:-19090} |"
             echo "| ollama | http://${host}:${NEBULA_OLLAMA_HOST_PORT:-21434} |"
             echo "| redis | ${host}:${NEBULA_REDIS_HOST_PORT:-16379} |"
