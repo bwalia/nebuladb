@@ -10,8 +10,18 @@
 #      and runs scripts/*.sh against it. Covers every transport we
 #      ship (REST, SQL-over-REST, pgwire, RAG-SSE) plus /metrics and a
 #      concurrent-traffic smoke load.
-#   3. `notify`: runs on failure only; posts to Slack if a webhook is
+#   3. `multiregion`: boots the two-region docker-compose topology
+#      (region-a + region-b cross-replicating over gRPC) and runs
+#      scripts/test_multiregion.sh to prove cross-region CRUD + RAG
+#      convergence end-to-end. Schedule/dispatch/main-push only.
+#   4. `notify`: runs on failure only; posts to Slack if a webhook is
 #      configured, no-ops otherwise.
+#
+# The in-process HA + multi-region reliability suites
+# (crates/nebula-grpc/tests/{ha_crud_rag,multi_region}.rs) run inside
+# the `unit` job's `cargo test --workspace` — they need no Docker and
+# cover the WAL-tail + cross-region apply paths with deterministic
+# timing and explicit replication-lag / local-write-latency budgets.
 #
 # Trigger: nightly 02:00 UTC + manual dispatch. On PRs we only run the
 # `unit` job by leveraging `if:` — the Docker build is too heavy for
@@ -256,6 +266,87 @@ jobs:
           helm template ci-test deploy/helm/nebuladb -f /tmp/full.yaml --debug >/dev/null
 
   # --------------------------------------------------------------------------
+  # Multi-region: two-region docker-compose topology + cross-region
+  # convergence smoke. Only on schedule, dispatch, or main-branch pushes
+  # (PRs skip — the Docker build is too heavy per-commit, same rationale
+  # as the `e2e` job). Depends on `unit` so we don't burn compose runtime
+  # on a build that already failed cargo test/clippy.
+  # --------------------------------------------------------------------------
+  multiregion:
+    name: multi-region cross-replication
+    runs-on: ubuntu-latest
+    needs: unit
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 40
+    env:
+      # Host-forwarded REST ports from docker-compose.multiregion.yml.
+      REGION_A: http://localhost:18080
+      REGION_B: http://localhost:18081
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host test deps
+        # `jq` parses the ai/search hit ranking; the script is otherwise
+        # plain curl. Docker + compose plugin already on GitHub runners.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq
+
+      - name: Build + start two-region stack
+        # `--wait` blocks until both regions' /healthz/live healthchecks
+        # are green. The cross-region tailers connect lazily with
+        # backoff, so a region that comes up first simply retries until
+        # its peer is reachable.
+        run: docker compose -f docker-compose.multiregion.yml up -d --build --wait --wait-timeout 600
+
+      - name: Wait for both regions' readiness probe
+        # Belt + braces: /healthz/live (used by the healthcheck) flips
+        # green before WAL recovery; /healthz is the rich readiness
+        # probe. Confirm both region REST ports answer ok before testing.
+        run: |
+          ./scripts/wait_for.sh "$REGION_A/healthz" 120 '"status":"ok"'
+          ./scripts/wait_for.sh "$REGION_B/healthz" 120 '"status":"ok"'
+
+      - name: Cross-region CRUD + RAG convergence
+        run: ./scripts/test_multiregion.sh
+
+      - name: Snapshot region replication status
+        if: always()
+        run: |
+          mkdir -p logs
+          curl -sS "$REGION_A/api/v1/admin/replication" >logs/region-a-replication.json || true
+          curl -sS "$REGION_B/api/v1/admin/replication" >logs/region-b-replication.json || true
+
+      - name: Snapshot container logs
+        if: always()
+        run: |
+          for svc in region-a region-b; do
+            docker compose -f docker-compose.multiregion.yml logs --no-color --tail=2000 "$svc" \
+              >"logs/${svc}.log" 2>&1 || true
+          done
+
+      - name: On failure — dump last 200 lines of each region
+        if: failure()
+        run: |
+          for f in logs/*.log; do
+            echo "============ $f (tail 200) ============"
+            tail -n 200 "$f"
+          done
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nebuladb-multiregion-${{ github.run_id }}
+          path: logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.multiregion.yml down -v --remove-orphans
+
+  # --------------------------------------------------------------------------
   # Slack notification — opt-in. Skips silently if the webhook secret
   # isn't set, so forks of this repo get a green notify step instead
   # of a confusing red one.
@@ -263,7 +354,7 @@ jobs:
   notify:
     name: notify on failure
     runs-on: ubuntu-latest
-    needs: [unit, e2e, helm]
+    needs: [unit, e2e, helm, multiregion]
     if: failure() && github.event_name == 'schedule'
     steps:
       - name: Post to Slack

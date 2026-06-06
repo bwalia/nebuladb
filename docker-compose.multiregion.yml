@@ -1,0 +1,138 @@
+# NebulaDB two-region active-active topology.
+#
+# A deliberately minimal stack for exercising cross-region replication
+# end-to-end as real containers — the containerized counterpart to the
+# in-process `crates/nebula-grpc/tests/multi_region.rs` suite.
+#
+# Two independent region leaders tail each other's WAL over gRPC via
+# NEBULA_CROSS_REGION_PEERS. A write accepted in region-a becomes
+# readable in region-b (and vice versa) through the
+# CrossRegionReplicationService.
+#
+#   region-a  -> http://localhost:18080  (REST)   region us-east-1
+#                localhost:15051         (gRPC)
+#   region-b  -> http://localhost:18081  (REST)   region us-west-2
+#                localhost:15052         (gRPC)
+#
+# Usage:
+#   docker compose -f docker-compose.multiregion.yml up --build --wait
+#   ./scripts/test_multiregion.sh
+#   docker compose -f docker-compose.multiregion.yml down -v
+#
+# Why this is separate from the main docker-compose.yml: the default
+# stack models one region (leader + read-only follower). This file
+# models the multi-region data plane and intentionally drops Ollama,
+# Redis, Prometheus, and Grafana — they're orthogonal to the property
+# under test (cross-region convergence) and only slow the boot. The
+# embedder is the built-in deterministic MockEmbedder (no external
+# provider needed), which is what makes a write→converge assertion
+# reproducible across both regions.
+
+name: nebuladb-multiregion
+
+x-restart: &default-restart
+  restart: unless-stopped
+
+x-logging: &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+# Common server configuration shared by both regions. Anchored so the
+# two region blocks can't drift apart on the knobs that must match
+# (embedder dim, worker count, durability) while still overriding the
+# region-specific bits (region name, peer URL, ports).
+x-region-env: &region-env
+  NEBULA_BIND: "0.0.0.0:8080"
+  NEBULA_GRPC_BIND: "0.0.0.0:50051"
+  NEBULA_DATA_DIR: "/var/lib/nebuladb"
+  # Standalone role: each region is its own writer. Cross-region peering
+  # (not leader/follower) is what links them. The cross-region tail only
+  # spawns for Leader|Standalone roles — see nebula-server/src/main.rs.
+  NEBULA_NODE_ROLE: "standalone"
+  # Deterministic offline embedder; both regions MUST agree on dim or
+  # cross-region applies fail the dimension check.
+  NEBULA_EMBED_DIM: "384"
+  NEBULA_EMBED_CACHE_SIZE: "20000"
+  # Auth off for the smoke test; the test script sends no bearer token.
+  NEBULA_API_KEYS: ""
+  # Rate limiter off — the convergence test bursts writes and must not
+  # be throttled.
+  NEBULA_RATE_LIMIT: "off"
+  NEBULA_WORKER_THREADS: "4"
+  NEBULA_REQUEST_TIMEOUT_SECS: "30"
+  # Frequent snapshots keep cold-recovery cheap on restart; not central
+  # to this stack but matches the main compose defaults.
+  NEBULA_SNAPSHOT_INTERVAL_SECS: "900"
+  NEBULA_SNAPSHOT_WAL_BYTES: "52428800"
+  NEBULA_SNAPSHOT_COMPACT: "on"
+  RUST_LOG: "info,nebula_server=debug,nebula_grpc=debug"
+
+x-region-healthcheck: &region-healthcheck
+  # Same /healthz/live liveness split as the main stack: 200 as soon as
+  # the listener is up, before WAL recovery completes.
+  test: ["CMD-SHELL", "wget -q --timeout=2 --tries=1 -O /dev/null http://localhost:8080/healthz/live || exit 1"]
+  interval: 5s
+  timeout: 3s
+  retries: 30
+  start_period: 120s
+
+services:
+  # ---------------------------------------------------------------------------
+  # Region A — us-east-1. Tails region-b for buckets homed in us-west-2.
+  # ---------------------------------------------------------------------------
+  region-a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nebuladb/server:dev
+    container_name: nebula-region-a
+    init: true
+    <<: [*default-restart, *default-logging]
+    ports:
+      - "${REGION_A_REST_HOST_PORT:-18080}:8080"
+      - "${REGION_A_GRPC_HOST_PORT:-15051}:50051"
+    volumes:
+      - region-a-data:/var/lib/nebuladb
+    environment:
+      <<: *region-env
+      NEBULA_NODE_ID: "nebula-region-a"
+      NEBULA_REGION: "us-east-1"
+      # Tail region-b's gRPC endpoint. Service name resolves on the
+      # compose network. No depends_on: the cross-region tailer
+      # reconnects with backoff, so region-a boots even if region-b
+      # isn't up yet (and vice versa) — the same resilience the
+      # follower has against a not-yet-ready leader.
+      NEBULA_CROSS_REGION_PEERS: "us-west-2=http://region-b:50051"
+    healthcheck:
+      <<: *region-healthcheck
+
+  # ---------------------------------------------------------------------------
+  # Region B — us-west-2. Tails region-a for buckets homed in us-east-1.
+  # ---------------------------------------------------------------------------
+  region-b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nebuladb/server:dev
+    container_name: nebula-region-b
+    init: true
+    <<: [*default-restart, *default-logging]
+    ports:
+      - "${REGION_B_REST_HOST_PORT:-18081}:8080"
+      - "${REGION_B_GRPC_HOST_PORT:-15052}:50051"
+    volumes:
+      - region-b-data:/var/lib/nebuladb
+    environment:
+      <<: *region-env
+      NEBULA_NODE_ID: "nebula-region-b"
+      NEBULA_REGION: "us-west-2"
+      NEBULA_CROSS_REGION_PEERS: "us-east-1=http://region-a:50051"
+    healthcheck:
+      <<: *region-healthcheck
+
+volumes:
+  region-a-data:
+  region-b-data:
