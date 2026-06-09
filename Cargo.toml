@@ -21,6 +21,7 @@ members = [
     "crates/nebula-client",
     "crates/nebula-backup",
     "crates/nebulactl",
+    "apps/ingest-worker",
 ]
 
 [workspace.package]

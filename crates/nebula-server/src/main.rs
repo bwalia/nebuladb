@@ -663,6 +663,8 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             jwt,
             rate_limit: rate_limit_cfg,
             request_timeout,
+            chunk_chars,
+            chunk_overlap,
             ..AppConfig::default()
         },
     )

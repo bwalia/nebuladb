@@ -282,6 +282,15 @@ components:
         doc_id:   { type: string }
         text:     { type: string }
         metadata: { type: object, additionalProperties: true }
+        doc_type:
+          type: string
+          enum: [markdown, html, code, text, structured]
+          description: >
+            Optional document kind. When set, the server selects a
+            structure-aware chunking strategy (design 0008 §8) instead of
+            the default chunker — markdown/html split on headings, code on
+            top-level definitions, structured uses fixed-size. The
+            ingestion worker sets this from the detected file type.
 
     UpsertDocumentResponse:
       type: object

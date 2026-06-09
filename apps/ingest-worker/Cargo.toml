@@ -1,0 +1,41 @@
+[package]
+name = "nebula-ingest-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nebula-ingest-worker"
+path = "src/main.rs"
+
+[dependencies]
+nebula-chunk = { path = "../../crates/nebula-chunk" }
+
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"], default-features = false }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+# PDF/DOCX extraction pulls heavier (and CVE-prone) parsing crates; keep
+# them OFF by default so the lean build handles text/markdown/html/code
+# without that surface. Enable explicitly when ingesting office docs.
+default = []
+office = ["dep:pdf-extract", "dep:docx-rs"]
+
+[dependencies.pdf-extract]
+version = "0.7"
+optional = true
+
+[dependencies.docx-rs]
+version = "0.4"
+optional = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

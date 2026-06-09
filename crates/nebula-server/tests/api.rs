@@ -1508,6 +1508,56 @@ async fn sql_query_runs_semantic_match() {
 // Multi-thread runtime required: TextIndex writes use
 // tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upsert_document_honors_doc_type_strategy() {
+    // A markdown doc with three headings should chunk into three
+    // section-aligned chunks when doc_type=markdown, vs the default
+    // fixed-size chunker which would produce a single chunk for this
+    // short text. Proves the §8 strategy selection reaches the server.
+    let app = build_router(app_state(&[]));
+    let md = "# Intro\nwelcome text\n## Setup\ninstall steps here\n## Usage\nrun the thing\n";
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/document")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "doc_id": "guide",
+                        "text": md,
+                        "doc_type": "markdown"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["chunks"], 3, "markdown strategy should split on headings");
+
+    // Sanity: same text with the default chunker (no doc_type) yields
+    // one chunk, confirming the difference is the strategy.
+    let res2 = app
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/document")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "doc_id": "guide2", "text": md }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body2 = body_string(res2.into_body()).await;
+    let v2: serde_json::Value = serde_json::from_str(&body2).unwrap();
+    assert_eq!(v2["chunks"], 1, "default fixed-size chunker → one chunk");
+}
+
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_query_runs_ai_answer() {
     let app = build_router(app_state(&[]));
     let _ = app

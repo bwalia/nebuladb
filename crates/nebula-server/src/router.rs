@@ -550,6 +550,27 @@ struct UpsertDocument {
     text: String,
     #[serde(default)]
     metadata: serde_json::Value,
+    /// Optional document kind. When set, the server selects a
+    /// structure-aware chunking strategy for this document (design 0008
+    /// §8) instead of the configured default chunker. The ingestion
+    /// worker sets this from the detected file type.
+    #[serde(default)]
+    doc_type: Option<nebula_chunk::DocType>,
+}
+
+/// Resolve the chunker for one `/documents` request: a `doc_type`-driven
+/// strategy when provided (sized from the server's chunk config), else
+/// the server's default chunker. Returned as a value the caller borrows.
+fn chunker_for(
+    s: &AppState,
+    doc_type: Option<nebula_chunk::DocType>,
+) -> Result<std::sync::Arc<dyn nebula_chunk::Chunker>, ApiError> {
+    match doc_type {
+        Some(dt) => nebula_chunk::select_strategy(dt, s.config.chunk_chars, s.config.chunk_overlap)
+            .map(std::sync::Arc::from)
+            .map_err(|e| ApiError::BadRequest(format!("chunk strategy: {e}"))),
+        None => Ok(std::sync::Arc::clone(&s.chunker)),
+    }
 }
 
 #[derive(Serialize)]
@@ -573,6 +594,8 @@ async fn upsert_document(
         ));
     }
 
+    let chunker = chunker_for(&s, body.doc_type)?;
+
     let chunk_count = if let Some(raft) = &s.raft {
         // Raft mode: chunk + batch-embed on the leader, then submit
         // a single UpsertDocument log entry. The state-machine apply
@@ -581,7 +604,7 @@ async fn upsert_document(
         // One log entry covers the whole document so a partial apply
         // can't leave a doc half-indexed (this matches the standalone
         // contract documented on TextIndex::upsert_document).
-        let chunks = s.chunker.chunk(&body.text);
+        let chunks = chunker.chunk(&body.text);
         if chunks.is_empty() {
             return Err(ApiError::BadRequest("chunker produced no chunks".into()));
         }
@@ -632,7 +655,7 @@ async fn upsert_document(
                 &bucket,
                 &body.doc_id,
                 &body.text,
-                s.chunker.as_ref(),
+                chunker.as_ref(),
                 body.metadata,
             )
             .await?

@@ -161,6 +161,13 @@ pub struct AppConfig {
     /// `None` keeps the historical "let it run" behavior. SSE streams
     /// (`/ai/rag`, `/admin/logs/stream`) bypass this regardless.
     pub request_timeout: Option<Duration>,
+    /// Target chunk size (Unicode scalars) used when a `/documents`
+    /// request asks for a `doc_type`-specific chunking strategy
+    /// (design 0008 §8). Mirrors the default chunker's window so
+    /// per-request strategy selection stays size-consistent.
+    pub chunk_chars: usize,
+    /// Overlap (scalars) for the same per-request strategy selection.
+    pub chunk_overlap: usize,
 }
 
 impl Default for AppConfig {
@@ -176,6 +183,8 @@ impl Default for AppConfig {
             max_top_k: 100,
             rate_limit: RateLimitConfig::default(),
             request_timeout: None,
+            chunk_chars: 500,
+            chunk_overlap: 50,
         }
     }
 }

@@ -1,6 +1,6 @@
 # Design 0008: Batteries-Included RAG
 
-- **Status**: Accepted — Phases 1–3 + §9 (per-collection weights) landed; Phase 4 (ingestion sidecar) + §9 metadata-fusion stage pending
+- **Status**: Accepted — Phases 1–4 + §9 (per-collection weights) landed; Phase 5 (CREATE RAG COLLECTION / dashboard) + §9 metadata-fusion stage pending
 - **Author**: Claude + @bwalia
 - **Created**: 2026-06-09
 - **Tracks**: product differentiator — "upload documents → query immediately → relevant answers, no config"
@@ -148,7 +148,7 @@ The real quality moat vs pgvector. **Lexical + vector only — no neural model.*
 
 ## 9.1 Implementation status & operator knobs (landed)
 
-Phases 1–3 and the §9 per-collection weights are implemented:
+Phases 1–4 and the §9 per-collection weights are implemented:
 
 - **Phase 1**: `POST /rag/answer` + `SELECT ai_answer('q' [, 'bucket'] [, k])`.
 - **Phase 2**: `nebula-bm25` + hybrid fusion in `nebula-index`
@@ -156,6 +156,14 @@ Phases 1–3 and the §9 per-collection weights are implemented:
 - **Phase 3**: `nebula-rerank` (`Reranker` + `QueryExpander` traits, Noop
   defaults + `HttpReranker`/`MapQueryExpander`), opt-in `expand`/`rerank`
   flags wired through a shared `retrieve_grounding` pipeline.
+- **Phase 4**: structure-aware chunkers in `nebula-chunk`
+  (`HeadingAwareChunker`, `CodeAwareChunker`, `select_strategy`); the
+  `/documents` endpoint accepts an optional `doc_type` so the server picks
+  the matching strategy where the embedder lives. `apps/ingest-worker` is
+  the out-of-process sidecar: detect file type → extract text → derive
+  local metadata (summary/keywords) → POST `/documents`. PDF/DOCX
+  extraction is behind the worker's `office` cargo feature, keeping native
+  parsers out of both the DB binary and the default worker build.
 - **§9 weights**: `HybridWeights` registry on `AppState` — global default
   with per-bucket overrides, resolved at query time.
 
@@ -168,6 +176,7 @@ Environment knobs (all default to the lean/off path):
 | `NEBULA_QUERY_EXPAND=1` | Enables the built-in abbreviation expander |
 | `NEBULA_HYBRID_WEIGHTS="v,b"` | Global fusion weights (default `0.5,0.5`) |
 | `NEBULA_HYBRID_WEIGHTS_<BUCKET>="v,b"` | Per-bucket override |
+| `NEBULA_CHUNK_CHARS` / `NEBULA_CHUNK_OVERLAP` | Chunk window/overlap (also sizes `doc_type` strategies) |
 
 **Benchmark** (`nebula-index/tests/hybrid_quality_bench.rs`, `#[ignore]`):
 recall@k / MRR for vector-only vs bm25-only vs hybrid at several weight
