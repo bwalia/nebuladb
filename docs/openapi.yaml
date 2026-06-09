@@ -202,6 +202,28 @@ paths:
               schema: { type: string, description: "SSE stream" }
         "400": { $ref: "#/components/responses/BadRequest" }
 
+  /api/v1/rag/answer:
+    post:
+      summary: One-call RAG answer with source attribution
+      description: |
+        Batteries-included RAG (design 0008). Retrieves the most relevant
+        chunks, builds a grounded prompt, and returns a single JSON object
+        with the synthesized answer plus structured `sources` (parent doc,
+        chunk ordinal, score). Non-streaming; for token streaming use
+        `/api/v1/ai/rag` with `stream: true`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RagAnswerRequest" }
+      responses:
+        "200":
+          description: Answer with attributed sources
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RagAnswerResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -364,6 +386,31 @@ components:
         query:   { type: string }
         context: { type: array, items: { $ref: "#/components/schemas/Hit" } }
         answer:  { type: string }
+
+    RagAnswerRequest:
+      type: object
+      required: [query]
+      properties:
+        query:  { type: string }
+        top_k:  { type: integer, default: 5 }
+        bucket: { type: string }
+
+    AnswerSource:
+      type: object
+      required: [doc, score]
+      properties:
+        doc:   { type: string, description: "parent document id" }
+        chunk: { type: integer, nullable: true, description: "chunk ordinal within the doc; null for non-chunked rows" }
+        score: { type: number, format: float, description: "retrieval score (distance under the index metric)" }
+
+    RagAnswerResponse:
+      type: object
+      required: [query, answer, sources, took_ms]
+      properties:
+        query:   { type: string }
+        answer:  { type: string }
+        sources: { type: array, items: { $ref: "#/components/schemas/AnswerSource" } }
+        took_ms: { type: integer }
 
     Error:
       type: object

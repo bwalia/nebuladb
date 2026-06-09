@@ -253,6 +253,63 @@ async fn rag_non_stream_returns_json() {
 // Multi-thread runtime required: TextIndex writes use
 // tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rag_answer_returns_attributed_sources() {
+    let app = build_router(app_state(&[]));
+
+    // Seed a chunked document so the stored external ids carry the
+    // `{doc_id}#{chunk_index}` convention the attribution splits on.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/document")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"doc_id":"handbook","text":"holiday policy: staff get public holidays. vpn access requires mfa. remote work is allowed."}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/rag/answer")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"holiday policy","top_k":3}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["answer"].is_string());
+    let sources = v["sources"].as_array().expect("sources array");
+    assert!(!sources.is_empty(), "expected at least one source");
+    // Chunked document → doc is the parent id, chunk is the ordinal.
+    assert_eq!(sources[0]["doc"], "handbook");
+    assert!(sources[0]["chunk"].is_number());
+    assert!(sources[0]["score"].is_number());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rag_answer_rejects_empty_query() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/rag/answer")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"  ","top_k":3}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rag_stream_emits_sse_events() {
     let app = build_router(app_state(&[]));
 

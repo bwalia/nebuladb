@@ -59,6 +59,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/vector/search", post(vector_search))
         .route("/ai/search", post(ai_search))
+        .route("/rag/answer", post(rag_answer))
         .route("/query", post(sql_query))
         .route("/query/explain", post(sql_explain))
         .route("/admin/buckets", get(admin_buckets))
@@ -930,6 +931,100 @@ fn rag_sse_response(
                 .text("keep-alive"),
         )
         .into_response()
+}
+
+// ---------- RAG answer (batteries-included, design 0008 §5) ----------
+
+#[derive(Deserialize)]
+struct RagAnswerRequest {
+    query: String,
+    #[serde(default = "default_rag_top_k")]
+    top_k: usize,
+    #[serde(default)]
+    bucket: Option<String>,
+}
+
+/// One retrieved chunk, attributed back to its source document. `doc`
+/// and `chunk` are derived by splitting the stored external id on the
+/// `'#'` convention (`{doc_id}#{chunk_index}`); a row with no `'#'`
+/// (a plain text upsert, not a chunked document) reports the whole id
+/// as `doc` and a `chunk` of `None`.
+#[derive(Serialize)]
+struct AnswerSource {
+    doc: String,
+    chunk: Option<usize>,
+    score: f32,
+}
+
+#[derive(Serialize)]
+struct RagAnswerResponse {
+    query: String,
+    answer: String,
+    sources: Vec<AnswerSource>,
+    took_ms: u64,
+}
+
+fn attribute(hit: &nebula_index::Hit) -> AnswerSource {
+    match hit.id.rsplit_once('#') {
+        Some((doc, chunk)) => AnswerSource {
+            doc: doc.to_string(),
+            chunk: chunk.parse().ok(),
+            score: hit.score,
+        },
+        None => AnswerSource {
+            doc: hit.id.clone(),
+            chunk: None,
+            score: hit.score,
+        },
+    }
+}
+
+/// Non-streaming, one-call RAG: retrieve → prompt → drain LLM → return
+/// `{ answer, sources }`. The streaming variant lives at `/ai/rag`;
+/// this endpoint exists so SQL/ORM clients and the `ai_answer()` demo
+/// get a single JSON object with structured source attribution rather
+/// than raw `Hit`s.
+async fn rag_answer(
+    State(s): State<AppState>,
+    Json(req): Json<RagAnswerRequest>,
+) -> Result<Json<RagAnswerResponse>, ApiError> {
+    if req.query.trim().is_empty() {
+        return Err(ApiError::BadRequest("query must be non-empty".into()));
+    }
+    let top_k = validate_top_k(req.top_k, s.config.max_top_k)?;
+    s.metrics.inc_rag();
+    let started = std::time::Instant::now();
+
+    // _blocking variant: keep HNSW traversal off the async worker pool
+    // (same rationale as ai_rag / ai_search above).
+    let hits = std::sync::Arc::clone(&s.index)
+        .search_text_blocking(req.query.clone(), req.bucket.clone(), top_k, None)
+        .await?;
+    let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
+    let prompt = build_rag_prompt(&req.query, &snippets);
+
+    // Surface a provider error (bad key, dead Ollama) as an HTTP 5xx
+    // before we commit to a 200 body.
+    let mut llm_stream = s
+        .llm
+        .generate(prompt)
+        .await
+        .map_err(|e| ApiError::Internal(format!("llm: {e}")))?;
+    let mut answer = String::new();
+    while let Some(item) = llm_stream.next().await {
+        match item.map_err(|e| ApiError::Internal(format!("llm: {e}")))? {
+            LlmChunk::Delta(t) => answer.push_str(&t),
+            LlmChunk::Done => break,
+        }
+    }
+
+    let sources = hits.iter().map(attribute).collect();
+    Ok(Json(RagAnswerResponse {
+        query: req.query,
+        answer,
+        sources,
+        took_ms: started.elapsed().as_millis() as u64,
+    }))
 }
 
 // ---------- SQL ----------
