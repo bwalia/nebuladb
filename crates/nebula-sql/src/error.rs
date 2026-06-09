@@ -31,4 +31,8 @@ pub enum SqlError {
 
     #[error(transparent)]
     Index(#[from] IndexError),
+
+    /// LLM provider failure during `ai_answer(...)` synthesis.
+    #[error("llm error: {0}")]
+    Llm(String),
 }

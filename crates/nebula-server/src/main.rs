@@ -583,7 +583,7 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         }))
     };
     let sql_engine = Arc::new({
-        let mut eng = SqlEngine::new(Arc::clone(&index));
+        let mut eng = SqlEngine::new(Arc::clone(&index)).with_llm(Arc::clone(&llm));
         if let Some(cache) = sql_cache.as_ref() {
             eng = eng.with_cache(Arc::clone(cache));
         }

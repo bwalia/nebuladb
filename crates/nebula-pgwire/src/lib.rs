@@ -383,8 +383,9 @@ fn sql_error_to_pg(e: nebula_sql::SqlError) -> PgWireError {
         SqlError::InvalidPlan(_) => ("42601", "ERROR"),
         // `42804` = datatype_mismatch — what our TypeError actually is.
         SqlError::TypeError(_) => ("42804", "ERROR"),
-        // Internal: XX000.
-        SqlError::Index(_) => ("XX000", "ERROR"),
+        // Internal: XX000. Index and LLM failures are both server-side
+        // faults from the client's point of view.
+        SqlError::Index(_) | SqlError::Llm(_) => ("XX000", "ERROR"),
     };
     PgWireError::UserError(Box::new(ErrorInfo::new(
         severity.to_string(),

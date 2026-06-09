@@ -153,6 +153,10 @@ paths:
       description: |
         Parses and runs a single SELECT against a NebulaDB bucket.
         Supports:
+          - `ai_answer('question' [, 'bucket'] [, top_k])` — one-call RAG
+            (design 0008 §5). Returns a single row whose `fields` carry the
+            synthesized `answer` and a `sources` array (doc, chunk, score).
+            Takes no FROM clause; the bucket is the optional 2nd argument.
           - `semantic_match(column, 'query text')` — embed-and-retrieve.
           - `vector_distance(column, '[0.1,0.2,...]')` — raw-vector retrieve.
           - residual `WHERE ... AND col = 'v'` / `col IN (...)` filters.
@@ -162,9 +166,10 @@ paths:
             carry their own `semantic_match` / `vector_distance`).
           - `ORDER BY score|metadata_col|aggregate_alias` and `LIMIT n`.
 
-        One retrieval function is required per table scan. JOIN + GROUP BY
-        combined, OR in WHERE, OUTER joins, subqueries, CTEs, and HAVING
-        are rejected with `sql_unsupported` or `sql_invalid`.
+        Except for `ai_answer(...)`, one retrieval function is required per
+        table scan. JOIN + GROUP BY combined, OR in WHERE, OUTER joins,
+        subqueries, CTEs, and HAVING are rejected with `sql_unsupported`
+        or `sql_invalid`.
       requestBody:
         required: true
         content:

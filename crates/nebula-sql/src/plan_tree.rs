@@ -29,9 +29,15 @@ use serde::Serialize;
 use sqlparser::ast;
 
 use crate::plan::{
-    build_order_by, build_projection, build_scan_from_parts, ident_name, path, Plan, Projection,
+    build_order_by, build_projection, build_scan_from_parts, ident_name, path, string_literal,
+    Plan, Projection,
 };
 use crate::{Result, SqlError};
+
+/// Default number of chunks retrieved to ground an `ai_answer` when the
+/// caller doesn't pass an explicit third argument. Matches the REST
+/// `/rag/answer` default (design 0008 §5).
+const DEFAULT_ANSWER_TOP_K: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "fn", rename_all = "snake_case")]
@@ -90,6 +96,20 @@ pub struct JoinPredicate {
     pub right_column: String,
 }
 
+/// `SELECT ai_answer('question' [, bucket] [, top_k])` — the
+/// batteries-included RAG one-liner (design 0008 §5). Unlike the other
+/// plans this has no required FROM: the bucket is an optional second
+/// argument, defaulting to "search every bucket". It retrieves,
+/// prompts, and synthesizes a single answer row rather than returning
+/// raw documents.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AnswerPlan {
+    pub query: String,
+    /// `None` = search across all buckets.
+    pub bucket: Option<String>,
+    pub top_k: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "node", rename_all = "snake_case")]
 pub enum QueryPlan {
@@ -101,6 +121,7 @@ pub enum QueryPlan {
     Scan(Plan),
     Aggregate(Box<AggregatePlan>),
     Join(Box<JoinPlan>),
+    Answer(AnswerPlan),
 }
 
 /// Top-level planner. Dispatches based on shape:
@@ -122,6 +143,20 @@ pub fn build(stmt: ast::Statement) -> Result<QueryPlan> {
     };
     // `boxed_sel` is `Box<Select>` in sqlparser 0.52; unbox once.
     let sel: ast::Select = *boxed_sel;
+
+    // `SELECT ai_answer('...')` is detected first because it's the one
+    // shape with no required FROM — the bucket is an optional arg, not
+    // a table. A FROM clause alongside ai_answer is rejected as
+    // ambiguous (use the second arg to scope the bucket instead).
+    if let Some(answer) = try_answer(&sel)? {
+        if !sel.from.is_empty() {
+            return Err(SqlError::Unsupported(
+                "ai_answer(...) takes its bucket as the optional 2nd argument, not a FROM clause"
+                    .into(),
+            ));
+        }
+        return Ok(QueryPlan::Answer(answer));
+    }
 
     if sel.from.len() != 1 {
         return Err(SqlError::Unsupported(
@@ -153,6 +188,80 @@ fn has_group_by(g: &ast::GroupByExpr) -> bool {
         ast::GroupByExpr::Expressions(exprs, _) => !exprs.is_empty(),
         _ => false,
     }
+}
+
+/// Recognize `SELECT ai_answer('question' [, 'bucket'] [, top_k])`.
+/// Returns `None` for any other projection so the normal scan/agg/join
+/// dispatch proceeds untouched. The function must be the sole item in
+/// the SELECT list — mixing it with columns has no meaning (it produces
+/// one synthesized answer, not per-row values).
+fn try_answer(sel: &ast::Select) -> Result<Option<AnswerPlan>> {
+    if sel.projection.len() != 1 {
+        return Ok(None);
+    }
+    let expr = match &sel.projection[0] {
+        ast::SelectItem::UnnamedExpr(e) | ast::SelectItem::ExprWithAlias { expr: e, .. } => e,
+        _ => return Ok(None),
+    };
+    let ast::Expr::Function(f) = expr else {
+        return Ok(None);
+    };
+    if f.name.to_string().to_lowercase() != "ai_answer" {
+        return Ok(None);
+    }
+
+    let args: Vec<&ast::Expr> = match &f.args {
+        ast::FunctionArguments::List(list) => list
+            .args
+            .iter()
+            .map(|a| match a {
+                ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) => Ok(e),
+                _ => Err(SqlError::Unsupported(
+                    "ai_answer: named / wildcard arguments".into(),
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?,
+        _ => return Ok(None),
+    };
+
+    if args.is_empty() || args.len() > 3 {
+        return Err(SqlError::TypeError(format!(
+            "ai_answer expects ('question' [, 'bucket'] [, top_k]); got {} args",
+            args.len()
+        )));
+    }
+
+    let query = string_literal(args[0]).ok_or_else(|| {
+        SqlError::TypeError("ai_answer: 1st argument must be a string literal (the question)".into())
+    })?;
+
+    let bucket = match args.get(1) {
+        None => None,
+        Some(e) => Some(string_literal(e).ok_or_else(|| {
+            SqlError::TypeError("ai_answer: 2nd argument (bucket) must be a string literal".into())
+        })?),
+    };
+
+    let top_k = match args.get(2) {
+        None => DEFAULT_ANSWER_TOP_K,
+        Some(ast::Expr::Value(ast::Value::Number(n, _))) => n
+            .parse::<usize>()
+            .map_err(|_| SqlError::TypeError(format!("ai_answer: top_k must be a positive integer: {n}")))?,
+        Some(other) => {
+            return Err(SqlError::TypeError(format!(
+                "ai_answer: 3rd argument (top_k) must be an integer literal: {other}"
+            )));
+        }
+    };
+    if top_k == 0 {
+        return Err(SqlError::TypeError("ai_answer: top_k must be > 0".into()));
+    }
+
+    Ok(Some(AnswerPlan {
+        query,
+        bucket,
+        top_k,
+    }))
 }
 
 fn build_aggregate(q: ast::Query, sel: ast::Select) -> Result<AggregatePlan> {

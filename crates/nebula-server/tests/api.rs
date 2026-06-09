@@ -1361,6 +1361,45 @@ async fn sql_query_runs_semantic_match() {
 // Multi-thread runtime required: TextIndex writes use
 // tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_query_runs_ai_answer() {
+    let app = build_router(app_state(&[]));
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"id":"1","text":"the holiday policy grants public holidays off"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/query")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"sql":"SELECT ai_answer('what is the holiday policy?')"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let rows = v["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "ai_answer");
+    assert!(rows[0]["fields"]["answer"].is_string());
+    assert!(rows[0]["fields"]["sources"].is_array());
+}
+
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_parse_error_returns_400() {
     let app = build_router(app_state(&[]));
     let res = app

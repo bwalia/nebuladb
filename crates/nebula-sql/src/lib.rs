@@ -57,12 +57,13 @@ pub mod plan_tree;
 use std::sync::Arc;
 
 use nebula_index::TextIndex;
+use nebula_llm::LlmClient;
 
 pub use cache::SemanticCache;
 pub use error::SqlError;
 pub use executor::{Executor, QueryResult};
 pub use plan::{Plan, SemanticClause};
-pub use plan_tree::{AggregateFn, AggregateSpec, JoinPlan, JoinPredicate, QueryPlan};
+pub use plan_tree::{AggregateFn, AggregateSpec, AnswerPlan, JoinPlan, JoinPredicate, QueryPlan};
 
 pub type Result<T> = std::result::Result<T, SqlError>;
 
@@ -71,15 +72,28 @@ pub type Result<T> = std::result::Result<T, SqlError>;
 pub struct SqlEngine {
     index: Arc<TextIndex>,
     cache: Option<Arc<SemanticCache>>,
+    /// Optional LLM for `ai_answer(...)`. Wired in by the server which
+    /// already owns an `LlmClient`; absent in lightweight/test setups.
+    llm: Option<Arc<dyn LlmClient>>,
 }
 
 impl SqlEngine {
     pub fn new(index: Arc<TextIndex>) -> Self {
-        Self { index, cache: None }
+        Self {
+            index,
+            cache: None,
+            llm: None,
+        }
     }
 
     pub fn with_cache(mut self, cache: Arc<SemanticCache>) -> Self {
         self.cache = Some(cache);
+        self
+    }
+
+    /// Attach the LLM used to synthesize `ai_answer(...)` responses.
+    pub fn with_llm(mut self, llm: Arc<dyn LlmClient>) -> Self {
+        self.llm = Some(llm);
         self
     }
 
@@ -90,21 +104,36 @@ impl SqlEngine {
     /// produce different embeddings for the same text, so cached
     /// results under one model are invalid under another.
     pub async fn run(&self, sql: &str) -> Result<QueryResult> {
-        if let Some(cache) = &self.cache {
-            let key = cache.key(sql, self.index.embedder_model());
-            if let Some(hit) = cache.get(&key) {
-                return Ok(hit);
+        let stmt = parser::parse(sql)?;
+        let plan = plan_tree::build(stmt)?;
+
+        // The result cache keys on `(sql, embedder_model)` — valid for
+        // retrieval, but an `ai_answer` result also depends on the LLM,
+        // which the key doesn't capture. Skip the cache entirely for
+        // the answer path rather than risk serving an answer generated
+        // by a since-swapped model.
+        let cacheable = !matches!(plan, QueryPlan::Answer(_));
+
+        if cacheable {
+            if let Some(cache) = &self.cache {
+                let key = cache.key(sql, self.index.embedder_model());
+                if let Some(hit) = cache.get(&key) {
+                    return Ok(hit);
+                }
             }
         }
 
-        let stmt = parser::parse(sql)?;
-        let plan = plan_tree::build(stmt)?;
-        let exec = Executor::new(Arc::clone(&self.index));
+        let mut exec = Executor::new(Arc::clone(&self.index));
+        if let Some(llm) = &self.llm {
+            exec = exec.with_llm(Arc::clone(llm));
+        }
         let out = exec.run(plan).await?;
 
-        if let Some(cache) = &self.cache {
-            let key = cache.key(sql, self.index.embedder_model());
-            cache.put(key, out.clone());
+        if cacheable {
+            if let Some(cache) = &self.cache {
+                let key = cache.key(sql, self.index.embedder_model());
+                cache.put(key, out.clone());
+            }
         }
         Ok(out)
     }

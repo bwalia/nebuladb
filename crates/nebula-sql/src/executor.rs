@@ -16,10 +16,12 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use futures::StreamExt;
 use nebula_index::{Hit, TextIndex};
+use nebula_llm::{build_rag_prompt, LlmChunk, LlmClient};
 
 use crate::plan::{Filter, OrderBy, OrderDir, OrderKey, Plan, Projection, SemanticClause};
-use crate::plan_tree::{AggregateFn, AggregatePlan, JoinPlan, QueryPlan};
+use crate::plan_tree::{AggregateFn, AggregatePlan, AnswerPlan, JoinPlan, QueryPlan};
 use crate::{Result, SqlError};
 
 /// One result row. `score` is the index distance (lower = closer);
@@ -40,11 +42,21 @@ pub struct QueryResult {
 
 pub struct Executor {
     index: Arc<TextIndex>,
+    /// Optional LLM, only needed for `ai_answer(...)`. `None` when the
+    /// engine was built without one — `ai_answer` then errors with a
+    /// clear message rather than silently degrading.
+    llm: Option<Arc<dyn LlmClient>>,
 }
 
 impl Executor {
     pub fn new(index: Arc<TextIndex>) -> Self {
-        Self { index }
+        Self { index, llm: None }
+    }
+
+    /// Attach an LLM so `ai_answer(...)` queries can synthesize answers.
+    pub fn with_llm(mut self, llm: Arc<dyn LlmClient>) -> Self {
+        self.llm = Some(llm);
+        self
     }
 
     /// Entry point. Pattern-matches on the plan tree and dispatches
@@ -56,11 +68,64 @@ impl Executor {
             QueryPlan::Scan(p) => self.run_scan(p).await?,
             QueryPlan::Aggregate(p) => self.run_aggregate(*p).await?,
             QueryPlan::Join(p) => self.run_join(*p).await?,
+            QueryPlan::Answer(p) => self.run_answer(p).await?,
         };
         Ok(QueryResult {
             took_ms: started.elapsed().as_millis() as u64,
             rows,
         })
+    }
+
+    /// Execute `ai_answer(...)`: retrieve grounding chunks, build a RAG
+    /// prompt, drain the LLM stream to a string, and return a single
+    /// row. The row's `fields` carry the synthesized `answer` plus a
+    /// `sources` array (doc id, chunk ordinal, score) so SQL clients
+    /// get the same attribution the REST `/rag/answer` endpoint
+    /// provides (design 0008 §5).
+    async fn run_answer(&self, plan: AnswerPlan) -> Result<Vec<Row>> {
+        let llm = self.llm.as_ref().ok_or_else(|| {
+            SqlError::Unsupported(
+                "ai_answer(...) requires an LLM; this engine was built without one".into(),
+            )
+        })?;
+
+        let hits = self
+            .index
+            .search_text(&plan.query, plan.bucket.as_deref(), plan.top_k, None)
+            .await?;
+
+        let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
+        let prompt = build_rag_prompt(&plan.query, &snippets);
+
+        let mut stream = llm
+            .generate(prompt)
+            .await
+            .map_err(|e| SqlError::Llm(e.to_string()))?;
+        let mut answer = String::new();
+        while let Some(item) = stream.next().await {
+            match item.map_err(|e| SqlError::Llm(e.to_string()))? {
+                LlmChunk::Delta(t) => answer.push_str(&t),
+                LlmChunk::Done => break,
+            }
+        }
+
+        let sources: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|h| {
+                let (doc, chunk) = match h.id.rsplit_once('#') {
+                    Some((d, c)) => (d.to_string(), c.parse::<usize>().ok()),
+                    None => (h.id.clone(), None),
+                };
+                serde_json::json!({ "doc": doc, "chunk": chunk, "score": h.score })
+            })
+            .collect();
+
+        Ok(vec![Row {
+            id: "ai_answer".to_string(),
+            bucket: plan.bucket.unwrap_or_default(),
+            score: 0.0,
+            fields: serde_json::json!({ "answer": answer, "sources": sources }),
+        }])
     }
 
     /// Legacy single-bucket scan. Kept as a private helper because

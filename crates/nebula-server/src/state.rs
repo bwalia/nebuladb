@@ -257,11 +257,13 @@ impl AppState {
     /// and registers cache stats via [`Self::with_cache_stats`].
     pub fn new(index: Arc<TextIndex>, config: AppConfig) -> Self {
         // Default SQL engine wraps the same index; no result cache
-        // unless a caller wires one in via `with_sql`.
-        let sql = Arc::new(SqlEngine::new(Arc::clone(&index)));
+        // unless a caller wires one in via `with_sql`. The LLM is shared
+        // with the SQL engine so `ai_answer(...)` works out of the box.
+        let llm: Arc<dyn LlmClient> = Arc::new(MockLlm::default());
+        let sql = Arc::new(SqlEngine::new(Arc::clone(&index)).with_llm(Arc::clone(&llm)));
         Self {
             index,
-            llm: Arc::new(MockLlm::default()),
+            llm,
             chunker: Arc::new(FixedSizeChunker::default()),
             metrics: Arc::new(Metrics::default()),
             cache_stats: None,

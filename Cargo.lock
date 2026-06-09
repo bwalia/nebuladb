@@ -2650,9 +2650,11 @@ name = "nebula-sql"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "nebula-core",
  "nebula-embed",
  "nebula-index",
+ "nebula-llm",
  "nebula-vector",
  "parking_lot",
  "serde",

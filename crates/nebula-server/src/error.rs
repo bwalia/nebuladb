@@ -84,6 +84,7 @@ impl ApiError {
             ApiError::Sql(SqlError::InvalidPlan(_)) => ("sql_invalid", StatusCode::BAD_REQUEST),
             ApiError::Sql(SqlError::TypeError(_)) => ("sql_type", StatusCode::BAD_REQUEST),
             ApiError::Sql(SqlError::Index(_)) => ("internal", StatusCode::INTERNAL_SERVER_ERROR),
+            ApiError::Sql(SqlError::Llm(_)) => ("llm_error", StatusCode::BAD_GATEWAY),
             ApiError::NotLeader { .. } => ("not_leader", StatusCode::MISDIRECTED_REQUEST),
             ApiError::Internal(_) => ("internal", StatusCode::INTERNAL_SERVER_ERROR),
         }

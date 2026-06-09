@@ -440,7 +440,7 @@ pub(crate) fn path(expr: &ast::Expr) -> Option<Vec<String>> {
     }
 }
 
-fn string_literal(expr: &ast::Expr) -> Option<String> {
+pub(crate) fn string_literal(expr: &ast::Expr) -> Option<String> {
     match expr {
         ast::Expr::Value(ast::Value::SingleQuotedString(s)) => Some(s.clone()),
         ast::Expr::Value(ast::Value::DoubleQuotedString(s)) => Some(s.clone()),
