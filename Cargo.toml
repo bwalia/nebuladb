@@ -8,6 +8,7 @@ members = [
     "crates/nebula-redis-cache",
     "crates/nebula-chunk",
     "crates/nebula-bm25",
+    "crates/nebula-rerank",
     "crates/nebula-llm",
     "crates/nebula-wal",
     "crates/nebula-raft",

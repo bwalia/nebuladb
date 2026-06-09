@@ -401,6 +401,8 @@ components:
         top_k:  { type: integer, default: 5 }
         bucket: { type: string }
         hybrid: { type: boolean, default: false, description: "Ground the answer with hybrid BM25 + vector retrieval (design 0008 §6)." }
+        expand: { type: boolean, default: false, description: "Run the configured query expander before retrieval (design 0008 §7). No effect with the default no-op expander." }
+        rerank: { type: boolean, default: false, description: "Run the configured reranker after retrieval (design 0008 §7). No effect with the default no-op reranker." }
 
     AnswerSource:
       type: object

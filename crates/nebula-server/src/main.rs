@@ -496,6 +496,35 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(MockLlm::default())
     };
 
+    // Reranker (design 0008 §7). Off unless NEBULA_RERANK_URL points at
+    // a cross-encoder sidecar; the model never links into this binary.
+    let reranker: Arc<dyn nebula_rerank::Reranker> =
+        if let Ok(url) = std::env::var("NEBULA_RERANK_URL") {
+            let req_secs: u64 = std::env::var("NEBULA_RERANK_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10);
+            tracing::info!("rerank stage enabled → {url}");
+            Arc::new(nebula_rerank::HttpReranker::new(
+                url,
+                connect_timeout,
+                Duration::from_secs(req_secs),
+            )?)
+        } else {
+            Arc::new(nebula_rerank::NoopReranker)
+        };
+
+    // Query expander (design 0008 §7). The built-in abbreviation
+    // dictionary is enabled with NEBULA_QUERY_EXPAND=1; otherwise the
+    // no-op expander leaves queries untouched.
+    let query_expander: Arc<dyn nebula_rerank::QueryExpander> =
+        if std::env::var("NEBULA_QUERY_EXPAND").as_deref() == Ok("1") {
+            tracing::info!("query expansion enabled (built-in abbreviation map)");
+            Arc::new(nebula_rerank::MapQueryExpander::with_defaults())
+        } else {
+            Arc::new(nebula_rerank::NoopQueryExpander)
+        };
+
     // Chunker: fixed-size with env-overridable window/overlap.
     let chunk_chars: usize = std::env::var("NEBULA_CHUNK_CHARS")
         .ok()
@@ -612,6 +641,8 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_llm(llm)
     .with_chunker(chunker)
+    .with_reranker(reranker)
+    .with_query_expander(query_expander)
     .with_sql(Arc::clone(&sql_engine))
     .with_cluster(Arc::clone(&cluster))
     .with_log_bus(Arc::clone(&log_bus))

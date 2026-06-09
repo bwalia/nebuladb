@@ -13,6 +13,7 @@ use nebula_cache::CacheStats;
 use nebula_chunk::{Chunker, FixedSizeChunker};
 use nebula_index::TextIndex;
 use nebula_llm::{LlmClient, MockLlm};
+use nebula_rerank::{NoopQueryExpander, NoopReranker, QueryExpander, Reranker};
 use nebula_sql::SqlEngine;
 
 use crate::audit::AuditLog;
@@ -248,6 +249,16 @@ pub struct AppState {
     /// (the correct "in-memory / not yet sampled" state). Shared via
     /// `Arc` so the sampler task and the handler see the same atomics.
     pub durability_cache: Arc<DurabilityMetricsCache>,
+    /// Post-retrieval reranker (design 0008 §7). Defaults to
+    /// [`NoopReranker`] (pass-through); production swaps in an
+    /// [`HttpReranker`] pointed at a cross-encoder sidecar via
+    /// [`Self::with_reranker`]. Always present so handlers don't branch
+    /// on `Option`.
+    pub reranker: Arc<dyn Reranker>,
+    /// Pre-retrieval query expander (design 0008 §7). Defaults to
+    /// [`NoopQueryExpander`]; [`Self::with_query_expander`] swaps in a
+    /// dictionary or LLM-backed expander.
+    pub query_expander: Arc<dyn QueryExpander>,
 }
 
 impl AppState {
@@ -283,11 +294,25 @@ impl AppState {
             raft: None,
             snapshot_scheduler_enabled: false,
             durability_cache: Arc::new(DurabilityMetricsCache::default()),
+            reranker: Arc::new(NoopReranker),
+            query_expander: Arc::new(NoopQueryExpander),
         }
     }
 
     pub fn with_snapshot_scheduler_enabled(mut self, enabled: bool) -> Self {
         self.snapshot_scheduler_enabled = enabled;
+        self
+    }
+
+    /// Swap in a post-retrieval reranker (e.g. an HTTP cross-encoder).
+    pub fn with_reranker(mut self, reranker: Arc<dyn Reranker>) -> Self {
+        self.reranker = reranker;
+        self
+    }
+
+    /// Swap in a pre-retrieval query expander.
+    pub fn with_query_expander(mut self, expander: Arc<dyn QueryExpander>) -> Self {
+        self.query_expander = expander;
         self
     }
 

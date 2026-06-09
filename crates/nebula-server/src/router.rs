@@ -970,6 +970,14 @@ struct RagAnswerRequest {
     /// than vector-only (design 0008 §6). Default false.
     #[serde(default)]
     hybrid: bool,
+    /// Run the configured query expander before retrieval (design 0008
+    /// §7). No effect when the server uses the default NoopQueryExpander.
+    #[serde(default)]
+    expand: bool,
+    /// Run the configured reranker after retrieval (design 0008 §7).
+    /// No effect when the server uses the default NoopReranker.
+    #[serde(default)]
+    rerank: bool,
 }
 
 /// One retrieved chunk, attributed back to its source document. `doc`
@@ -1007,6 +1015,130 @@ fn attribute(hit: &nebula_index::Hit) -> AnswerSource {
     }
 }
 
+/// Shared retrieval pipeline for the answer path (design 0008 §7):
+///
+/// 1. **Query expansion** (opt-in): expand the query into variants and
+///    retrieve for each, merging by id and keeping each chunk's best
+///    score. Overfetches per variant so the merged set is rich.
+/// 2. **Reranking** (opt-in): hand the merged candidates to the
+///    configured reranker, which reorders by a more accurate model and
+///    truncates to `top_k`. The result is re-projected back onto the
+///    original `Hit`s (the reranker only returns ids + scores).
+///
+/// With both flags off and the default Noop stages, this collapses to a
+/// single retrieval call — identical to the pre-§7 behaviour.
+async fn retrieve_grounding(
+    s: &AppState,
+    query: &str,
+    bucket: &Option<String>,
+    top_k: usize,
+    hybrid: bool,
+    expand: bool,
+    rerank: bool,
+) -> Result<Vec<nebula_index::Hit>, ApiError> {
+    // 1. Expansion. Default expander returns just the original query, so
+    // the non-expand path is a single-element loop.
+    let variants = if expand {
+        s.query_expander.expand(query).await
+    } else {
+        vec![query.to_string()]
+    };
+
+    // Overfetch when we'll rerank/merge so the better stage has more to
+    // work with; otherwise fetch exactly top_k.
+    let fetch_k = if rerank || variants.len() > 1 {
+        top_k.saturating_mul(3).max(top_k)
+    } else {
+        top_k
+    };
+
+    // Retrieve per variant, merge by id keeping the best (smallest
+    // distance / largest fused) score. We dedup on id so the same chunk
+    // surfaced by two variants isn't double-counted.
+    let mut by_id: std::collections::HashMap<String, nebula_index::Hit> =
+        std::collections::HashMap::new();
+    for v in &variants {
+        let hits = if hybrid {
+            std::sync::Arc::clone(&s.index)
+                .search_text_hybrid_blocking(
+                    v.clone(),
+                    bucket.clone(),
+                    fetch_k,
+                    None,
+                    default_hybrid_weights(),
+                )
+                .await?
+        } else {
+            std::sync::Arc::clone(&s.index)
+                .search_text_blocking(v.clone(), bucket.clone(), fetch_k, None)
+                .await?
+        };
+        for h in hits {
+            by_id
+                .entry(h.id.clone())
+                .and_modify(|existing| {
+                    // Hybrid scores are higher-is-better; vector
+                    // distances lower-is-better. Keep whichever the
+                    // current pipeline considers stronger.
+                    let better = if hybrid {
+                        h.score > existing.score
+                    } else {
+                        h.score < existing.score
+                    };
+                    if better {
+                        *existing = h.clone();
+                    }
+                })
+                .or_insert(h);
+        }
+    }
+    let mut merged: Vec<nebula_index::Hit> = by_id.into_values().collect();
+
+    // Stable pre-rerank ordering so the Noop reranker (order-preserving)
+    // and the no-rerank path agree. Hybrid: descending; vector: ascending.
+    merged.sort_by(|a, b| {
+        if hybrid {
+            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        .then(a.id.cmp(&b.id))
+    });
+
+    // 2. Rerank (opt-in). The default NoopReranker just truncates in the
+    // order above, so the non-rerank path and default-config path match.
+    if rerank {
+        let candidates: Vec<nebula_rerank::Candidate> = merged
+            .iter()
+            .map(|h| nebula_rerank::Candidate {
+                id: h.id.clone(),
+                text: h.text.clone(),
+            })
+            .collect();
+        let scored = s
+            .reranker
+            .rerank(query, &candidates, top_k)
+            .await
+            .map_err(|e| ApiError::Internal(format!("rerank: {e}")))?;
+        // Re-project ids → Hits, applying the reranker's score.
+        let mut index: std::collections::HashMap<String, nebula_index::Hit> =
+            merged.into_iter().map(|h| (h.id.clone(), h)).collect();
+        let reordered = scored
+            .into_iter()
+            .filter_map(|sc| {
+                index.remove(&sc.id).map(|mut h| {
+                    h.score = sc.score;
+                    h
+                })
+            })
+            .collect();
+        Ok(reordered)
+    } else {
+        merged.truncate(top_k);
+        Ok(merged)
+    }
+}
+
 /// Non-streaming, one-call RAG: retrieve → prompt → drain LLM → return
 /// `{ answer, sources }`. The streaming variant lives at `/ai/rag`;
 /// this endpoint exists so SQL/ORM clients and the `ai_answer()` demo
@@ -1023,23 +1155,16 @@ async fn rag_answer(
     s.metrics.inc_rag();
     let started = std::time::Instant::now();
 
-    // _blocking variant: keep HNSW traversal off the async worker pool
-    // (same rationale as ai_rag / ai_search above).
-    let hits = if req.hybrid {
-        std::sync::Arc::clone(&s.index)
-            .search_text_hybrid_blocking(
-                req.query.clone(),
-                req.bucket.clone(),
-                top_k,
-                None,
-                default_hybrid_weights(),
-            )
-            .await?
-    } else {
-        std::sync::Arc::clone(&s.index)
-            .search_text_blocking(req.query.clone(), req.bucket.clone(), top_k, None)
-            .await?
-    };
+    let hits = retrieve_grounding(
+        &s,
+        &req.query,
+        &req.bucket,
+        top_k,
+        req.hybrid,
+        req.expand,
+        req.rerank,
+    )
+    .await?;
     let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
     let prompt = build_rag_prompt(&req.query, &snippets);
 

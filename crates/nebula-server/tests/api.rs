@@ -33,6 +33,15 @@ fn app_state(keys: &[&str]) -> AppState {
     AppState::new(index, cfg)
 }
 
+// State wired with the built-in abbreviation expander so the §7
+// expansion path can be exercised end-to-end.
+fn app_state_with_expander() -> AppState {
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    AppState::new(index, AppConfig::default())
+        .with_query_expander(Arc::new(nebula_rerank::MapQueryExpander::with_defaults()))
+}
+
 async fn body_string(body: Body) -> String {
     let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
@@ -360,6 +369,83 @@ async fn rag_answer_hybrid_mode_attributes_sources() {
     let sources = v["sources"].as_array().expect("sources array");
     assert!(!sources.is_empty());
     assert_eq!(sources[0]["doc"], "runbook");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rag_answer_with_expand_and_rerank_flags_still_answers() {
+    // With the default Noop expander/reranker, the §7 pipeline must be
+    // behaviour-preserving: the flags are accepted and an answer with
+    // attributed sources still comes back.
+    let app = build_router(app_state(&[]));
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/document")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"doc_id":"net","text":"to configure vpn access enable mfa and install the client certificate"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/rag/answer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"query":"configure vpn","top_k":3,"hybrid":true,"expand":true,"rerank":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(v["answer"].is_string());
+    let sources = v["sources"].as_array().expect("sources array");
+    assert!(!sources.is_empty());
+    assert_eq!(sources[0]["doc"], "net");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rag_answer_expander_merges_variant_retrievals() {
+    // With the abbreviation expander, "vpn" expands to include
+    // "virtual private network"; the merged retrieval must still return
+    // a coherent answer with sources drawn from the corpus.
+    let state = app_state_with_expander();
+    let app = build_router(state);
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/document")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"doc_id":"vpnguide","text":"virtual private network setup requires a client certificate and mfa"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/rag/answer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"query":"vpn","top_k":3,"expand":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let sources = v["sources"].as_array().expect("sources array");
+    assert!(!sources.is_empty(), "expanded retrieval should find the doc");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

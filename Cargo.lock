@@ -2602,6 +2602,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-rerank"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "nebula-server"
 version = "0.1.0"
 dependencies = [
@@ -2628,6 +2640,7 @@ dependencies = [
  "nebula-pgwire",
  "nebula-raft",
  "nebula-redis-cache",
+ "nebula-rerank",
  "nebula-sql",
  "nebula-vector",
  "nebula-wal",
