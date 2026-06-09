@@ -51,6 +51,48 @@ pub trait Chunker: Send + Sync {
     fn chunk(&self, text: &str) -> Vec<Chunk>;
 }
 
+/// Document kind, used to auto-select a chunking strategy (design 0008
+/// §8). The ingestion worker detects this from the file extension /
+/// content; the server's default path uses [`DocType::Text`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocType {
+    /// Markdown / docs — split on headings so each chunk is a section.
+    Markdown,
+    /// HTML — treated like Markdown after the worker strips tags; we
+    /// still heading-split on the residual structure.
+    Html,
+    /// Source code — split on top-level definitions (fn/class/etc.).
+    Code,
+    /// Plain prose — sentence-greedy packing.
+    Text,
+    /// Structured rows (CSV/JSON-lines) — fixed-size is the safe choice;
+    /// row-aware splitting is a later refinement.
+    Structured,
+}
+
+/// Pick a best-practice chunker for a document kind (design 0008 §8).
+///
+/// The parameters (`target_chars`, `overlap_chars`) bound chunk size
+/// uniformly across strategies so retrieval behaves consistently
+/// regardless of which one fires. Returns a boxed trait object because
+/// the concrete type varies by `doc_type` and callers store one
+/// `Arc<dyn Chunker>` per ingest.
+pub fn select_strategy(
+    doc_type: DocType,
+    target_chars: usize,
+    overlap_chars: usize,
+) -> Result<Box<dyn Chunker>> {
+    Ok(match doc_type {
+        DocType::Markdown | DocType::Html => {
+            Box::new(HeadingAwareChunker::new(target_chars, overlap_chars)?)
+        }
+        DocType::Code => Box::new(CodeAwareChunker::new(target_chars, overlap_chars)?),
+        DocType::Text => Box::new(SentenceChunker::new(target_chars, overlap_chars)?),
+        DocType::Structured => Box::new(FixedSizeChunker::new(target_chars, overlap_chars)?),
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct FixedSizeChunker {
     pub chunk_chars: usize,
@@ -219,6 +261,184 @@ impl Chunker for SentenceChunker {
     }
 }
 
+/// Heading-aware chunker for Markdown / docs. Splits the document into
+/// sections at Markdown ATX headings (`#`, `##`, …), keeping the heading
+/// line attached to its section so each chunk carries its own title —
+/// which materially helps retrieval ("what does section X say?"). A
+/// section larger than `max_chars` is sub-split by the sentence chunker
+/// so no single chunk exceeds the window. Text before the first heading
+/// becomes its own leading section.
+#[derive(Debug, Clone)]
+pub struct HeadingAwareChunker {
+    max_chars: usize,
+    fallback: SentenceChunker,
+}
+
+impl HeadingAwareChunker {
+    pub fn new(max_chars: usize, overlap_chars: usize) -> Result<Self> {
+        Ok(Self {
+            max_chars,
+            fallback: SentenceChunker::new(max_chars, overlap_chars)?,
+        })
+    }
+}
+
+impl Chunker for HeadingAwareChunker {
+    fn chunk(&self, text: &str) -> Vec<Chunk> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let sections = split_headings(text);
+        emit_sections(sections, self.max_chars, &self.fallback)
+    }
+}
+
+/// Code-aware chunker. Splits source at top-level definition boundaries
+/// — lines that begin (no leading whitespace) with a definition keyword
+/// common across mainstream languages (`fn`, `def`, `class`, `func`,
+/// `impl`, `struct`, `enum`, `trait`, `interface`, `type`, `pub`,
+/// `async`, `export`, `function`). Each function/class stays in one
+/// chunk where it fits the window, so a retrieved chunk is a coherent
+/// unit of code. Oversized definitions fall back to fixed-size slicing
+/// (prose sentence rules don't apply to code).
+#[derive(Debug, Clone)]
+pub struct CodeAwareChunker {
+    max_chars: usize,
+    fallback: FixedSizeChunker,
+}
+
+impl CodeAwareChunker {
+    pub fn new(max_chars: usize, overlap_chars: usize) -> Result<Self> {
+        Ok(Self {
+            max_chars,
+            fallback: FixedSizeChunker::new(max_chars, overlap_chars)?,
+        })
+    }
+}
+
+impl Chunker for CodeAwareChunker {
+    fn chunk(&self, text: &str) -> Vec<Chunk> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let sections = split_code_definitions(text);
+        emit_sections(sections, self.max_chars, &self.fallback)
+    }
+}
+
+/// Shared section→chunk emission for the structure-aware chunkers. Each
+/// `(char_start, section_text)` becomes one chunk if it fits `max_chars`,
+/// otherwise it's sub-split by `fallback` with char offsets rebased onto
+/// the original document. Chunk indices are dense and monotone across
+/// the whole document regardless of how many sub-splits occur.
+fn emit_sections(
+    sections: Vec<(usize, String)>,
+    max_chars: usize,
+    fallback: &dyn Chunker,
+) -> Vec<Chunk> {
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+    for (start, body) in sections {
+        if body.trim().is_empty() {
+            continue;
+        }
+        if body.chars().count() <= max_chars {
+            out.push(Chunk {
+                index: idx,
+                char_start: start,
+                text: body,
+            });
+            idx += 1;
+        } else {
+            for sub in fallback.chunk(&body) {
+                out.push(Chunk {
+                    index: idx,
+                    char_start: start + sub.char_start,
+                    text: sub.text,
+                });
+                idx += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Split Markdown into `(char_start, section)` at ATX headings. A
+/// heading line (optional leading spaces, then 1–6 `#` followed by a
+/// space) starts a new section and is kept as that section's first line.
+fn split_headings(text: &str) -> Vec<(usize, String)> {
+    let mut sections = Vec::new();
+    let mut current = String::new();
+    let mut current_start = 0usize;
+    let mut char_pos = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let is_heading = is_markdown_heading(line);
+        if is_heading && !current.is_empty() {
+            sections.push((current_start, std::mem::take(&mut current)));
+            current_start = char_pos;
+        } else if current.is_empty() {
+            current_start = char_pos;
+        }
+        current.push_str(line);
+        char_pos += line.chars().count();
+    }
+    if !current.is_empty() {
+        sections.push((current_start, current));
+    }
+    sections
+}
+
+fn is_markdown_heading(line: &str) -> bool {
+    let t = line.trim_start();
+    let hashes = t.chars().take_while(|c| *c == '#').count();
+    (1..=6).contains(&hashes) && t.chars().nth(hashes) == Some(' ')
+}
+
+/// Split source code into `(char_start, section)` at top-level
+/// definition lines (a definition keyword with no leading indentation).
+/// The boundary line begins a new section. Code before the first such
+/// line (imports, license header) forms a leading section.
+fn split_code_definitions(text: &str) -> Vec<(usize, String)> {
+    let mut sections = Vec::new();
+    let mut current = String::new();
+    let mut current_start = 0usize;
+    let mut char_pos = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let is_def = is_top_level_definition(line);
+        if is_def && !current.is_empty() {
+            sections.push((current_start, std::mem::take(&mut current)));
+            current_start = char_pos;
+        } else if current.is_empty() {
+            current_start = char_pos;
+        }
+        current.push_str(line);
+        char_pos += line.chars().count();
+    }
+    if !current.is_empty() {
+        sections.push((current_start, current));
+    }
+    sections
+}
+
+const DEF_KEYWORDS: &[&str] = &[
+    "fn", "pub", "async", "def", "class", "func", "impl", "struct", "enum",
+    "trait", "interface", "type", "export", "function", "module",
+];
+
+fn is_top_level_definition(line: &str) -> bool {
+    // Top-level = no leading whitespace. The first whitespace-delimited
+    // token must be a definition keyword.
+    if line.starts_with([' ', '\t']) {
+        return false;
+    }
+    let Some(first) = line.split_whitespace().next() else {
+        return false;
+    };
+    DEF_KEYWORDS.contains(&first)
+}
+
 /// Split on common sentence terminators while preserving the trailing
 /// punctuation on the sentence it belongs to. Returns `(char_start,
 /// sentence_text)` pairs — `char_start` is the offset in the original
@@ -333,5 +553,142 @@ mod tests {
         for (i, ch) in out.iter().enumerate() {
             assert_eq!(ch.index, i);
         }
+    }
+
+    // ---------- heading-aware ----------
+
+    #[test]
+    fn heading_chunker_splits_on_headings() {
+        let c = HeadingAwareChunker::new(500, 50).unwrap();
+        let md = "# Title\nintro line\n\n## Section A\nbody a\n\n## Section B\nbody b\n";
+        let out = c.chunk(md);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].text.starts_with("# Title"));
+        assert!(out[1].text.starts_with("## Section A"));
+        assert!(out[2].text.starts_with("## Section B"));
+        // Heading line stays attached to its section.
+        assert!(out[1].text.contains("body a"));
+    }
+
+    #[test]
+    fn heading_chunker_keeps_preamble_before_first_heading() {
+        let c = HeadingAwareChunker::new(500, 50).unwrap();
+        let md = "preamble text with no heading\n# First\nbody\n";
+        let out = c.chunk(md);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].text.contains("preamble"));
+        assert!(out[1].text.starts_with("# First"));
+    }
+
+    #[test]
+    fn heading_chunker_subsplits_oversize_section() {
+        let c = HeadingAwareChunker::new(20, 3).unwrap();
+        let md = "# H\nalpha beta gamma. delta epsilon zeta. eta theta iota.\n";
+        let out = c.chunk(md);
+        assert!(out.len() >= 2);
+        assert!(out.iter().all(|ch| ch.text.chars().count() <= 20));
+        // Indices remain dense across the sub-split.
+        for (i, ch) in out.iter().enumerate() {
+            assert_eq!(ch.index, i);
+        }
+    }
+
+    #[test]
+    fn heading_chunker_char_start_points_into_original() {
+        let c = HeadingAwareChunker::new(500, 50).unwrap();
+        let md = "# A\nbody a\n## B\nbody b\n";
+        let chars: Vec<char> = md.chars().collect();
+        let out = c.chunk(md);
+        for ch in &out {
+            let slice: String = chars[ch.char_start..ch.char_start + ch.text.chars().count()]
+                .iter()
+                .collect();
+            assert_eq!(slice, ch.text, "char_start must index the original text");
+        }
+    }
+
+    #[test]
+    fn heading_chunker_no_headings_is_one_section() {
+        let c = HeadingAwareChunker::new(500, 50).unwrap();
+        let out = c.chunk("just some prose with no headings at all");
+        assert_eq!(out.len(), 1);
+    }
+
+    // ---------- code-aware ----------
+
+    #[test]
+    fn code_chunker_splits_on_top_level_defs() {
+        let c = CodeAwareChunker::new(500, 50).unwrap();
+        let src = "use std::io;\n\nfn alpha() {\n    do_a();\n}\n\nfn beta() {\n    do_b();\n}\n";
+        let out = c.chunk(src);
+        // leading `use` section + two fns.
+        assert_eq!(out.len(), 3);
+        assert!(out[0].text.contains("use std::io"));
+        assert!(out[1].text.starts_with("fn alpha"));
+        assert!(out[2].text.starts_with("fn beta"));
+    }
+
+    #[test]
+    fn code_chunker_ignores_indented_keywords() {
+        // A `fn` nested inside another block is not a top-level boundary.
+        let c = CodeAwareChunker::new(500, 50).unwrap();
+        let src = "fn outer() {\n    fn inner() {}\n    inner();\n}\n";
+        let out = c.chunk(src);
+        assert_eq!(out.len(), 1, "indented fn must not start a new section");
+    }
+
+    #[test]
+    fn code_chunker_subsplits_oversize_def() {
+        let c = CodeAwareChunker::new(15, 3).unwrap();
+        let src = "fn big() { aaaaaaaaaaaaaaaaaaaaaaaaaaaa }\n";
+        let out = c.chunk(src);
+        assert!(out.len() >= 2);
+        assert!(out.iter().all(|ch| ch.text.chars().count() <= 15));
+    }
+
+    #[test]
+    fn code_chunker_recognizes_multiple_languages() {
+        let c = CodeAwareChunker::new(500, 50).unwrap();
+        let src = "class Foo:\n    pass\n\ndef bar():\n    return 1\n\nexport function baz() {}\n";
+        let out = c.chunk(src);
+        assert_eq!(out.len(), 3);
+    }
+
+    // ---------- select_strategy ----------
+
+    #[test]
+    fn select_strategy_picks_expected_chunker_behaviour() {
+        // Markdown → heading split.
+        let md = select_strategy(DocType::Markdown, 500, 50).unwrap();
+        let out = md.chunk("# A\nx\n## B\ny\n");
+        assert_eq!(out.len(), 2);
+
+        // Code → definition split.
+        let code = select_strategy(DocType::Code, 500, 50).unwrap();
+        let out = code.chunk("fn a() {}\nfn b() {}\n");
+        assert_eq!(out.len(), 2);
+
+        // Text → sentence packing (single chunk when it fits).
+        let text = select_strategy(DocType::Text, 500, 50).unwrap();
+        let out = text.chunk("One sentence. Two sentence.");
+        assert_eq!(out.len(), 1);
+
+        // Structured → fixed-size.
+        let structured = select_strategy(DocType::Structured, 500, 50).unwrap();
+        assert_eq!(structured.chunk("a,b,c\n1,2,3\n").len(), 1);
+    }
+
+    #[test]
+    fn select_strategy_propagates_bad_config() {
+        assert!(select_strategy(DocType::Text, 0, 0).is_err());
+        assert!(select_strategy(DocType::Code, 10, 10).is_err());
+    }
+
+    #[test]
+    fn doctype_serde_roundtrip() {
+        let j = serde_json::to_string(&DocType::Markdown).unwrap();
+        assert_eq!(j, "\"markdown\"");
+        let back: DocType = serde_json::from_str("\"code\"").unwrap();
+        assert_eq!(back, DocType::Code);
     }
 }
