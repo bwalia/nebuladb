@@ -10,6 +10,7 @@ nebula-core = { path = "../nebula-core" }
 nebula-vector = { path = "../nebula-vector" }
 nebula-embed = { path = "../nebula-embed" }
 nebula-chunk = { path = "../nebula-chunk" }
+nebula-bm25 = { path = "../nebula-bm25" }
 nebula-wal = { path = "../nebula-wal" }
 
 thiserror.workspace = true

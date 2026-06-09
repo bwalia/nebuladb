@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use nebula_chunk::Chunker;
+use nebula_bm25::{Bm25Index, Bm25Params};
 use nebula_core::{Id, NebulaError};
 use nebula_embed::{EmbedError, Embedder};
 use nebula_vector::{Hnsw, HnswConfig, Metric};
@@ -113,16 +114,41 @@ pub struct BucketStats {
     pub metadata_keys: Vec<(String, usize)>,
 }
 
+/// Min-max normalize an iterator of scores onto `[0, 1]`. Returns one
+/// output per input, in order. Degenerate cases collapse to a constant:
+/// an empty input yields an empty vec; a single value or an all-equal
+/// set maps every element to `1.0` (they're all equally — maximally —
+/// relevant within their stage, so a flat-zero would erase the stage's
+/// contribution to the fusion).
+fn min_max_normalize(scores: impl Iterator<Item = f32>) -> Vec<f32> {
+    let v: Vec<f32> = scores.collect();
+    if v.is_empty() {
+        return v;
+    }
+    let min = v.iter().copied().fold(f32::INFINITY, f32::min);
+    let max = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let range = max - min;
+    if range <= f32::EPSILON {
+        return vec![1.0; v.len()];
+    }
+    v.into_iter().map(|s| (s - min) / range).collect()
+}
+
 /// Rebuild an `Inner` from serialized-on-disk form. Factored out of
 /// `open_persistent` so the crate's tests can drive it directly.
 fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
     let mut by_key = AHashMap::with_capacity(state.docs.len());
     let mut docs = AHashMap::with_capacity(state.docs.len());
+    // The BM25 index isn't part of the snapshot — rebuild it from the
+    // restored `docs` text (design 0008 §6). Same principle as vectors
+    // living only in the HNSW arena: we don't persist derivable state.
+    let mut bm25 = Bm25Index::new(Bm25Params::default());
     for d in state.docs {
         let metadata: serde_json::Value = serde_json::from_str(&d.metadata_json)
             .unwrap_or(serde_json::Value::Null);
         let id = Id(d.internal_id);
         by_key.insert((d.bucket.clone(), d.external_id.clone()), id);
+        bm25.add(id.0, &d.text);
         // Vectors live in the HNSW snapshot — the `Document`
         // struct we materialize here has an empty vector because
         // we'd be duplicating bytes otherwise. The HNSW is the
@@ -151,6 +177,7 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
         by_key,
         docs,
         parents,
+        bm25,
         next_id: state.next_id,
     }
 }
@@ -166,7 +193,33 @@ struct Inner {
     /// `delete_document` find every chunk to tombstone without
     /// scanning the whole `docs` map.
     parents: AHashMap<(String, String), AHashSet<String>>,
+    /// Lexical (BM25) index over the same corpus as `docs`, keyed by the
+    /// internal `Id`'s `u64`. Kept in lock-step with `docs` via
+    /// [`Inner::insert_doc`] / [`Inner::remove_doc`] so the two never
+    /// diverge. Not serialized — rebuilt from `docs` on snapshot load
+    /// (design 0008 §6), exactly as the HNSW arena is the authority for
+    /// vectors and this is the authority for nothing persistent.
+    bm25: Bm25Index,
     next_id: u64,
+}
+
+impl Inner {
+    /// Insert (or replace) a document, keeping `docs` and the BM25
+    /// index in sync. The single choke point for adding to the corpus —
+    /// every caller routes through here so the lexical index can never
+    /// silently fall behind the doc map.
+    fn insert_doc(&mut self, id: Id, doc: Document) {
+        self.bm25.add(id.0, &doc.text);
+        self.docs.insert(id, doc);
+    }
+
+    /// Remove a document by internal id from both `docs` and the BM25
+    /// index. Returns the removed `Document`, mirroring
+    /// `HashMap::remove`, so callers keep their existing control flow.
+    fn remove_doc(&mut self, id: Id) -> Option<Document> {
+        self.bm25.remove(id.0);
+        self.docs.remove(&id)
+    }
 }
 
 pub struct TextIndex {
@@ -198,6 +251,7 @@ impl TextIndex {
                 by_key: AHashMap::new(),
                 docs: AHashMap::new(),
                 parents: AHashMap::new(),
+                bm25: Bm25Index::new(Bm25Params::default()),
                 next_id: 1,
             }),
             wal: None,
@@ -300,6 +354,7 @@ impl TextIndex {
                         by_key: AHashMap::new(),
                         docs: AHashMap::new(),
                         parents: AHashMap::new(),
+                        bm25: Bm25Index::new(Bm25Params::default()),
                         next_id: 1,
                     };
                     // No snapshot yet: every WAL record is fresh.
@@ -508,7 +563,7 @@ impl TextIndex {
 
         if let Some(&old_id) = g.by_key.get(&key) {
             let _ = self.hnsw.delete(old_id);
-            g.docs.remove(&old_id);
+            g.remove_doc(old_id);
             g.by_key.remove(&key);
         }
 
@@ -523,7 +578,7 @@ impl TextIndex {
         g.next_id += 1;
 
         g.by_key.insert(key, new_internal_id);
-        g.docs.insert(
+        g.insert_doc(
             new_internal_id,
             Document {
                 bucket: bucket.to_string(),
@@ -627,7 +682,7 @@ impl TextIndex {
                 let key = (bucket.to_string(), id.clone());
                 if let Some(&old_id) = g.by_key.get(&key) {
                     let _ = self.hnsw.delete(old_id);
-                    g.docs.remove(&old_id);
+                    g.remove_doc(old_id);
                     g.by_key.remove(&key);
                 }
                 // Bump `next_id` only after the HNSW accepts the
@@ -640,7 +695,7 @@ impl TextIndex {
                 }
                 g.next_id += 1;
                 g.by_key.insert(key, new_id);
-                g.docs.insert(
+                g.insert_doc(
                     new_id,
                     Document {
                         bucket: bucket.to_string(),
@@ -680,7 +735,7 @@ impl TextIndex {
             bucket: bucket.to_string(),
             id: external_id.to_string(),
         })?;
-        if let Some(doc) = g.docs.remove(&id) {
+        if let Some(doc) = g.remove_doc(id) {
             if let Some(parent) = doc.parent_doc_id {
                 if let Some(set) = g.parents.get_mut(&(bucket.to_string(), parent.clone())) {
                     set.remove(&doc.external_id);
@@ -790,7 +845,7 @@ impl TextIndex {
             for external_id in existing {
                 let key = (bucket.to_string(), external_id.clone());
                 if let Some(id) = g.by_key.remove(&key) {
-                    g.docs.remove(&id);
+                    g.remove_doc(id);
                     let _ = self.hnsw.delete(id);
                 }
             }
@@ -808,7 +863,7 @@ impl TextIndex {
                 for prev_external in &parent_set {
                     let pk = (bucket.to_string(), prev_external.clone());
                     if let Some(prev_id) = g.by_key.remove(&pk) {
-                        g.docs.remove(&prev_id);
+                        g.remove_doc(prev_id);
                         let _ = self.hnsw.delete(prev_id);
                     }
                 }
@@ -817,7 +872,7 @@ impl TextIndex {
             g.next_id += 1;
             g.by_key
                 .insert((bucket.to_string(), external_id.clone()), id);
-            g.docs.insert(
+            g.insert_doc(
                 id,
                 Document {
                     bucket: bucket.to_string(),
@@ -871,7 +926,7 @@ impl TextIndex {
         for external_id in chunks {
             let key = (bucket.to_string(), external_id);
             if let Some(id) = g.by_key.remove(&key) {
-                g.docs.remove(&id);
+                g.remove_doc(id);
                 let _ = self.hnsw.delete(id);
             }
         }
@@ -910,7 +965,7 @@ impl TextIndex {
             .collect();
         let n = victims.len();
         for id in &victims {
-            if let Some(doc) = g.docs.remove(id) {
+            if let Some(doc) = g.remove_doc(*id) {
                 let key = (doc.bucket.clone(), doc.external_id.clone());
                 g.by_key.remove(&key);
                 if let Some(parent) = doc.parent_doc_id {
@@ -1333,6 +1388,156 @@ impl TextIndex {
         self.search_vector(&qv, bucket, k, ef)
     }
 
+    /// Lexical-only (BM25) search over the chunk corpus. Synchronous —
+    /// no embedder call. Returns `Hit`s with `score` set to the raw
+    /// BM25 weight (larger = more relevant), which is the *opposite*
+    /// sense to the vector `score` (a distance). Callers that mix the
+    /// two must normalize; [`Self::search_hybrid`] does.
+    pub fn search_bm25(&self, query: &str, bucket: Option<&str>, k: usize) -> Vec<Hit> {
+        let g = self.inner.read();
+        // Over-fetch when bucket-filtering, same rationale as the
+        // vector path: BM25 ranks the whole corpus and we post-filter.
+        let fetch = if bucket.is_some() { k.saturating_mul(4).max(32) } else { k };
+        let raw = g.bm25.search(query, fetch);
+        let mut hits = Vec::with_capacity(raw.len().min(k));
+        for r in raw {
+            let Some(doc) = g.docs.get(&Id(r.id)) else {
+                continue; // tombstoned between search and assembly
+            };
+            if let Some(b) = bucket {
+                if doc.bucket != b {
+                    continue;
+                }
+            }
+            hits.push(Hit {
+                bucket: doc.bucket.clone(),
+                id: doc.external_id.clone(),
+                text: doc.text.clone(),
+                score: r.score,
+                metadata: doc.metadata.clone(),
+            });
+            if hits.len() >= k {
+                break;
+            }
+        }
+        hits
+    }
+
+    /// Hybrid retrieval: fuse dense (vector) and lexical (BM25) signals
+    /// into one ranking (design 0008 §6). This is the quality
+    /// differentiator over a vector-only store — dense recall for
+    /// paraphrase, lexical precision for rare exact tokens.
+    ///
+    /// Fusion is a weighted sum of **min-max normalized** per-stage
+    /// scores, so the two incomparable raw scales (cosine distance vs
+    /// BM25 weight) are mapped onto a common `[0, 1]`-higher-is-better
+    /// axis before combining:
+    ///
+    /// - vector: distance `d` → similarity `1/(1+d)`, then min-max
+    ///   normalized across the candidate set.
+    /// - BM25: raw weight, min-max normalized across the candidate set.
+    ///
+    /// `weights` are `(vector, bm25)` and need not sum to 1 — they're
+    /// applied as-is. A doc found by only one stage contributes 0 from
+    /// the other. The returned `Hit::score` is the fused score
+    /// (larger = better).
+    ///
+    /// Each stage over-fetches `k` so a doc strong in one signal but
+    /// outside the other's top-`k` still surfaces.
+    pub fn search_vector_hybrid(
+        &self,
+        query_vector: &[f32],
+        query_text: &str,
+        bucket: Option<&str>,
+        k: usize,
+        ef: Option<usize>,
+        weights: (f32, f32),
+    ) -> Result<Vec<Hit>> {
+        // Over-fetch each stage so the fusion set is the union of both
+        // top-k's, not just their intersection.
+        let stage_k = k.saturating_mul(4).max(16);
+        let vec_hits = self.search_vector(query_vector, bucket, stage_k, ef)?;
+        let bm_hits = self.search_bm25(query_text, bucket, stage_k);
+
+        // Map vector distance → similarity so "higher = better" holds
+        // for both stages before normalization.
+        let vec_scored: Vec<(String, f32, Hit)> = vec_hits
+            .into_iter()
+            .map(|h| {
+                let sim = 1.0 / (1.0 + h.score);
+                (h.id.clone(), sim, h)
+            })
+            .collect();
+        let bm_scored: Vec<(String, f32, Hit)> =
+            bm_hits.into_iter().map(|h| (h.id.clone(), h.score, h)).collect();
+
+        let vec_norm = min_max_normalize(vec_scored.iter().map(|(_, s, _)| *s));
+        let bm_norm = min_max_normalize(bm_scored.iter().map(|(_, s, _)| *s));
+        let (w_vec, w_bm) = weights;
+
+        // Accumulate fused score per external id, keeping one `Hit`
+        // representative (either stage carries the same doc fields).
+        let mut fused: AHashMap<String, (f32, Hit)> = AHashMap::new();
+        for ((id, _, hit), n) in vec_scored.into_iter().zip(vec_norm) {
+            fused.entry(id).or_insert((0.0, hit)).0 += w_vec * n;
+        }
+        for ((id, _, hit), n) in bm_scored.into_iter().zip(bm_norm) {
+            fused.entry(id).or_insert((0.0, hit)).0 += w_bm * n;
+        }
+
+        let mut out: Vec<Hit> = fused
+            .into_iter()
+            .map(|(_, (score, mut hit))| {
+                hit.score = score;
+                hit
+            })
+            .collect();
+        // Descending fused score; tie-break on id for determinism.
+        out.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.id.cmp(&b.id))
+        });
+        out.truncate(k);
+        Ok(out)
+    }
+
+    /// Text-in hybrid search: embed the query, then fuse with BM25 over
+    /// the same query string. The embedder call is the only async part.
+    pub async fn search_text_hybrid(
+        &self,
+        query: &str,
+        bucket: Option<&str>,
+        k: usize,
+        ef: Option<usize>,
+        weights: (f32, f32),
+    ) -> Result<Vec<Hit>> {
+        let qv = self.embedder.embed_one(query).await?;
+        self.search_vector_hybrid(&qv, query, bucket, k, ef, weights)
+    }
+
+    /// Async wrapper around [`search_text_hybrid`] with the same
+    /// blocking-pool hand-off as [`search_text_blocking`]: the embed
+    /// step runs on the async worker, the synchronous fusion + index
+    /// lookups move to the blocking pool so they don't pin a runtime
+    /// worker under load.
+    pub async fn search_text_hybrid_blocking(
+        self: std::sync::Arc<Self>,
+        query: String,
+        bucket: Option<String>,
+        k: usize,
+        ef: Option<usize>,
+        weights: (f32, f32),
+    ) -> Result<Vec<Hit>> {
+        let qv = self.embedder.embed_one(&query).await?;
+        tokio::task::spawn_blocking(move || {
+            self.search_vector_hybrid(&qv, &query, bucket.as_deref(), k, ef, weights)
+        })
+        .await
+        .map_err(|e| IndexError::Invalid(format!("blocking hybrid search task failed: {e}")))?
+    }
+
     /// Async wrapper around [`search_vector`] that runs the
     /// synchronous HNSW work on tokio's blocking pool.
     ///
@@ -1659,5 +1864,132 @@ mod tests {
         assert_eq!(recovered.get("docs", "a").unwrap().text, "persisted");
         let header = recovered.latest_snapshot_header().expect("header via override dir");
         assert_eq!(header.wal_seq_at_snapshot, out.wal_seq_captured);
+    }
+
+    // ---------- hybrid retrieval (design 0008 §6) ----------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bm25_search_finds_exact_token() {
+        let idx = make_index();
+        for (id, text) in [
+            ("1", "the quarterly financial report summary"),
+            ("2", "kubernetes pod autoscaling guide"),
+            ("3", "general onboarding documentation"),
+        ] {
+            idx.upsert_text("docs", id, text, serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        let hits = idx.search_bm25("kubernetes", Some("docs"), 5);
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].id, "2");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bm25_respects_bucket_filter() {
+        let idx = make_index();
+        idx.upsert_text("a", "1", "shared keyword here", serde_json::json!({}))
+            .await
+            .unwrap();
+        idx.upsert_text("b", "1", "shared keyword here", serde_json::json!({}))
+            .await
+            .unwrap();
+        let hits = idx.search_bm25("keyword", Some("a"), 5);
+        assert!(hits.iter().all(|h| h.bucket == "a"));
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hybrid_search_returns_fused_ranking() {
+        let idx = make_index();
+        for (id, text) in [
+            ("1", "alpha beta gamma"),
+            ("2", "delta epsilon zeta"),
+            ("3", "eta theta iota"),
+        ] {
+            idx.upsert_text("docs", id, text, serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        // Equal weights; the doc whose text matches the query lexically
+        // must be present and scored highest under fusion.
+        let hits = idx
+            .search_text_hybrid("alpha beta", Some("docs"), 3, None, (0.5, 0.5))
+            .await
+            .unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].id, "1");
+        // Fused scores are descending.
+        for w in hits.windows(2) {
+            assert!(w[0].score >= w[1].score);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hybrid_bm25_weight_surfaces_rare_token() {
+        // With the MockEmbedder the vector signal is content-agnostic
+        // noise, so a pure-lexical weighting must still pull the doc
+        // containing the rare exact token to the top — the property a
+        // vector-only store cannot guarantee.
+        let idx = make_index();
+        for (id, text) in [
+            ("1", "common filler words everywhere here today"),
+            ("2", "common filler words plus errcode_8842 token"),
+            ("3", "common filler words and nothing special"),
+        ] {
+            idx.upsert_text("docs", id, text, serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        let hits = idx
+            .search_text_hybrid("errcode_8842", Some("docs"), 3, None, (0.0, 1.0))
+            .await
+            .unwrap();
+        assert_eq!(hits[0].id, "2");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bm25_stays_in_sync_through_delete() {
+        let idx = make_index();
+        idx.upsert_text("docs", "1", "uniquetoken alpha", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(idx.search_bm25("uniquetoken", Some("docs"), 5).len(), 1);
+        idx.delete("docs", "1").unwrap();
+        assert!(
+            idx.search_bm25("uniquetoken", Some("docs"), 5).is_empty(),
+            "BM25 must drop the doc when the vector index does"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bm25_rebuilds_from_snapshot_on_recovery() {
+        let data = tempfile::tempdir().unwrap();
+        let snaps = data.path().join("snapshots");
+        let idx = persistent_index(data.path(), Some(snaps.clone()));
+        idx.upsert_text("docs", "1", "recoverable bm25 token zeta", serde_json::json!({}))
+            .await
+            .unwrap();
+        idx.snapshot().unwrap();
+        drop(idx);
+
+        // The BM25 index isn't serialized — recovery must rebuild it
+        // from the restored doc text so lexical search works post-crash.
+        let recovered = persistent_index(data.path(), Some(snaps.clone()));
+        let hits = recovered.search_bm25("zeta", Some("docs"), 5);
+        assert_eq!(hits.len(), 1, "BM25 should be rebuilt from the snapshot");
+        assert_eq!(hits[0].id, "1");
+    }
+
+    #[test]
+    fn min_max_normalize_handles_degenerate_inputs() {
+        assert!(min_max_normalize(std::iter::empty()).is_empty());
+        // Single value → 1.0 (maximally relevant within its stage).
+        assert_eq!(min_max_normalize([5.0].into_iter()), vec![1.0]);
+        // All-equal → all 1.0, not a stage-erasing flat zero.
+        assert_eq!(min_max_normalize([3.0, 3.0, 3.0].into_iter()), vec![1.0, 1.0, 1.0]);
+        // Spread → endpoints at 0 and 1.
+        let n = min_max_normalize([0.0, 5.0, 10.0].into_iter());
+        assert_eq!(n, vec![0.0, 0.5, 1.0]);
     }
 }

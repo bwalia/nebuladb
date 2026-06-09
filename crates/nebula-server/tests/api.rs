@@ -293,6 +293,76 @@ async fn rag_answer_returns_attributed_sources() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ai_search_hybrid_mode_returns_hits() {
+    let app = build_router(app_state(&[]));
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"id":"1","text":"kubernetes autoscaling errcode_8842 details"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"query":"errcode_8842","top_k":3,"hybrid":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let hits = v["hits"].as_array().expect("hits array");
+    assert!(!hits.is_empty(), "hybrid search should find the exact token");
+    assert_eq!(hits[0]["id"], "1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rag_answer_hybrid_mode_attributes_sources() {
+    let app = build_router(app_state(&[]));
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/docs/document")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"doc_id":"runbook","text":"to rotate the vpn certificate run the renew script then restart the gateway"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/rag/answer")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"query":"rotate vpn certificate","top_k":3,"hybrid":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let sources = v["sources"].as_array().expect("sources array");
+    assert!(!sources.is_empty());
+    assert_eq!(sources[0]["doc"], "runbook");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rag_answer_rejects_empty_query() {
     let app = build_router(app_state(&[]));
     let res = app

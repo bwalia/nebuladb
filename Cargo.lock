@@ -2389,6 +2389,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-bm25"
+version = "0.1.0"
+dependencies = [
+ "ahash 0.8.12",
+ "proptest",
+]
+
+[[package]]
 name = "nebula-cache"
 version = "0.1.0"
 dependencies = [
@@ -2502,6 +2510,7 @@ dependencies = [
  "ahash 0.8.12",
  "async-trait",
  "bincode",
+ "nebula-bm25",
  "nebula-chunk",
  "nebula-core",
  "nebula-embed",

@@ -328,6 +328,7 @@ components:
         top_k:  { type: integer, default: 10, minimum: 1 }
         bucket: { type: string }
         ef:     { type: integer, minimum: 1 }
+        hybrid: { type: boolean, default: false, description: "Fuse BM25 + vector retrieval (design 0008 §6). Default false = vector-only." }
 
     RagRequest:
       type: object
@@ -394,6 +395,7 @@ components:
         query:  { type: string }
         top_k:  { type: integer, default: 5 }
         bucket: { type: string }
+        hybrid: { type: boolean, default: false, description: "Ground the answer with hybrid BM25 + vector retrieval (design 0008 §6)." }
 
     AnswerSource:
       type: object

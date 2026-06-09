@@ -713,10 +713,22 @@ struct AiSearchRequest {
     bucket: Option<String>,
     #[serde(default)]
     ef: Option<usize>,
+    /// Opt into hybrid (BM25 + vector fusion) retrieval. Default false
+    /// keeps vector-only behaviour until benchmarked (design 0008 §6).
+    #[serde(default)]
+    hybrid: bool,
 }
 
 fn default_top_k() -> usize {
     10
+}
+
+/// Default fusion weights `(vector, bm25)` for hybrid retrieval. Even
+/// split between the dense and lexical signals; design 0008 §9 makes
+/// these per-collection later. The spec's 0.2 metadata share is a
+/// later fusion stage and not yet wired.
+fn default_hybrid_weights() -> (f32, f32) {
+    (0.5, 0.5)
 }
 
 #[derive(Serialize)]
@@ -762,9 +774,21 @@ async fn ai_search(
     }
     let top_k = validate_top_k(req.top_k, s.config.max_top_k)?;
     let started = std::time::Instant::now();
-    let hits = std::sync::Arc::clone(&s.index)
-        .search_text_blocking(req.query, req.bucket, top_k, req.ef)
-        .await?;
+    let hits = if req.hybrid {
+        std::sync::Arc::clone(&s.index)
+            .search_text_hybrid_blocking(
+                req.query,
+                req.bucket,
+                top_k,
+                req.ef,
+                default_hybrid_weights(),
+            )
+            .await?
+    } else {
+        std::sync::Arc::clone(&s.index)
+            .search_text_blocking(req.query, req.bucket, top_k, req.ef)
+            .await?
+    };
     s.metrics.inc_semantic_search();
     Ok(Json(SearchResponse {
         hits,
@@ -942,6 +966,10 @@ struct RagAnswerRequest {
     top_k: usize,
     #[serde(default)]
     bucket: Option<String>,
+    /// Use hybrid (BM25 + vector fusion) retrieval for grounding rather
+    /// than vector-only (design 0008 §6). Default false.
+    #[serde(default)]
+    hybrid: bool,
 }
 
 /// One retrieved chunk, attributed back to its source document. `doc`
@@ -997,9 +1025,21 @@ async fn rag_answer(
 
     // _blocking variant: keep HNSW traversal off the async worker pool
     // (same rationale as ai_rag / ai_search above).
-    let hits = std::sync::Arc::clone(&s.index)
-        .search_text_blocking(req.query.clone(), req.bucket.clone(), top_k, None)
-        .await?;
+    let hits = if req.hybrid {
+        std::sync::Arc::clone(&s.index)
+            .search_text_hybrid_blocking(
+                req.query.clone(),
+                req.bucket.clone(),
+                top_k,
+                None,
+                default_hybrid_weights(),
+            )
+            .await?
+    } else {
+        std::sync::Arc::clone(&s.index)
+            .search_text_blocking(req.query.clone(), req.bucket.clone(), top_k, None)
+            .await?
+    };
     let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
     let prompt = build_rag_prompt(&req.query, &snippets);
 
