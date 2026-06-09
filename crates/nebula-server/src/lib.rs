@@ -39,4 +39,4 @@ pub use log_stream::{CapturingSubscriber, LogBus, LogEvent, LogLevel};
 pub use ratelimit::{RateLimitConfig, RateLimiter, TrustedProxies};
 pub use router::build_router;
 pub use slow_log::SlowQueryLog;
-pub use state::{AppConfig, AppState};
+pub use state::{AppConfig, AppState, HybridWeights};

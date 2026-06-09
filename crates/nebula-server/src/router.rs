@@ -723,13 +723,6 @@ fn default_top_k() -> usize {
     10
 }
 
-/// Default fusion weights `(vector, bm25)` for hybrid retrieval. Even
-/// split between the dense and lexical signals; design 0008 §9 makes
-/// these per-collection later. The spec's 0.2 metadata share is a
-/// later fusion stage and not yet wired.
-fn default_hybrid_weights() -> (f32, f32) {
-    (0.5, 0.5)
-}
 
 #[derive(Serialize)]
 struct SearchResponse {
@@ -775,14 +768,9 @@ async fn ai_search(
     let top_k = validate_top_k(req.top_k, s.config.max_top_k)?;
     let started = std::time::Instant::now();
     let hits = if req.hybrid {
+        let weights = s.hybrid_weights.resolve(req.bucket.as_deref());
         std::sync::Arc::clone(&s.index)
-            .search_text_hybrid_blocking(
-                req.query,
-                req.bucket,
-                top_k,
-                req.ef,
-                default_hybrid_weights(),
-            )
+            .search_text_hybrid_blocking(req.query, req.bucket, top_k, req.ef, weights)
             .await?
     } else {
         std::sync::Arc::clone(&s.index)
@@ -1057,16 +1045,11 @@ async fn retrieve_grounding(
     // surfaced by two variants isn't double-counted.
     let mut by_id: std::collections::HashMap<String, nebula_index::Hit> =
         std::collections::HashMap::new();
+    let weights = s.hybrid_weights.resolve(bucket.as_deref());
     for v in &variants {
         let hits = if hybrid {
             std::sync::Arc::clone(&s.index)
-                .search_text_hybrid_blocking(
-                    v.clone(),
-                    bucket.clone(),
-                    fetch_k,
-                    None,
-                    default_hybrid_weights(),
-                )
+                .search_text_hybrid_blocking(v.clone(), bucket.clone(), fetch_k, None, weights)
                 .await?
         } else {
             std::sync::Arc::clone(&s.index)

@@ -1,6 +1,6 @@
 # Design 0008: Batteries-Included RAG
 
-- **Status**: Proposed — Phase 1 in progress
+- **Status**: Accepted — Phases 1–3 + §9 (per-collection weights) landed; Phase 4 (ingestion sidecar) + §9 metadata-fusion stage pending
 - **Author**: Claude + @bwalia
 - **Created**: 2026-06-09
 - **Tracks**: product differentiator — "upload documents → query immediately → relevant answers, no config"
@@ -145,6 +145,39 @@ The real quality moat vs pgvector. **Lexical + vector only — no neural model.*
 - Metrics: extend the existing Prometheus block in `router.rs` (already emits
   embed-cache counters) with `chunks_created`, `rerank_latency`, `rag_latency`.
 - Showcase React app: RAG overview panel.
+
+## 9.1 Implementation status & operator knobs (landed)
+
+Phases 1–3 and the §9 per-collection weights are implemented:
+
+- **Phase 1**: `POST /rag/answer` + `SELECT ai_answer('q' [, 'bucket'] [, k])`.
+- **Phase 2**: `nebula-bm25` + hybrid fusion in `nebula-index`
+  (`search_*_hybrid*`), opt-in `hybrid` flag on `/ai/search` and `/rag/answer`.
+- **Phase 3**: `nebula-rerank` (`Reranker` + `QueryExpander` traits, Noop
+  defaults + `HttpReranker`/`MapQueryExpander`), opt-in `expand`/`rerank`
+  flags wired through a shared `retrieve_grounding` pipeline.
+- **§9 weights**: `HybridWeights` registry on `AppState` — global default
+  with per-bucket overrides, resolved at query time.
+
+Environment knobs (all default to the lean/off path):
+
+| Env var | Effect |
+|---|---|
+| `NEBULA_RERANK_URL` | Enables `HttpReranker` → cross-encoder sidecar |
+| `NEBULA_RERANK_TIMEOUT_SECS` | Rerank request timeout (default 10) |
+| `NEBULA_QUERY_EXPAND=1` | Enables the built-in abbreviation expander |
+| `NEBULA_HYBRID_WEIGHTS="v,b"` | Global fusion weights (default `0.5,0.5`) |
+| `NEBULA_HYBRID_WEIGHTS_<BUCKET>="v,b"` | Per-bucket override |
+
+**Benchmark** (`nebula-index/tests/hybrid_quality_bench.rs`, `#[ignore]`):
+recall@k / MRR for vector-only vs bm25-only vs hybrid at several weight
+settings. Honest caveat baked into the test: with the hash-based
+`MockEmbedder`, vector-only recall is ~chance, so the bench isolates the
+*lexical* recall hybrid adds on exact-token queries (the §6 motivation).
+Real semantic-recall numbers require a real embedder (left network-free
+for CI). The weight sweep concretely shows why §9 per-collection tuning
+matters — recall moved from 0.085 (vector-heavy) to 1.0 (lexical-heavy)
+on the lexical task.
 
 ## 10. Explicit deviations from the source spec
 

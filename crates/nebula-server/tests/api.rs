@@ -448,6 +448,67 @@ async fn rag_answer_expander_merges_variant_retrievals() {
     assert!(!sources.is_empty(), "expanded retrieval should find the doc");
 }
 
+#[test]
+fn hybrid_weights_resolve_default_and_per_bucket() {
+    use nebula_server::HybridWeights;
+    let hw = HybridWeights::new((0.5, 0.5))
+        .with_bucket("support", (0.2, 0.8))
+        .with_bucket("code", (0.7, 0.3));
+    // Per-bucket override wins.
+    assert_eq!(hw.resolve(Some("support")), (0.2, 0.8));
+    assert_eq!(hw.resolve(Some("code")), (0.7, 0.3));
+    // Unknown bucket falls back to default.
+    assert_eq!(hw.resolve(Some("other")), (0.5, 0.5));
+    // Search-all (no bucket) uses default.
+    assert_eq!(hw.resolve(None), (0.5, 0.5));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hybrid_search_honors_per_bucket_weights() {
+    use nebula_server::HybridWeights;
+    // Pure-lexical weighting for the "docs" bucket: a rare exact token
+    // must dominate, proving the per-bucket weights actually reach the
+    // fusion stage.
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    let state = AppState::new(index, AppConfig::default())
+        .with_hybrid_weights(Arc::new(HybridWeights::new((0.5, 0.5)).with_bucket("docs", (0.0, 1.0))));
+    let app = build_router(state);
+
+    for (id, text) in [
+        ("1", "common filler words here today"),
+        ("2", "common filler words plus errcode_9001 token"),
+    ] {
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/bucket/docs/doc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"id":"{id}","text":"{text}"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"query":"errcode_9001","bucket":"docs","top_k":2,"hybrid":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let hits = v["hits"].as_array().expect("hits");
+    assert_eq!(hits[0]["id"], "2");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rag_answer_rejects_empty_query() {
     let app = build_router(app_state(&[]));

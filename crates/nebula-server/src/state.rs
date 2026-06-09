@@ -180,6 +180,50 @@ impl Default for AppConfig {
     }
 }
 
+/// Per-collection (per-bucket) hybrid fusion weights `(vector, bm25)`
+/// for hybrid retrieval (design 0008 §9). A global default applies to
+/// every bucket unless a per-bucket override is registered. Weights are
+/// applied as-is by the fusion stage and need not sum to 1.
+#[derive(Debug, Clone)]
+pub struct HybridWeights {
+    default: (f32, f32),
+    per_bucket: std::collections::HashMap<String, (f32, f32)>,
+}
+
+impl Default for HybridWeights {
+    fn default() -> Self {
+        // Even split between dense and lexical signals — a sane
+        // out-of-the-box choice; operators tune per bucket below.
+        Self {
+            default: (0.5, 0.5),
+            per_bucket: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl HybridWeights {
+    pub fn new(default: (f32, f32)) -> Self {
+        Self {
+            default,
+            per_bucket: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register an override for one bucket. Chainable.
+    pub fn with_bucket(mut self, bucket: impl Into<String>, weights: (f32, f32)) -> Self {
+        self.per_bucket.insert(bucket.into(), weights);
+        self
+    }
+
+    /// Resolve the weights for a query. A `None` bucket (search-all) or
+    /// a bucket with no override falls back to the default.
+    pub fn resolve(&self, bucket: Option<&str>) -> (f32, f32) {
+        bucket
+            .and_then(|b| self.per_bucket.get(b).copied())
+            .unwrap_or(self.default)
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub index: Arc<TextIndex>,
@@ -259,6 +303,10 @@ pub struct AppState {
     /// [`NoopQueryExpander`]; [`Self::with_query_expander`] swaps in a
     /// dictionary or LLM-backed expander.
     pub query_expander: Arc<dyn QueryExpander>,
+    /// Per-collection hybrid fusion weights (design 0008 §9). Defaults
+    /// to an even 0.5/0.5 split for every bucket; override globally or
+    /// per-bucket via [`Self::with_hybrid_weights`].
+    pub hybrid_weights: Arc<HybridWeights>,
 }
 
 impl AppState {
@@ -296,6 +344,7 @@ impl AppState {
             durability_cache: Arc::new(DurabilityMetricsCache::default()),
             reranker: Arc::new(NoopReranker),
             query_expander: Arc::new(NoopQueryExpander),
+            hybrid_weights: Arc::new(HybridWeights::default()),
         }
     }
 
@@ -313,6 +362,12 @@ impl AppState {
     /// Swap in a pre-retrieval query expander.
     pub fn with_query_expander(mut self, expander: Arc<dyn QueryExpander>) -> Self {
         self.query_expander = expander;
+        self
+    }
+
+    /// Set per-collection hybrid fusion weights (design 0008 §9).
+    pub fn with_hybrid_weights(mut self, weights: Arc<HybridWeights>) -> Self {
+        self.hybrid_weights = weights;
         self
     }
 

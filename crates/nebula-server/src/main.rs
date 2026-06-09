@@ -525,6 +525,33 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(nebula_rerank::NoopQueryExpander)
         };
 
+    // Per-collection hybrid fusion weights (design 0008 §9). The global
+    // default is overridable via NEBULA_HYBRID_WEIGHTS="vector,bm25"
+    // (e.g. "0.6,0.4"). Per-bucket overrides use
+    // NEBULA_HYBRID_WEIGHTS_<BUCKET>="vector,bm25". Invalid values fall
+    // back to the built-in 0.5/0.5 default rather than failing boot.
+    let hybrid_weights = {
+        let parse_pair = |s: &str| -> Option<(f32, f32)> {
+            let (a, b) = s.split_once(',')?;
+            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+        };
+        let default = std::env::var("NEBULA_HYBRID_WEIGHTS")
+            .ok()
+            .and_then(|s| parse_pair(&s))
+            .unwrap_or((0.5, 0.5));
+        let mut hw = nebula_server::HybridWeights::new(default);
+        // Scan env for per-bucket overrides.
+        for (k, v) in std::env::vars() {
+            if let Some(bucket) = k.strip_prefix("NEBULA_HYBRID_WEIGHTS_") {
+                if let Some(pair) = parse_pair(&v) {
+                    tracing::info!("hybrid weights for bucket {bucket}: {pair:?}");
+                    hw = hw.with_bucket(bucket.to_lowercase(), pair);
+                }
+            }
+        }
+        Arc::new(hw)
+    };
+
     // Chunker: fixed-size with env-overridable window/overlap.
     let chunk_chars: usize = std::env::var("NEBULA_CHUNK_CHARS")
         .ok()
@@ -643,6 +670,7 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     .with_chunker(chunker)
     .with_reranker(reranker)
     .with_query_expander(query_expander)
+    .with_hybrid_weights(hybrid_weights)
     .with_sql(Arc::clone(&sql_engine))
     .with_cluster(Arc::clone(&cluster))
     .with_log_bus(Arc::clone(&log_bus))
