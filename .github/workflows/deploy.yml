@@ -40,11 +40,13 @@ jobs:
       ENV_TEMPLATE: .env.deploy.example
       # This runner sits behind a TLS-inspecting proxy (Zscaler), which
       # makes the showcase image's `npm ci` fail with
-      # UNABLE_TO_GET_ISSUER_CERT_LOCALLY. Hand the host's system CA
-      # bundle to the build as the `proxy_ca` secret — it already
+      # UNABLE_TO_GET_ISSUER_CERT_LOCALLY. The host's system CA bundle is
+      # handed to the build as the `proxy_ca` secret — it already
       # contains the Zscaler root the host trusts for its own egress.
-      # On a clean host this is just the public bundle (harmless).
-      PROXY_CA_FILE: /etc/ssl/certs/ca-certificates.crt
+      # The exact path varies by distro (and may be absent on a clean
+      # host), so it is resolved at runtime in the "Resolve proxy CA"
+      # step rather than hardcoded here — a missing path made the
+      # compose secret mount fail with "failed to stat ...".
 
     steps:
       - name: Checkout
@@ -55,6 +57,25 @@ jobs:
           echo "host: $(hostname)  ip: $(hostname -I | awk '{print $1}')"
           docker --version
           docker compose version
+
+      - name: Resolve proxy CA
+        # The system CA bundle lives at different paths across distros
+        # (Debian/Ubuntu vs RHEL) and may not exist at all on a clean
+        # host. Pick the first that exists; fall back to /dev/null so the
+        # compose `proxy_ca` secret is a harmless no-op (size 0 -> the
+        # showcase Dockerfile skips it). Hardcoding a single path made
+        # the secret mount fail with "failed to stat ...".
+        run: |
+          set -euo pipefail
+          ca=/dev/null
+          for cand in \
+            /etc/ssl/certs/ca-certificates.crt \
+            /etc/pki/tls/certs/ca-bundle.crt \
+            /etc/ssl/cert.pem; do
+            if [[ -f "$cand" ]]; then ca="$cand"; break; fi
+          done
+          echo "PROXY_CA_FILE=$ca" >>"$GITHUB_ENV"
+          echo "Using proxy CA: $ca"
 
       - name: Materialize .env (host-port overrides)
         run: |
