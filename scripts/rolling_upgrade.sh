@@ -30,6 +30,9 @@
 #   OPERATOR_BEARER       bearer token for POST /admin/promote (optional)
 #   T_READY_SECS          per-node readiness budget (default 180)
 #   T_CATCHUP_SECS        per-node catch-up budget (default 180)
+#   FORCE_ROLL=1          skip the binary-unchanged fast path and always
+#                         perform the full rolling sequence (used by the
+#                         zero-failure test, where images are pre-built)
 #   DRY_RUN=1             print the plan, touch nothing
 #
 # Exit non-zero on any budget breach or invariant violation, leaving the
@@ -149,7 +152,7 @@ bin_hash() {
   [ -n "$1" ] || { echo ""; return; }
   docker run --rm --entrypoint sha256sum "$1" /usr/local/bin/nebula-server 2>/dev/null | awk '{print $1}'
 }
-if [[ -n "$cur_img" && -n "$new_img" ]]; then
+if [[ "${FORCE_ROLL:-0}" != "1" && -n "$cur_img" && -n "$new_img" ]]; then
   if [[ "$(bin_hash "$cur_img")" == "$(bin_hash "$new_img")" && -n "$(bin_hash "$new_img")" ]]; then
     note "server binary unchanged — converging sidecars only, no rolling upgrade"
     sidecars="$(docker compose config --services | grep -vxE "${LEADER_SVC}|${FOLLOWER_SVC}" || true)"
