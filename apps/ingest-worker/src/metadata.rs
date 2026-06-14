@@ -83,8 +83,11 @@ mod tests {
         let s = summarize(text, 12);
         assert!(s.ends_with('…'));
         assert!(s.chars().count() <= 13);
-        // Did not cut mid-word.
-        assert!(!s.trim_end_matches('…').ends_with(|c: char| c.is_alphanumeric() && false));
+        // Did not cut mid-word: the kept text is a prefix of the source
+        // that ends exactly where a space follows in the original.
+        let body = s.trim_end_matches('…');
+        assert!(text.starts_with(body));
+        assert!(text[body.len()..].starts_with(' '));
     }
 
     #[test]

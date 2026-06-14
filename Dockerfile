@@ -40,8 +40,12 @@ COPY crates/nebula-index/Cargo.toml    crates/nebula-index/Cargo.toml
 COPY crates/nebula-server/Cargo.toml   crates/nebula-server/Cargo.toml
 
 # Copy actual sources. We do this after the manifests so Cargo can see
-# every crate's source tree when we build.
+# every crate's source tree when we build. `apps/` is needed too: it
+# holds workspace members (e.g. ingest-worker) that cargo must resolve
+# to build the virtual workspace, even though we only compile
+# nebula-server below.
 COPY crates crates
+COPY apps apps
 
 # Release build. `--locked` forces use of the committed Cargo.lock and
 # fails CI if a manifest edit changes resolution without updating the

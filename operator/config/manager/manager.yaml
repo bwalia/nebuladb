@@ -30,6 +30,11 @@ spec:
         - --leader-elect=true
         - --metrics-bind-address=:8080
         - --health-probe-bind-address=:8081
+        # Admission webhooks require TLS serving certs (cert-manager or a
+        # mounted Secret), which this overlay does not provision. Disable
+        # them so the manager starts; CRD OpenAPI schemas still validate
+        # CRs server-side. Enable in an overlay that wires up certs.
+        - --enable-webhooks=false
         ports:
         - {name: metrics, containerPort: 8080}
         - {name: healthz, containerPort: 8081}
