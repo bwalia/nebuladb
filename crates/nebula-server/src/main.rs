@@ -712,6 +712,16 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     let grpc_index = Arc::clone(&state.index);
     let grpc_llm = Arc::clone(&state.llm);
     let grpc_chunker = Arc::clone(&state.chunker);
+    // The single runtime-mutable role atomic, seeded from the boot role
+    // by `with_cluster`. Cloned into the gRPC and pgwire servers so a
+    // `POST /admin/promote` (which flips this atomic via the REST
+    // AppState) lifts the write guard on all three protocols at once
+    // (design 0009 §5).
+    let shared_role = Arc::clone(&state.role);
+    // Write-once cell the promote handler reads to abort the follower
+    // tail task. Filled below once the follower is spawned (design 0009
+    // §5). Captured here because `state` is moved into the router next.
+    let follower_abort_cell = state.follower_abort_cell();
     // Status hub for cross-region: need a handle outside state before
     // we move state into the router, so the consumer task can report
     // progress into the same hub that /admin/replication reads.
@@ -731,8 +741,12 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             // When raft is configured, also hand the handle through so
             // DocumentService writes route through Raft consensus
             // (Phase 2.5f) — same model AppState uses on the REST side.
-            let mut grpc_state =
-                GrpcState::with_role(grpc_index.clone(), grpc_llm, grpc_chunker, cluster.role);
+            let mut grpc_state = GrpcState::with_shared_role(
+                grpc_index.clone(),
+                grpc_llm,
+                grpc_chunker,
+                Arc::clone(&shared_role),
+            );
             if let Some(rh) = raft_handle.as_ref() {
                 grpc_state = grpc_state.with_raft(Arc::clone(rh));
             }
@@ -761,15 +775,17 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         Some(addr) => {
             let pg_addr: SocketAddr = addr.parse()?;
             let engine = Arc::clone(&sql_engine);
-            let pg_role = cluster.role;
+            let pg_role = Arc::clone(&shared_role);
             let pg_region = cluster.region.clone();
             tracing::info!(
-                "nebula-pgwire listening on {pg_addr} (role={pg_role:?}, region={pg_region:?})",
+                "nebula-pgwire listening on {pg_addr} (role={:?}, region={pg_region:?})",
+                pg_role.load(),
             );
             Some(tokio::spawn(async move {
-                if let Err(e) =
-                    nebula_pgwire::serve_with_role_and_region(engine, pg_addr, pg_role, pg_region)
-                        .await
+                if let Err(e) = nebula_pgwire::serve_with_shared_role_and_region(
+                    engine, pg_addr, pg_role, pg_region,
+                )
+                .await
                 {
                     tracing::error!(error = %e, "pgwire server exited");
                 }
@@ -879,12 +895,18 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                         (Some(durable), None) => Some(durable),
                         (None, None) => None,
                     };
-                Some(nebula_grpc::follower::spawn_with_store(
+                let handle = nebula_grpc::follower::spawn_with_store(
                     channel,
                     Arc::clone(&grpc_index),
                     nebula_wal::WalCursor::BEGIN,
                     store,
-                ))
+                );
+                // Publish the abort handle so `POST /admin/promote` can
+                // stop tailing on promotion (design 0009 §5). set() only
+                // fails if already set, which can't happen here (single
+                // spawn) — ignore the result.
+                let _ = follower_abort_cell.set(handle.abort_handle());
+                Some(handle)
             }
             _ => None,
         };

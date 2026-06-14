@@ -204,6 +204,15 @@ impl FollowerHandle {
         self.task.abort();
     }
 
+    /// A cloneable handle that can abort the follower task without
+    /// consuming this `FollowerHandle`. Used by runtime promotion
+    /// (design 0009 §5): when a follower is promoted to leader it must
+    /// stop tailing its (now former) leader, and the promote handler
+    /// holds only a shared reference to this abort handle via AppState.
+    pub fn abort_handle(&self) -> tokio::task::AbortHandle {
+        self.task.abort_handle()
+    }
+
     pub async fn join(self) -> Result<(), tokio::task::JoinError> {
         self.task.await
     }

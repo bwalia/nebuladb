@@ -89,3 +89,60 @@ impl std::str::FromStr for NodeRole {
         }
     }
 }
+
+impl NodeRole {
+    fn as_u8(self) -> u8 {
+        match self {
+            NodeRole::Standalone => 0,
+            NodeRole::Leader => 1,
+            NodeRole::Follower => 2,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => NodeRole::Leader,
+            2 => NodeRole::Follower,
+            _ => NodeRole::Standalone,
+        }
+    }
+}
+
+/// A [`NodeRole`] that can be flipped at runtime and read concurrently.
+///
+/// Role is read on the write path of three independent protocol servers
+/// (REST middleware, gRPC services, pgwire handler), each constructed
+/// with its own copy of the role at boot. Runtime promotion (design 0009
+/// §5) requires all three to observe the change at once, so they share a
+/// single `Arc<AtomicNodeRole>` instead of holding `NodeRole` copies.
+/// Backed by an `AtomicU8`; `Relaxed` ordering is sufficient — promotion
+/// is an operator-triggered, rare event and the write path only needs to
+/// *eventually* observe the flip, not synchronize other memory.
+#[derive(Debug)]
+pub struct AtomicNodeRole(std::sync::atomic::AtomicU8);
+
+impl AtomicNodeRole {
+    pub fn new(role: NodeRole) -> Self {
+        Self(std::sync::atomic::AtomicU8::new(role.as_u8()))
+    }
+
+    pub fn load(&self) -> NodeRole {
+        NodeRole::from_u8(self.0.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub fn store(&self, role: NodeRole) {
+        self.0.store(role.as_u8(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Convenience mirror of [`NodeRole::is_read_only`] reading the
+    /// current value — the write-guard call site on every protocol.
+    pub fn is_read_only(&self) -> bool {
+        self.load().is_read_only()
+    }
+}
+
+impl Default for AtomicNodeRole {
+    fn default() -> Self {
+        Self::new(NodeRole::default())
+    }
+}

@@ -84,7 +84,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/restore", post(crate::backup_routes::admin_restore_start))
         .route("/admin/restore/:id", get(crate::backup_routes::admin_restore_status))
         .route("/admin/cluster/nodes", get(admin_cluster_nodes))
-        .route("/admin/replication", get(admin_replication));
+        .route("/admin/replication", get(admin_replication))
+        .route("/admin/promote", post(admin_promote));
     let api_normal = if let Some(t) = request_timeout {
         api_normal.layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -1620,7 +1621,9 @@ async fn admin_replication(State(s): State<AppState>) -> Json<ReplicationInfo> {
     let remotes = s.cross_region_status.snapshot();
     let region = s.cluster.region.clone();
     Json(ReplicationInfo {
-        role: s.cluster.role,
+        // Report the runtime-mutable role (design 0009 §5), not the
+        // boot-time one — after a promote this node IS the leader.
+        role: s.role.load(),
         local_newest,
         follower_applied,
         leader_newest_probed,
@@ -1629,6 +1632,62 @@ async fn admin_replication(State(s): State<AppState>) -> Json<ReplicationInfo> {
         region,
         remotes,
     })
+}
+
+// ---- promotion (design 0009 §5) ----
+
+#[derive(Serialize)]
+struct PromoteResponse {
+    /// Role after the call. Always `"leader"` on success.
+    role: crate::cluster::NodeRole,
+    /// Whether this call performed the flip (`true`) or the node was
+    /// already a leader (`false`). Lets the orchestrator treat promote
+    /// as idempotent.
+    promoted: bool,
+}
+
+/// Promote this node from Follower to Leader at runtime (design 0009 §5).
+///
+/// Operator/orchestrator-triggered (a 2-node cluster can't safely
+/// auto-elect — design 0007 §6). The flip is observed by all three
+/// protocol write-guards at once because they share one
+/// [`nebula_core::AtomicNodeRole`]. The node also stops tailing its
+/// former leader so it doesn't fight its own writes.
+///
+/// - Follower → Leader: flips the role, aborts the follower tail task,
+///   returns `promoted: true`.
+/// - Leader → Leader: idempotent no-op, `promoted: false` (so a retry
+///   or a double-trigger from the orchestrator is safe).
+/// - Standalone: 400 — there is no leader to promote toward, and a
+///   standalone already accepts writes. Promoting it would be a
+///   meaningless role change that breaks the standalone invariant.
+async fn admin_promote(State(s): State<AppState>) -> Result<Json<PromoteResponse>, ApiError> {
+    use crate::cluster::NodeRole;
+    match s.role.load() {
+        NodeRole::Leader => Ok(Json(PromoteResponse {
+            role: NodeRole::Leader,
+            promoted: false,
+        })),
+        NodeRole::Standalone => Err(ApiError::BadRequest(
+            "node is standalone; nothing to promote (it already accepts writes)".into(),
+        )),
+        NodeRole::Follower => {
+            // Stop tailing the former leader BEFORE accepting writes, so
+            // a record we accept post-promotion can't race a late inbound
+            // replicated record. abort() on an already-finished task is a
+            // no-op, so this is safe even if the tail already exited.
+            if let Some(abort) = s.follower_abort.get() {
+                abort.abort();
+                tracing::info!("promote: aborted follower replication task");
+            }
+            s.role.store(NodeRole::Leader);
+            tracing::warn!("node promoted Follower -> Leader (design 0009 §5)");
+            Ok(Json(PromoteResponse {
+                role: NodeRole::Leader,
+                promoted: true,
+            }))
+        }
+    }
 }
 
 // ---- log streaming ----

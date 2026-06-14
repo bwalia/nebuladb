@@ -2500,3 +2500,112 @@ async fn bucket_import_rejects_wrong_dim() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
+
+// ---- runtime promotion (design 0009 §5) ----
+
+fn follower_state() -> AppState {
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    let cluster = Arc::new(nebula_server::cluster::ClusterConfig {
+        role: nebula_server::NodeRole::Follower,
+        ..Default::default()
+    });
+    AppState::new(index, AppConfig::default()).with_cluster(cluster)
+}
+
+/// A follower 409s writes; after POST /admin/promote it accepts them.
+/// This is the core of design 0009 §5 — the runtime role flip lifting
+/// the REST write guard without a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn promote_lifts_follower_write_guard() {
+    let state = follower_state();
+    let app = build_router(state);
+
+    let write = || {
+        Request::post("/api/v1/bucket/docs/doc")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"id": "p1", "text": "hello"}).to_string(),
+            ))
+            .unwrap()
+    };
+
+    // Before promotion: follower refuses the write with 409.
+    let res = app.clone().oneshot(write()).await.unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "follower must 409 writes before promotion"
+    );
+
+    // Promote.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/admin/promote")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"role\":\"leader\""), "body was: {body}");
+    assert!(body.contains("\"promoted\":true"), "body was: {body}");
+
+    // After promotion: the same write is accepted (no longer 409).
+    let res = app.oneshot(write()).await.unwrap();
+    assert_ne!(
+        res.status(),
+        StatusCode::CONFLICT,
+        "promoted node must accept writes"
+    );
+    assert!(
+        res.status().is_success(),
+        "expected 2xx after promote, got {}",
+        res.status()
+    );
+}
+
+/// Promote is idempotent on an already-leader node: 200, promoted=false.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn promote_is_idempotent_on_leader() {
+    let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
+    let cluster = Arc::new(nebula_server::cluster::ClusterConfig {
+        role: nebula_server::NodeRole::Leader,
+        ..Default::default()
+    });
+    let state = AppState::new(index, AppConfig::default()).with_cluster(cluster);
+    let app = build_router(state);
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/admin/promote")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"promoted\":false"), "body was: {body}");
+}
+
+/// Promoting a standalone node is a 400 — there's no leader to promote
+/// toward and it already accepts writes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn promote_rejects_standalone() {
+    let state = app_state(&[]); // default role is Standalone
+    let app = build_router(state);
+
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/admin/promote")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}

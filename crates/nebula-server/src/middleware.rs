@@ -128,7 +128,10 @@ pub async fn guard_writes_on_follower(
     req: Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> Response {
-    if !state.cluster.is_follower() {
+    // Read the runtime-mutable role, not the boot-time cluster role, so
+    // a `POST /admin/promote` lifts this guard immediately (design 0009
+    // §5).
+    if !state.role.is_read_only() {
         return next.run(req).await;
     }
     let is_write = !matches!(
@@ -146,6 +149,14 @@ pub async fn guard_writes_on_follower(
     let path = req.uri().path();
     let nest_stripped = path.strip_prefix("/api/v1").unwrap_or(path);
     if nest_stripped == "/query" || nest_stripped == "/query/explain" {
+        return next.run(req).await;
+    }
+    // Promotion must be reachable ON a follower — it's the very call
+    // that lifts this guard (design 0009 §5). Without this exemption a
+    // follower could never be promoted (the guard would 409 its own
+    // promote request). It's an admin/control-plane action, not a data
+    // write, so letting it through on a follower is correct.
+    if nest_stripped == "/admin/promote" {
         return next.run(req).await;
     }
     // Structured JSON so clients with an error envelope keep working.
