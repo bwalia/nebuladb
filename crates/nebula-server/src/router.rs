@@ -137,6 +137,10 @@ pub fn build_router(state: AppState) -> Router {
             "/healthz/live",
             get(|| async { (StatusCode::OK, "alive") }),
         )
+        // Catch-up readiness (design 0009 §6): 200 when this node is
+        // caught up to its leader (or is a leader/standalone), 503 while
+        // it trails. The rolling orchestrator polls this between steps.
+        .route("/healthz/caught-up", get(healthz_caught_up))
         .route("/metrics", get(metrics_handler))
         .nest("/api/v1", api)
         .layer(RequestBodyLimitLayer::new(limit))
@@ -197,6 +201,33 @@ async fn metrics_handler(State(s): State<AppState>) -> (StatusCode, [(&'static s
 
     render_durability_metrics(&mut body, &s);
     render_memory_metrics(&mut body);
+
+    // Replication catch-up gauges (design 0009 §6). On a follower this
+    // probes the leader (≤500ms, gated to followers only); leaders /
+    // standalones report caught_up=1 with no lag. Same source of truth
+    // as GET /healthz/caught-up so dashboards and the rollout agree.
+    {
+        use std::fmt::Write as _;
+        let status = compute_caught_up(&s).await;
+        let _ = writeln!(
+            body,
+            "# HELP nebula_replication_caught_up 1 when this node is caught up to its leader (or is leader/standalone), else 0"
+        );
+        let _ = writeln!(body, "# TYPE nebula_replication_caught_up gauge");
+        let _ = writeln!(
+            body,
+            "nebula_replication_caught_up {}",
+            if status.caught_up { 1 } else { 0 }
+        );
+        if let Some(lag) = status.lag_bytes {
+            let _ = writeln!(
+                body,
+                "# HELP nebula_replication_lag_bytes Follower byte lag behind the leader WAL tip (same-segment only)"
+            );
+            let _ = writeln!(body, "# TYPE nebula_replication_lag_bytes gauge");
+            let _ = writeln!(body, "nebula_replication_lag_bytes {lag}");
+        }
+    }
 
     (
         StatusCode::OK,
@@ -1814,6 +1845,110 @@ async fn admin_logs_stream(
 /// Probe the leader's /admin/replication to read its newest cursor.
 /// Returns `None` on any failure — the admin view degrades to
 /// "unknown" rather than erroring.
+/// Catch-up threshold in bytes (design 0009 §6). A follower within this
+/// many bytes of the leader's WAL tip — in the same segment — counts as
+/// "caught up", tolerating a record or two in flight. Override with
+/// `NEBULA_CATCHUP_THRESHOLD_BYTES`.
+fn catchup_threshold_bytes() -> u64 {
+    std::env::var("NEBULA_CATCHUP_THRESHOLD_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4096)
+}
+
+/// Replication catch-up state for the orchestrator's between-step gate
+/// (design 0009 §6). Shared by `GET /healthz/caught-up` and the
+/// `/metrics` replication gauges so both report one source of truth.
+struct CaughtUpStatus {
+    /// True when this node is ready to be treated as "serving" for a
+    /// rollout: a leader/standalone is always caught up; a follower is
+    /// caught up when it is not behind the probed leader tip (or within
+    /// the byte threshold in the same segment).
+    caught_up: bool,
+    /// Byte lag vs the leader tip when measurable in the same segment.
+    /// `None` for leader/standalone, or when the lag spans segments, or
+    /// when the leader probe is unavailable.
+    lag_bytes: Option<u64>,
+}
+
+/// Compute catch-up status for this node. On a follower this performs
+/// the same leader HTTP probe as `/admin/replication`; on a
+/// leader/standalone it is a cheap trivially-caught-up result.
+async fn compute_caught_up(s: &AppState) -> CaughtUpStatus {
+    // Use the runtime role (post-promote a node is a leader).
+    if !s.role.is_read_only() {
+        return CaughtUpStatus {
+            caught_up: true,
+            lag_bytes: None,
+        };
+    }
+    let applied = s.follower_cursor.as_ref().map(|fc| fc.load());
+    let Some((applied_seg, applied_off)) = applied else {
+        // Follower with no cursor yet — not caught up.
+        return CaughtUpStatus {
+            caught_up: false,
+            lag_bytes: None,
+        };
+    };
+    match fetch_leader_newest().await {
+        Some(leader) => {
+            let behind = leader.segment_seq > applied_seg
+                || (leader.segment_seq == applied_seg && leader.byte_offset > applied_off);
+            let lag = if leader.segment_seq == applied_seg {
+                Some(leader.byte_offset.saturating_sub(applied_off))
+            } else {
+                None
+            };
+            // Caught up when not behind, OR within-threshold in the
+            // same segment (a record or two may be mid-flight).
+            let caught_up = !behind
+                || lag.map(|l| l <= catchup_threshold_bytes()).unwrap_or(false);
+            CaughtUpStatus {
+                caught_up,
+                lag_bytes: lag,
+            }
+        }
+        // Can't probe the leader — report not-caught-up so the
+        // orchestrator waits/aborts rather than proceeding blind.
+        None => CaughtUpStatus {
+            caught_up: false,
+            lag_bytes: None,
+        },
+    }
+}
+
+#[derive(Serialize)]
+struct CaughtUpResponse {
+    caught_up: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lag_bytes: Option<u64>,
+    role: crate::cluster::NodeRole,
+}
+
+/// `GET /healthz/caught-up` (design 0009 §6). The rolling orchestrator
+/// polls this between steps: it returns 200 when this node is caught up
+/// (safe to treat as serving / safe to proceed to the next node) and
+/// 503 when it is still trailing its leader. A leader/standalone is
+/// trivially 200.
+async fn healthz_caught_up(
+    State(s): State<AppState>,
+) -> (StatusCode, Json<CaughtUpResponse>) {
+    let status = compute_caught_up(&s).await;
+    let code = if status.caught_up {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        code,
+        Json(CaughtUpResponse {
+            caught_up: status.caught_up,
+            lag_bytes: status.lag_bytes,
+            role: s.role.load(),
+        }),
+    )
+}
+
 async fn fetch_leader_newest() -> Option<CursorView> {
     // The follower knows its leader's gRPC URL (NEBULA_FOLLOW_LEADER)
     // but lag here is an HTTP probe, and gRPC/REST live on different

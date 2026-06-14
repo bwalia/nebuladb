@@ -2609,3 +2609,74 @@ async fn promote_rejects_standalone() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
+
+// ---- caught-up readiness (design 0009 §6) ----
+
+/// A standalone/leader node is trivially caught up: 200.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caught_up_is_200_for_standalone() {
+    let app = build_router(app_state(&[]));
+    let res = app
+        .oneshot(
+            Request::get("/healthz/caught-up")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"caught_up\":true"), "body was: {body}");
+}
+
+/// A follower with no replication cursor yet (and no reachable leader)
+/// is NOT caught up: 503. This is the state the orchestrator must wait
+/// on before treating the node as serving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caught_up_is_503_for_fresh_follower() {
+    // Ensure no leader probe URL is set so the probe is skipped and we
+    // exercise the "not caught up" path deterministically.
+    std::env::remove_var("NEBULA_LEADER_REST_URL");
+    let app = build_router(follower_state());
+    let res = app
+        .oneshot(
+            Request::get("/healthz/caught-up")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"caught_up\":false"), "body was: {body}");
+}
+
+/// After promotion a former follower reports caught-up (it's a leader
+/// now) — so the orchestrator sees the promoted node as serving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caught_up_flips_to_200_after_promote() {
+    let app = build_router(follower_state());
+
+    // Promote first.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/admin/promote")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Now caught-up is 200 (role is leader).
+    let res = app
+        .oneshot(
+            Request::get("/healthz/caught-up")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
