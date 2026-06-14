@@ -272,6 +272,17 @@ async fn drain_stream(
                 index
                     .apply_wal_record(&rec)
                     .map_err(|e| FollowerError::Apply(e.to_string()))?;
+                // Durably append to THIS node's own WAL after a
+                // successful in-memory apply (design 0009 §4). Apply-
+                // then-append means a record that fails to apply is
+                // never logged, and a crash between the two re-tails
+                // from the not-yet-advanced cursor (at-least-once,
+                // idempotent applies). Without this, a promoted follower
+                // would lose every replicated write since its last
+                // snapshot on the next restart.
+                index
+                    .append_replicated(&rec)
+                    .map_err(|e| FollowerError::Apply(e.to_string()))?;
                 if let Some(next) = entry.next_cursor {
                     applied_next = WalCursor {
                         segment_seq: next.segment_seq,

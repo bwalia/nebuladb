@@ -419,6 +419,24 @@ impl TextIndex {
         self.wal.clone()
     }
 
+    /// Durably append a record the follower received from its leader
+    /// into this node's *own* WAL. Call this from the replication
+    /// apply loop AFTER [`apply_wal_record`] succeeds — not from crash
+    /// recovery (replay must never re-append, or it would double-record
+    /// the very segments it is replaying).
+    ///
+    /// This closes the "write continuity" gap (design 0009 §4): a
+    /// follower promoted to leader (design 0009 §5) must have a complete,
+    /// durable log, otherwise a post-promotion restart would recover only
+    /// to the last snapshot and silently drop every replicated write
+    /// applied since. No-op for in-memory indexes (they cannot be
+    /// promoted). Errors propagate so a failed durable append surfaces to
+    /// the replication loop rather than silently leaving the WAL behind
+    /// the in-memory state.
+    pub fn append_replicated(&self, rec: &WalRecord) -> Result<()> {
+        self.wal_append(rec)
+    }
+
     /// Apply a single WAL record to the in-memory state — shared
     /// between two callers:
     ///
@@ -1183,6 +1201,39 @@ impl TextIndex {
     /// snapshotter (follower / standalone) prunes.
     pub fn compact_wal_no_prune(&self) -> Result<usize> {
         self.compact_wal_inner(false)
+    }
+
+    /// Compact this node's own WAL against an **explicit local seq**,
+    /// independent of any snapshot header. Used by a follower (design
+    /// 0009 §4): its shared snapshot is stamped with the *leader's* WAL
+    /// seq (design 0007 §4), which is a different seq space from the
+    /// follower's own WAL — so the header-driven [`Self::compact_wal`]
+    /// would compare across seq spaces and is unusable here. The caller
+    /// captures the follower's own `current_seq` at snapshot time and
+    /// passes it: every local segment older than the one current when
+    /// the snapshot was taken is fully superseded by that snapshot, so
+    /// dropping it is safe. Never prunes snapshot files (the follower
+    /// prunes those separately). Returns the number of segments removed.
+    /// No-op for in-memory indexes.
+    pub fn compact_own_wal_to(&self, local_seq: u64) -> Result<usize> {
+        let Some(wal) = self.wal.as_ref() else {
+            return Ok(0);
+        };
+        let removed = wal.compact(local_seq).map_err(durability::wal_err)?;
+        Ok(removed)
+    }
+
+    /// This node's own WAL current segment seq, flushed so the on-disk
+    /// figure reflects every committed append. `None` for in-memory
+    /// indexes. The follower captures this at snapshot time to drive
+    /// [`Self::compact_own_wal_to`].
+    pub fn own_wal_seq(&self) -> Result<Option<u64>> {
+        let Some(wal) = self.wal.as_ref() else {
+            return Ok(None);
+        };
+        wal.flush().map_err(durability::wal_err)?;
+        let seq = nebula_wal::current_seq(wal.dir()).map_err(durability::wal_err)?;
+        Ok(seq)
     }
 
     fn compact_wal_inner(&self, prune: bool) -> Result<usize> {

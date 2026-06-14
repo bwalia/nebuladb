@@ -304,3 +304,100 @@ async fn compact_after_snapshot_frees_wal_bytes() {
     idx.snapshot().unwrap();
     let _ = idx.compact_wal().unwrap(); // no assertion — see above
 }
+
+/// Replicated writes survive a follower restart (design 0009 §4).
+///
+/// A follower applies records it receives from its leader via
+/// `apply_wal_record` (in-memory only) AND `append_replicated`
+/// (durable). Before design 0009 only the in-memory apply happened, so
+/// a promoted-then-restarted follower silently lost every replicated
+/// write since its last snapshot. This test drives that exact path —
+/// apply + append, drop, reopen — and asserts the records are still
+/// present, proving they reached the local WAL.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replicated_writes_survive_follower_restart() {
+    use nebula_wal::WalRecord;
+
+    let dir = tempdir().unwrap();
+    let dim = 32; // matches MockEmbedder::new(32)
+    let corpus = [("r-a", "replicated alpha"), ("r-b", "replicated beta")];
+    {
+        // Stand in for a follower: never call the local-client write
+        // path (upsert_text); only the replication apply path.
+        let idx = TextIndex::open_persistent(
+            embedder(),
+            Metric::Cosine,
+            HnswConfig::default(),
+            dir.path(),
+        )
+        .unwrap();
+        for (id, text) in &corpus {
+            let rec = WalRecord::UpsertText {
+                bucket: "docs".to_string(),
+                external_id: id.to_string(),
+                text: text.to_string(),
+                vector: vec![0.1_f32; dim],
+                metadata_json: "{}".to_string(),
+            };
+            idx.apply_wal_record(&rec).unwrap();
+            idx.append_replicated(&rec).unwrap();
+        }
+        // No snapshot — recovery must rebuild purely from the local WAL
+        // the replication path wrote. That is precisely the gap.
+    }
+
+    let idx = TextIndex::open_persistent(
+        embedder(),
+        Metric::Cosine,
+        HnswConfig::default(),
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(
+        idx.len(),
+        corpus.len(),
+        "replicated records were not persisted to the follower's own WAL"
+    );
+    for (id, text) in &corpus {
+        let doc = idx
+            .get("docs", id)
+            .expect("replicated doc missing after follower restart");
+        assert_eq!(doc.text, *text);
+    }
+}
+
+/// The follower can compact its OWN local WAL against its own seq
+/// (design 0009 §4) without touching the leader-stamped snapshot seq.
+/// `own_wal_seq` returns the local current seq; `compact_own_wal_to`
+/// is a safe no-op when everything is still in the current segment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn follower_own_wal_compaction_is_seq_local() {
+    use nebula_wal::WalRecord;
+
+    let dir = tempdir().unwrap();
+    let idx = TextIndex::open_persistent(
+        embedder(),
+        Metric::Cosine,
+        HnswConfig::default(),
+        dir.path(),
+    )
+    .unwrap();
+    for i in 0..5 {
+        let rec = WalRecord::UpsertText {
+            bucket: "b".to_string(),
+            external_id: format!("d{i}"),
+            text: "text".to_string(),
+            vector: vec![0.0_f32; 32],
+            metadata_json: "{}".to_string(),
+        };
+        idx.apply_wal_record(&rec).unwrap();
+        idx.append_replicated(&rec).unwrap();
+    }
+    let own_seq = idx.own_wal_seq().unwrap().expect("follower has a local WAL");
+    // Everything is in the current segment, so compaction must keep it
+    // (the current-segment guard) — a safe no-op, never data loss.
+    let removed = idx.compact_own_wal_to(own_seq).unwrap();
+    assert_eq!(removed, 0, "must not drop the current segment");
+    // Records are still intact after the compaction attempt.
+    assert_eq!(idx.len(), 5);
+}
