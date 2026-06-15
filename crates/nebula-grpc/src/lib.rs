@@ -46,11 +46,13 @@ pub struct GrpcState {
     pub index: Arc<TextIndex>,
     pub llm: Arc<dyn LlmClient>,
     pub chunker: Arc<dyn Chunker>,
-    /// Role the process booted with. Reads are always allowed; writes
-    /// are rejected with [`Status::failed_precondition`] when the
-    /// role is [`NodeRole::Follower`]. Parity with the REST
-    /// `guard_writes_on_follower` middleware.
-    pub role: NodeRole,
+    /// Runtime-mutable node role. Reads are always allowed; writes are
+    /// rejected with [`Status::failed_precondition`] when the role is
+    /// [`NodeRole::Follower`]. Parity with the REST
+    /// `guard_writes_on_follower` middleware — and shared (same `Arc`)
+    /// with it and the pgwire handler so a `POST /admin/promote` flips
+    /// every protocol's write-guard at once (design 0009 §5).
+    pub role: Arc<nebula_core::AtomicNodeRole>,
     /// Optional region name; when set, DocumentService rejects writes
     /// to buckets whose home_region is not this value. `None` disables
     /// the check (single-region behaviour).
@@ -76,6 +78,24 @@ impl GrpcState {
         llm: Arc<dyn LlmClient>,
         chunker: Arc<dyn Chunker>,
         role: NodeRole,
+    ) -> Self {
+        Self::with_shared_role(
+            index,
+            llm,
+            chunker,
+            Arc::new(nebula_core::AtomicNodeRole::new(role)),
+        )
+    }
+
+    /// Like [`Self::with_role`] but takes a *shared* role atomic so the
+    /// gRPC write-guard observes the same role as the REST middleware
+    /// and pgwire handler. `main.rs` constructs one atomic and clones
+    /// this `Arc` into all three servers (design 0009 §5).
+    pub fn with_shared_role(
+        index: Arc<TextIndex>,
+        llm: Arc<dyn LlmClient>,
+        chunker: Arc<dyn Chunker>,
+        role: Arc<nebula_core::AtomicNodeRole>,
     ) -> Self {
         Self {
             index,

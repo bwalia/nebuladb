@@ -74,9 +74,31 @@ pub async fn serve_with_role_and_region(
     role: NodeRole,
     region: Option<String>,
 ) -> std::io::Result<()> {
+    serve_with_shared_role_and_region(
+        engine,
+        addr,
+        Arc::new(nebula_core::AtomicNodeRole::new(role)),
+        region,
+    )
+    .await
+}
+
+/// Like [`serve_with_role_and_region`] but takes a *shared* role atomic
+/// so the pgwire write-guard observes the same role as the REST
+/// middleware and gRPC services. `main.rs` constructs one atomic and
+/// clones this `Arc` into all three servers, so a `POST /admin/promote`
+/// lifts the SQLSTATE-25006 guard here at the same instant (design 0009
+/// §5).
+pub async fn serve_with_shared_role_and_region(
+    engine: Arc<SqlEngine>,
+    addr: std::net::SocketAddr,
+    role: Arc<nebula_core::AtomicNodeRole>,
+    region: Option<String>,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(
-        "nebula-pgwire listening on {addr} (role={role:?}, region={region:?})",
+        "nebula-pgwire listening on {addr} (role={:?}, region={region:?})",
+        role.load(),
     );
     let factory = Arc::new(NebulaHandlers {
         engine,
@@ -104,7 +126,10 @@ pub async fn serve_with_role_and_region(
 /// placeholder that returns a friendly error.
 struct NebulaHandlers {
     engine: Arc<SqlEngine>,
-    role: NodeRole,
+    /// Runtime-mutable role, shared with the REST + gRPC guards so a
+    /// promotion lifts the write guard on every protocol at once
+    /// (design 0009 §5).
+    role: Arc<nebula_core::AtomicNodeRole>,
     /// `Some` enables the multi-region write guard (see module doc).
     region: Option<String>,
 }
@@ -118,7 +143,7 @@ impl PgWireHandlerFactory for NebulaHandlers {
     fn simple_query_handler(&self) -> Arc<Self::SimpleQueryHandler> {
         Arc::new(NebulaQueryHandler {
             engine: Arc::clone(&self.engine),
-            role: self.role,
+            role: Arc::clone(&self.role),
             region: self.region.clone(),
         })
     }
@@ -138,7 +163,7 @@ impl PgWireHandlerFactory for NebulaHandlers {
 
 pub struct NebulaQueryHandler {
     engine: Arc<SqlEngine>,
-    role: NodeRole,
+    role: Arc<nebula_core::AtomicNodeRole>,
     /// When set, DML is rejected with SQLSTATE 25006 + message
     /// `wrong_home_region`. See `serve_with_role_and_region` for the
     /// rationale (pgwire has no cheap per-bucket routing yet).

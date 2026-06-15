@@ -204,6 +204,15 @@ impl FollowerHandle {
         self.task.abort();
     }
 
+    /// A cloneable handle that can abort the follower task without
+    /// consuming this `FollowerHandle`. Used by runtime promotion
+    /// (design 0009 §5): when a follower is promoted to leader it must
+    /// stop tailing its (now former) leader, and the promote handler
+    /// holds only a shared reference to this abort handle via AppState.
+    pub fn abort_handle(&self) -> tokio::task::AbortHandle {
+        self.task.abort_handle()
+    }
+
     pub async fn join(self) -> Result<(), tokio::task::JoinError> {
         self.task.await
     }
@@ -271,6 +280,17 @@ async fn drain_stream(
                     .map_err(|e| FollowerError::Decode(e.to_string()))?;
                 index
                     .apply_wal_record(&rec)
+                    .map_err(|e| FollowerError::Apply(e.to_string()))?;
+                // Durably append to THIS node's own WAL after a
+                // successful in-memory apply (design 0009 §4). Apply-
+                // then-append means a record that fails to apply is
+                // never logged, and a crash between the two re-tails
+                // from the not-yet-advanced cursor (at-least-once,
+                // idempotent applies). Without this, a promoted follower
+                // would lose every replicated write since its last
+                // snapshot on the next restart.
+                index
+                    .append_replicated(&rec)
                     .map_err(|e| FollowerError::Apply(e.to_string()))?;
                 if let Some(next) = entry.next_cursor {
                     applied_next = WalCursor {

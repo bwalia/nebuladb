@@ -270,11 +270,34 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig, mode: Snapshot
                         .snapshot_dir()
                         .ok_or("follower index has no snapshot dir")?
                         .to_path_buf();
+                    // Capture our OWN WAL seq before the snapshot read
+                    // lock (design 0009 §4). This is a different seq
+                    // space from `seg` (the leader-WAL seq we stamp the
+                    // shared snapshot with — design 0007 §4): `seg` lets
+                    // the leader compact ITS WAL, while this local seq
+                    // lets us compact OURS. Captured before the snapshot
+                    // for the same reason the leader path does (lib.rs
+                    // `snapshot`): risk a harmless double-apply on
+                    // recovery rather than dropping a record.
+                    let own_seq_before = idx.own_wal_seq()?;
                     let snap = idx.snapshot_to(&dir, seg)?;
-                    // Prune our own old snapshots (we own the shared
-                    // dir). Do NOT compact: a follower has no
-                    // authoritative WAL.
+                    // Prune our own old snapshots (we own the shared dir).
                     let _ = idx.prune_snapshots()?;
+                    // Compact our OWN local WAL now that it's persisted
+                    // (the follower writes replicated records to its own
+                    // WAL since design 0009 §4) — otherwise it would grow
+                    // unbounded and slow every restart's replay. Use the
+                    // local seq, never the leader-stamped header seq.
+                    if let Some(own_seq) = own_seq_before {
+                        let removed = idx.compact_own_wal_to(own_seq)?;
+                        if removed > 0 {
+                            tracing::info!(
+                                removed,
+                                own_seq,
+                                "follower compacted its own WAL"
+                            );
+                        }
+                    }
                     snap
                 }
                 // Standalone: snapshot locally, then compact (which

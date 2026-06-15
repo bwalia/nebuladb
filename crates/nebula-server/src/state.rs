@@ -262,8 +262,24 @@ pub struct AppState {
     pub config: Arc<AppConfig>,
     /// Cluster membership + role. Standalone by default; every
     /// multi-node feature reads this instead of sniffing envs
-    /// on its own.
+    /// on its own. The `role` field here is the boot-time *initial*
+    /// role; the runtime-authoritative role is [`Self::role`] (an
+    /// atomic shared with the gRPC and pgwire write-guards) so a
+    /// `POST /admin/promote` flips all three protocols at once.
     pub cluster: Arc<ClusterConfig>,
+    /// Runtime-mutable node role, shared (same `Arc`) with the gRPC
+    /// services and pgwire handler so promotion (design 0009 §5) is
+    /// observed on every protocol's write path simultaneously. Seeded
+    /// from `cluster.role` at construction.
+    pub role: Arc<nebula_core::AtomicNodeRole>,
+    /// Aborts the background follower replication task. `POST
+    /// /admin/promote` uses it so a promoted node stops tailing its
+    /// former leader before it starts accepting writes (design 0009 §5).
+    /// A shared, write-once cell because the follower task is spawned
+    /// *after* this state is moved into the router — `main.rs` fills it
+    /// once the handle exists. `None` inside the cell on a node that
+    /// never started as a follower.
+    pub follower_abort: Arc<std::sync::OnceLock<tokio::task::AbortHandle>>,
     /// Present when this node is a follower. The background
     /// replication task writes its latest applied cursor here;
     /// `/admin/replication` reads it to compute lag vs. the
@@ -364,6 +380,8 @@ impl AppState {
             slow_log: SlowQueryLog::new(32, 10),
             config: Arc::new(config),
             cluster: Arc::new(ClusterConfig::default()),
+            role: Arc::new(nebula_core::AtomicNodeRole::default()),
+            follower_abort: Arc::new(std::sync::OnceLock::new()),
             follower_cursor: None,
             log_bus: Arc::new(LogBus::default()),
             cross_region_status: crate::cross_region_status::CrossRegionStatusHub::new(),
@@ -420,13 +438,35 @@ impl AppState {
     }
 
     pub fn with_cluster(mut self, cluster: Arc<ClusterConfig>) -> Self {
+        // Seed the runtime-mutable role from the boot-time role so the
+        // atomic and the cluster config agree at startup. Promotion
+        // later flips only the atomic (design 0009 §5).
+        self.role = Arc::new(nebula_core::AtomicNodeRole::new(cluster.role));
         self.cluster = cluster;
+        self
+    }
+
+    /// Share the runtime role atomic with the gRPC / pgwire servers so
+    /// a promotion flips every protocol's write-guard at once. Call
+    /// AFTER [`Self::with_cluster`] (which creates the atomic seeded
+    /// from the boot role); `main.rs` clones this `Arc` into the other
+    /// servers.
+    pub fn with_role(mut self, role: Arc<nebula_core::AtomicNodeRole>) -> Self {
+        self.role = role;
         self
     }
 
     pub fn with_follower_cursor(mut self, cursor: Arc<FollowerCursor>) -> Self {
         self.follower_cursor = Some(cursor);
         self
+    }
+
+    /// Share the write-once follower-abort cell. `main.rs` clones this
+    /// before moving the state into the router, then fills it once the
+    /// follower task is spawned, so `POST /admin/promote` can stop
+    /// tailing before accepting writes (design 0009 §5).
+    pub fn follower_abort_cell(&self) -> Arc<std::sync::OnceLock<tokio::task::AbortHandle>> {
+        Arc::clone(&self.follower_abort)
     }
 
     pub fn with_slow_log(mut self, log: Arc<SlowQueryLog>) -> Self {

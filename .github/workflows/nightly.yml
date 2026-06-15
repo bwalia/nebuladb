@@ -174,6 +174,24 @@ jobs:
       - name: Smoke load (p95 latency)
         run: ./scripts/smoke_load.sh
 
+      # Rolling upgrade LAST among the functional tests: it recreates
+      # both data nodes (one at a time) on the freshly built image and
+      # asserts a continuous read+write client sees zero failures with
+      # at most one node offline at any moment (design 0009 §9). Runs
+      # against the host-mapped showcase edge that owns the read/write
+      # pools. Kept after the read-only tests since it disturbs the
+      # cluster.
+      - name: Rolling upgrade — zero-downtime bump
+        env:
+          # Already-built images mean the binary-hash fast path would
+          # short-circuit; FORCE_ROLL makes the orchestrator run the real
+          # drain/promote/wait loop so the test actually exercises it.
+          FORCE_ROLL: "1"
+          EDGE: "http://localhost:5173"
+          LEADER_HEALTH_URL: "http://localhost:8080"
+          FOLLOWER_HEALTH_URL: "http://localhost:8081"
+        run: ./scripts/test_rolling_upgrade.sh
+
       # --- Always-run diagnostics: capture even on success so we
       # have evidence of the passing run's behavior. -------------
       - name: Snapshot /metrics
