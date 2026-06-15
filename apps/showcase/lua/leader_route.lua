@@ -27,7 +27,7 @@ local NODES = {
 
 local CACHE = ngx.shared.leader_cache
 local CACHE_KEY = "leader_url"
-local CACHE_TTL = tonumber(os.getenv("NEBULA_LEADER_CACHE_TTL")) or 2 -- seconds
+local CACHE_TTL = tonumber(os.getenv("NEBULA_LEADER_CACHE_TTL")) or 1 -- seconds
 
 -- Probe one node's cheap /healthz/role (no network fan-out server-side).
 -- Returns the role string ("leader"/"follower"/"standalone") or nil.

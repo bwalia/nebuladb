@@ -29,45 +29,70 @@ local function forward(base)
   })
 end
 
--- First attempt: the cached/current leader.
-local target = router.leader_url(false)
-local res, err = forward(target)
-
--- On a 409 the node we hit is a follower (leadership moved). Invalidate
--- the cache, re-resolve, and retry the OTHER node once. Writes are
--- idempotent by id (upsert/delete), so a retry is safe even if the first
--- attempt partially applied.
-if res and res.status == 409 then
-  router.invalidate()
-  local retry_target = router.leader_url(true)
-  -- If re-resolve returned the same node (both still followers in a
-  -- brief window), try the explicit other node so we don't just repeat.
-  if retry_target == target then
-    retry_target = router.other_node(target)
+-- A write attempt is "bad" (needs re-routing to the other node) when:
+--   * the connection failed entirely (res == nil) — the node we picked
+--     was fenced/stopped mid-handoff, or
+--   * the node returned 409 read_only_follower (leadership moved), or
+--   * the node returned 503 (it's recovering / not yet ready to serve).
+-- All three are leadership/availability signals: re-resolve the leader
+-- and try the other node. Writes are idempotent by id (upsert/delete),
+-- so a retry that double-applies converges rather than duplicating.
+local function needs_reroute(res)
+  if not res then
+    return true
   end
-  res, err = forward(retry_target)
+  return res.status == 409 or res.status == 503
 end
 
-if not res then
-  -- Connection-level failure to the backend. Surface a clean 503 +
-  -- Retry-After so the client backs off, matching the nginx intercept
-  -- behavior for reads.
-  ngx.status = 503
-  ngx.header["Content-Type"] = "application/json"
-  ngx.header["Retry-After"] = "5"
-  ngx.say('{"error":"service temporarily unavailable, retry shortly"}')
-  ngx.log(ngx.WARN, "write proxy failed: ", err or "unknown")
-  return
+-- Bounded retry loop across the (two) nodes. A leadership handoff during
+-- a rolling upgrade fences the old leader (stop) BEFORE promoting the
+-- standby, so for a few seconds NEITHER node is writable. Rather than
+-- fail the write (forcing every client to implement retry), we hold and
+-- retry here long enough to ride out a typical fence gap — the request
+-- just takes a couple extra seconds. The total budget
+-- (NEBULA_WRITE_RETRY_BUDGET_SECS, default 8s) stays under the client's
+-- own request timeout; if it elapses we return a 503 + Retry-After so a
+-- client that DOES retry still works.
+local RETRY_BUDGET = tonumber(os.getenv("NEBULA_WRITE_RETRY_BUDGET_SECS")) or 8
+local BACKOFF = 0.25
+local target = router.leader_url(false)
+local res, err
+local deadline = ngx.now() + RETRY_BUDGET
+local first = true
+while true do
+  if not first then
+    -- Re-resolve the leader. Force a fresh probe so a stale cache entry
+    -- pointing at the fenced node is discarded.
+    router.invalidate()
+    local next_target = router.leader_url(true)
+    if next_target == target then
+      next_target = router.other_node(target)
+    end
+    target = next_target
+  end
+  first = false
+
+  res, err = forward(target)
+  if not needs_reroute(res) then
+    break
+  end
+  if ngx.now() >= deadline then
+    break
+  end
+  ngx.sleep(BACKOFF)
 end
 
--- A still-409 after the retry (both nodes refused — no leader right now)
--- becomes a clean 503 + Retry-After rather than leaking the internal
--- read_only_follower body.
-if res.status == 409 then
+-- Still not writable after all attempts (no leader right now): surface a
+-- clean 503 + Retry-After rather than a 500 or the internal
+-- read_only_follower body, so the client backs off and retries.
+if needs_reroute(res) then
   ngx.status = 503
   ngx.header["Content-Type"] = "application/json"
-  ngx.header["Retry-After"] = "5"
+  ngx.header["Retry-After"] = "2"
   ngx.say('{"error":"write temporarily unavailable, retry shortly"}')
+  if not res then
+    ngx.log(ngx.WARN, "write proxy: no writable node after retries: ", err or "unknown")
+  end
   return
 end
 

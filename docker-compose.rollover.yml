@@ -1,0 +1,21 @@
+# Transient compose override used ONLY by scripts/rolling_upgrade.sh
+# during a leader upgrade (design 0009 §8). It flips the nebula-server
+# service from its default leader role into a FOLLOWER of nebula-follower
+# (which the orchestrator has promoted to leader for the duration of the
+# old leader's upgrade). This lets the old leader rejoin, restore from
+# the shared snapshot, and tail the new leader to catch up — instead of
+# booting back as a second leader (which caused the split-brain the
+# real-stack test exposed).
+#
+# Applied with `-f docker-compose.yml -f docker-compose.rollover.yml` for
+# the single `up` that recreates nebula-server as a follower, then
+# dropped (a plain `-f docker-compose.yml` recreate restores the leader
+# role) once leadership is handed back. Never commit this into the
+# default compose invocation — it is a tool of the rollout only.
+services:
+  nebula-server:
+    environment:
+      # Become a follower of the (currently-promoted) nebula-follower.
+      NEBULA_NODE_ROLE: "follower"
+      NEBULA_FOLLOW_LEADER: "http://nebula-follower:50051"
+      NEBULA_LEADER_REST_URL: "http://nebula-follower:8080"

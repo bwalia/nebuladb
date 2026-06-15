@@ -116,11 +116,29 @@ assert_other_serving() {
 }
 
 # Recreate exactly ONE compose service on the freshly built image,
-# without touching the other db node.
+# without touching the other db node. Extra args (e.g. a -f override)
+# are passed through before the `up`.
 recreate_one() {
-  local svc="$1"
-  note "recreating $svc (one node only)"
-  run docker compose up -d --build --no-deps "$svc"
+  local svc="$1"; shift
+  note "recreating $svc (one node only)${*:+ with overrides: $*}"
+  run docker compose "$@" up -d --build --no-deps "$svc"
+}
+
+# This node's current runtime role via the cheap /healthz/role probe.
+node_role() {
+  curl -s --max-time 5 "$1/healthz/role" 2>/dev/null | sed -n 's/.*"role"[: ]*"\([a-z]*\)".*/\1/p'
+}
+
+# Wait until a node reports the expected role (after a promote or a
+# role-flipping recreate), or the readiness budget elapses.
+wait_role() {
+  local name="$1" url="$2" want="$3" deadline=$(( $(date +%s) + T_READY_SECS ))
+  log "waiting for $name to report role=$want (budget ${T_READY_SECS}s)"
+  while :; do
+    [[ "$(node_role "$url")" == "$want" ]] && { note "$name: role=$want"; return 0; }
+    [[ $(date +%s) -lt $deadline ]] || die "$name did not reach role=$want within ${T_READY_SECS}s — aborting rollout"
+    sleep 2
+  done
 }
 
 promote() {
@@ -166,20 +184,80 @@ fi
 
 note "server binary changed — performing rolling upgrade"
 
-# Step 1: upgrade the FOLLOWER. The leader must be serving throughout.
+# Correctness rules enforced below (learned from the real-stack split-
+# brain the first cut produced):
+#   * FENCE-BEFORE-PROMOTE: the outgoing leader is STOPPED before the
+#     incoming one is promoted. There is never a moment with two leaders,
+#     so writes can't diverge. The cost is a brief write-unavailability
+#     window per handoff (no leader for a second or two); the OpenResty
+#     edge + client Retry-After ride it out, and READS never stop (the
+#     incoming leader is up as a follower serving reads the whole time).
+#   * NEVER BOTH OFFLINE: we only ever stop/recreate one data node at a
+#     time and assert the other is serving first.
+#   * The edge follows leadership at request time (design 0009 §7), so no
+#     nginx reload is needed at any handoff.
+# End state = ORIGINAL topology: nebula-server=leader, nebula-follower=
+# follower, both on default env (so a later restart is coherent).
+ROLLOVER="docker-compose.rollover.yml"
+
+# A handoff that cannot diverge: ensure the incoming node is caught up,
+# STOP the outgoing leader (fences all new writes), then promote the
+# incoming node. `$1`=outgoing svc, `$2`=incoming health url.
+fence_then_promote() {
+  local outgoing_svc="$1" incoming_url="$2"
+  wait_caught_up "$outgoing_svc-handoff-target" "$incoming_url"
+  # `-t 2` shortens the SIGTERM grace (default 10s) so the no-leader
+  # fence window is ~2-3s — well within the edge's write retry budget
+  # (NEBULA_WRITE_RETRY_BUDGET_SECS), so in-flight writes hold rather
+  # than fail. Promote immediately after the stop returns.
+  note "fencing $outgoing_svc (stop -t 2) before promoting — no two-leader window"
+  run docker compose stop -t 2 "$outgoing_svc"
+  promote "$incoming_url"
+  wait_role "incoming($incoming_url)" "$incoming_url" leader
+}
+
+# Step 1 — upgrade the FOLLOWER (B). A stays sole leader throughout; no
+# handoff, fully clean. B comes back as a follower (default env) and
+# re-syncs from A.
 assert_other_serving "$FOLLOWER_SVC" "$LEADER_SVC" "$LEADER_HEALTH_URL"
 recreate_one "$FOLLOWER_SVC"
 wait_ready "$FOLLOWER_SVC" "$FOLLOWER_HEALTH_URL"
 wait_caught_up "$FOLLOWER_SVC" "$FOLLOWER_HEALTH_URL"
 
-# Step 2: promote the upgraded follower so writes have a home, THEN
-# upgrade the old leader. The promoted node must be serving while the
-# old leader is recreated.
-promote "$FOLLOWER_HEALTH_URL"
-assert_other_serving "$LEADER_SVC" "$FOLLOWER_SVC" "$FOLLOWER_HEALTH_URL"
-recreate_one "$LEADER_SVC"
+# Step 2 — hand leadership A -> B (fence A first), then upgrade A as a
+# FOLLOWER of B. B is the sole leader and serves reads while A is
+# recreated on the new image; A restores the shared snapshot and tails B.
+fence_then_promote "$LEADER_SVC" "$FOLLOWER_HEALTH_URL"
+assert_other_serving "$LEADER_SVC (rejoin as follower)" "$FOLLOWER_SVC" "$FOLLOWER_HEALTH_URL"
+recreate_one "$LEADER_SVC" -f docker-compose.yml -f "$ROLLOVER"
 wait_ready "$LEADER_SVC" "$LEADER_HEALTH_URL"
+wait_role "$LEADER_SVC" "$LEADER_HEALTH_URL" follower
 wait_caught_up "$LEADER_SVC" "$LEADER_HEALTH_URL"
 
-note "rolling upgrade complete: both nodes on the new image, never two offline"
+# Step 3 — hand leadership BACK B -> A (fence B first). After the
+# promote, A is sole leader and serving; B is stopped.
+fence_then_promote "$FOLLOWER_SVC" "$LEADER_HEALTH_URL"
+
+# Step 4 — restore both nodes to their DEFAULT config, one at a time,
+# never both offline. A is currently leader-by-runtime-promote but still
+# carries the rollover env (follower-of-B), which would mis-boot on a
+# future restart; and B is stopped. Bring B back as a follower of A
+# first (A serves throughout), then recreate A on default env (B serves
+# reads throughout) so A is a leader by CONFIG, not just at runtime.
+assert_other_serving "$FOLLOWER_SVC (rejoin)" "$LEADER_SVC" "$LEADER_HEALTH_URL"
+recreate_one "$FOLLOWER_SVC"
+wait_ready "$FOLLOWER_SVC" "$FOLLOWER_HEALTH_URL"
+wait_role "$FOLLOWER_SVC" "$FOLLOWER_HEALTH_URL" follower
+wait_caught_up "$FOLLOWER_SVC" "$FOLLOWER_HEALTH_URL"
+
+# A back to default env. B (follower) serves reads during A's recreate;
+# writes briefly route through retry until A is leader again.
+assert_other_serving "$LEADER_SVC (default-env)" "$FOLLOWER_SVC" "$FOLLOWER_HEALTH_URL"
+recreate_one "$LEADER_SVC"
+wait_ready "$LEADER_SVC" "$LEADER_HEALTH_URL"
+wait_role "$LEADER_SVC" "$LEADER_HEALTH_URL" leader
+# B re-tails A (same hostname) after A's restart; confirm it re-syncs.
+wait_caught_up "$FOLLOWER_SVC" "$FOLLOWER_HEALTH_URL"
+
+note "rolling upgrade complete: both nodes upgraded, original topology restored (leader=$LEADER_SVC, follower=$FOLLOWER_SVC), single leader throughout"
 docker compose ps
