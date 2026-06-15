@@ -73,16 +73,41 @@ COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js index.htm
 COPY src ./src
 RUN npm run build
 
-FROM nginx:1.27-alpine AS runtime
-# `envsubst` is part of gettext; used by the start script to
-# substitute `$NEBULA_SERVER` into the nginx config at boot. That's
-# how we keep the image environment-agnostic.
+# OpenResty (nginx + LuaJIT + lua-resty-* libs) so the edge can route
+# writes to the current leader in Lua and retry a 409'd write on the
+# other node within the same request (design 0009 §7) — no nginx reload
+# needed to follow a leadership handoff.
+FROM openresty/openresty:1.25.3.1-2-alpine AS runtime
+# `envsubst` (gettext) substitutes ${NEBULA_SERVER} into the config at
+# boot; wget for the healthcheck.
 RUN apk add --no-cache gettext wget
 COPY --from=build /src/dist /usr/share/nginx/html
+# Our server/upstream/map/Lua config. Unlike the stock nginx image, the
+# OpenResty image has NO envsubst-on-templates entrypoint, so our own
+# entrypoint (below) renders this template into conf.d/ at boot. The
+# image's main nginx.conf already `include`s conf.d/*.conf inside http{}.
 COPY nginx.conf /etc/nginx/templates/default.conf.template
+# Drop OpenResty's stock conf.d/default.conf — it binds :80 with a
+# placeholder server block that would shadow ours. Our entrypoint writes
+# the real default.conf over this path, but removing it here keeps the
+# image clean if the entrypoint is ever bypassed.
+RUN rm -f /etc/nginx/conf.d/default.conf
+# Lua modules go into OpenResty's DEFAULT lualib dir, which is already on
+# the built-in Lua search path — so no lua_package_path directive is
+# needed (and that directive is finicky from an http{}-included conf.d
+# file). This drops our app modules (leader_route, write_proxy) and a
+# VENDORED copy of lua-resty-http v0.17.2 (MIT, lua/resty/) side by side
+# with OpenResty's own resty.* libs. Vendored rather than fetched via opm
+# because opm shells out to curl, which fails behind the corporate
+# TLS-inspecting proxy at build time (same reason the npm stage takes a
+# proxy CA).
+COPY lua/ /usr/local/openresty/site/lualib/
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 # Default: talk to `nebula-server` (the compose service name). In
 # standalone mode, set NEBULA_SERVER=http://host.docker.internal:8080.
 ENV NEBULA_SERVER=http://nebula-server:8080
 EXPOSE 80
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
   CMD wget -q -O /dev/null http://localhost/ || exit 1
+ENTRYPOINT ["/docker-entrypoint.sh"]

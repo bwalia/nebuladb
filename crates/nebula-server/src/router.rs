@@ -141,6 +141,10 @@ pub fn build_router(state: AppState) -> Router {
         // caught up to its leader (or is a leader/standalone), 503 while
         // it trails. The rolling orchestrator polls this between steps.
         .route("/healthz/caught-up", get(healthz_caught_up))
+        // Cheap current-role probe (design 0009 §7): just reads the
+        // in-memory atomic, no network probe — safe for the OpenResty
+        // edge to poll every ~1-2s to route writes at the live leader.
+        .route("/healthz/role", get(healthz_role))
         .route("/metrics", get(metrics_handler))
         .nest("/api/v1", api)
         .layer(RequestBodyLimitLayer::new(limit))
@@ -1947,6 +1951,20 @@ async fn healthz_caught_up(
             role: s.role.load(),
         }),
     )
+}
+
+#[derive(Serialize)]
+struct RoleResponse {
+    role: crate::cluster::NodeRole,
+}
+
+/// `GET /healthz/role` (design 0009 §7). Returns the node's current
+/// runtime role from the in-memory atomic with **no** network probe or
+/// lock contention — cheap enough for the OpenResty edge to poll every
+/// second or two to keep its write route pointed at the live leader.
+/// Always 200 (the role is always known); the body carries the role.
+async fn healthz_role(State(s): State<AppState>) -> Json<RoleResponse> {
+    Json(RoleResponse { role: s.role.load() })
 }
 
 async fn fetch_leader_newest() -> Option<CursorView> {

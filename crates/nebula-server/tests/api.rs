@@ -2610,6 +2610,37 @@ async fn promote_rejects_standalone() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
+/// GET /healthz/role reflects the runtime role and flips on promote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn healthz_role_reflects_promotion() {
+    let app = build_router(follower_state());
+
+    let res = app
+        .clone()
+        .oneshot(Request::get("/healthz/role").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"role\":\"follower\""), "body was: {body}");
+
+    // Promote, then the role endpoint reports leader.
+    app.clone()
+        .oneshot(
+            Request::post("/api/v1/admin/promote")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let res = app
+        .oneshot(Request::get("/healthz/role").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"role\":\"leader\""), "body was: {body}");
+}
+
 // ---- caught-up readiness (design 0009 §6) ----
 
 /// A standalone/leader node is trivially caught up: 200.
