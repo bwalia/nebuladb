@@ -1,6 +1,6 @@
 # Design 0009: Zero-downtime rolling upgrade & rebalance
 
-- **Status**: Proposed
+- **Status**: Implemented (validated on a real 2-node stack)
 - **Author**: Claude + @bwalia
 - **Created**: 2026-06-14
 - **Tracks**: production requirement — "upgrade a node without downtime; reads
@@ -285,6 +285,44 @@ earlier ones:
   promotable leader to fail over to).
 - **E** — `rolling_upgrade.sh` + `deploy.yml` rewrite. Depends on B, C, D.
 - **F** — `test_rolling_upgrade.sh`. Depends on E; gates the whole thing in CI.
+
+## 11a. What real-stack testing changed (post-implementation)
+
+Two things only surfaced when the rollout was run against an actual
+2-node compose stack, not in unit tests — both worth recording because
+they contradict the original plan above:
+
+1. **Promote-without-fence causes split-brain.** The first cut promoted
+   the standby and recreated the old leader, but the old leader's compose
+   env is `NEBULA_NODE_ROLE=leader`, so it rejoined as a *second* leader.
+   With both nodes leaders and neither following the other, they accepted
+   independent writes and **diverged** (each had docs the other lacked).
+   The availability checks (reads/writes succeed, never two offline) all
+   passed — divergence is a *consistency* failure they don't catch. Fix:
+   **fence-before-promote** — STOP the outgoing leader before promoting
+   the incoming one, so there is never a two-leader moment; and end at
+   the original topology via a transient follower-role override
+   (`docker-compose.rollover.yml`) then a default-env recreate, so a
+   later restart is coherent. The test now asserts exactly-one-leader and
+   post-upgrade convergence to both nodes.
+
+2. **Static nginx write weighting can't follow leadership.** A
+   `weight=100` write pool keeps sending writes to `nebula-server` even
+   after leadership moves to the follower — which then 409s them, and
+   nginx has no `http_409` failover. Fix: the edge is **OpenResty + Lua**
+   (`apps/showcase/lua/`), routing writes to whoever currently reports
+   `role=leader` (cheap `GET /healthz/role`, cached briefly) and retrying
+   the other node on a 409/503/connection-failure *within the same
+   request*. No `nginx -s reload` — the edge follows leadership at request
+   time. This also rides out the brief no-leader fence window so writes
+   hold rather than fail.
+
+**Residual tradeoff:** on a 2-node cluster, fence-before-promote means a
+short (~2-3s) window per handoff where no node is leader. Writes are held
+and retried (edge budget + client `Retry-After`); reads never stop. A
+client that doesn't retry at all may see a 503 during a handoff — correct
+backpressure, not data loss. Eliminating even that window needs ≥3 nodes
+with quorum hand-off, which doesn't fit the host (§3.1).
 
 ## 12. Rejected / deferred
 
