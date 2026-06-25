@@ -143,8 +143,15 @@ export NEBULA_PROM_PORT="${NEBULA_PROM_PORT:-9090}"
 export OLLAMA_CHAT_MODEL="$MODEL"
 export OLLAMA_EMBED_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
 
+# Ollama runs on the LAN host, not in docker. The base compose reads
+# this; override per-environment if your host lives elsewhere.
+export NEBULA_OLLAMA_URL="${NEBULA_OLLAMA_URL:-http://192.168.1.177:11434}"
+
 # ---------- build + up ----------
-services=(ollama ollama-init nebula-server redis prometheus grafana)
+# No ollama / ollama-init: those are gated behind the `local-ollama`
+# compose profile. The stack talks to the host ollama via
+# NEBULA_OLLAMA_URL above.
+services=(nebula-server redis prometheus grafana)
 if [[ $DO_SHOWCASE -eq 1 ]]; then
   services+=(showcase)
 fi
@@ -154,8 +161,9 @@ say "model: chat=$OLLAMA_CHAT_MODEL  embed=$OLLAMA_EMBED_MODEL"
 say "ports: rest=$NEBULA_REST_HOST_PORT grpc=$NEBULA_GRPC_HOST_PORT pg=$NEBULA_PG_HOST_PORT ui=$NEBULA_SHOWCASE_PORT"
 
 # `--wait` blocks until every container's healthcheck is green or
-# the timeout fires. 15 minutes covers a cold Ollama model pull on
-# a home connection; adjust if your pipe is fast.
+# the timeout fires. Models are pulled on the host ollama out of band,
+# so the in-docker boot is quick; the generous timeout just covers a
+# cold image build.
 if ! docker compose up -d --build --wait --wait-timeout 900 "${services[@]}"; then
   warn "compose up did not reach 'healthy' within the timeout"
   docker compose ps
@@ -188,7 +196,7 @@ export BASE_URL="http://localhost:$NEBULA_REST_HOST_PORT"
 export PG_HOST="localhost"
 export PG_PORT="$NEBULA_PG_HOST_PORT"
 export PROM_URL="http://localhost:$NEBULA_PROM_PORT"
-export OLLAMA_URL="http://localhost:11434"
+export OLLAMA_URL="$NEBULA_OLLAMA_URL"
 export OLLAMA_CHAT_MODEL="$OLLAMA_CHAT_MODEL"
 export OLLAMA_EMBED_MODEL="$OLLAMA_EMBED_MODEL"
 export NEBULA_REST_HOST_PORT="$NEBULA_REST_HOST_PORT"

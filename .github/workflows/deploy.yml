@@ -29,8 +29,8 @@ jobs:
     name: docker compose up (int / 192.168.1.193)
     runs-on: [self-hosted, int]
     # Cold first build (Rust + tonic + pgwire) is ~12 min; pulls + warm
-    # rebuilds finish in 2-3. 45 min ceiling absorbs a model pull on a
-    # fresh ollama-models volume.
+    # rebuilds finish in 2-3. Ollama runs on the host (192.168.1.177),
+    # so there's no in-docker model pull to absorb anymore.
     timeout-minutes: 45
 
     env:
@@ -99,7 +99,6 @@ jobs:
             "${NEBULA_REST_HOST_PORT:-18080}"
             "${NEBULA_GRPC_HOST_PORT:-50051}"
             "${NEBULA_PG_HOST_PORT:-25433}"
-            "${NEBULA_OLLAMA_HOST_PORT:-21434}"
             "${NEBULA_REDIS_HOST_PORT:-16379}"
             "${NEBULA_PROMETHEUS_HOST_PORT:-19090}"
             "${NEBULA_GRAFANA_HOST_PORT:-13030}"
@@ -123,8 +122,8 @@ jobs:
           [[ $fail -eq 0 ]] || exit 1
 
       - name: docker compose pull (sidecars only)
-        # Cuts cold-start time when only the server changed: ollama,
-        # redis, prom, grafana are pinned tags so a `pull` is cheap and
+        # Cuts cold-start time when only the server changed: redis,
+        # prom, grafana are pinned tags so a `pull` is cheap and
         # parallelisable. The `nebula-server` and `showcase` images are
         # built locally in the next step.
         run: docker compose pull --ignore-buildable || true
@@ -163,7 +162,7 @@ jobs:
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + 600 ))   # 10 min max
-          want=(nebula-ollama nebula-redis nebula-server nebula-prometheus nebula-grafana nebula-showcase)
+          want=(nebula-redis nebula-server nebula-prometheus nebula-grafana nebula-showcase)
           while :; do
             unhealthy=()
             for c in "${want[@]}"; do
@@ -270,7 +269,7 @@ jobs:
             echo "| showcase UI | http://${host}:${NEBULA_SHOWCASE_PORT:-15173} |"
             echo "| grafana | http://${host}:${NEBULA_GRAFANA_HOST_PORT:-13030} (admin/admin) |"
             echo "| prometheus | http://${host}:${NEBULA_PROMETHEUS_HOST_PORT:-19090} |"
-            echo "| ollama | http://${host}:${NEBULA_OLLAMA_HOST_PORT:-21434} |"
+            echo "| ollama (host) | ${NEBULA_OLLAMA_URL:-http://192.168.1.177:11434} |"
             echo "| redis | ${host}:${NEBULA_REDIS_HOST_PORT:-16379} |"
             echo
             echo "### container state"

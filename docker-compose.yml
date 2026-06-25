@@ -1,4 +1,10 @@
-# NebulaDB demo stack: server + local Ollama + Redis + Prometheus + Grafana.
+# NebulaDB demo stack: server + Redis + Prometheus + Grafana.
+#
+# Ollama (LLM + embeddings) runs on the HOST, not in docker. The server
+# talks to it via NEBULA_OLLAMA_URL (default http://192.168.1.177:11434).
+# To run a throwaway ollama in docker instead, use the opt-in profile:
+#   docker compose --profile local-ollama up
+# and set NEBULA_OLLAMA_URL=http://ollama:11434.
 #
 # Usage:
 #   docker compose up --build
@@ -7,7 +13,7 @@
 #   nebula-server  -> http://localhost:8080  (REST + SSE RAG)
 #                     localhost:50051        (gRPC)
 #                     localhost:5433         (Postgres wire, user=any db=any)
-#   ollama         -> http://localhost:11434 (local LLM + embeddings)
+#   ollama (host)  -> http://192.168.1.177:11434 (local LLM + embeddings)
 #   redis          -> localhost:6379         (embedding cache)
 #   prometheus     -> http://localhost:9090  (scrape + query)
 #   grafana        -> http://localhost:3000  (admin / admin)
@@ -49,6 +55,11 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: nebula-ollama
+    # Opt-in only. By default NebulaDB talks to the ollama instance on
+    # the host (NEBULA_OLLAMA_URL, default http://192.168.1.177:11434).
+    # Start the in-docker ollama explicitly with:
+    #   docker compose --profile local-ollama up
+    profiles: ["local-ollama"]
     <<: [*default-restart, *default-logging]
     ports:
       - "${NEBULA_OLLAMA_HOST_PORT:-11434}:11434"
@@ -84,6 +95,9 @@ services:
   ollama-init:
     image: ollama/ollama:latest
     container_name: nebula-ollama-init
+    # Same opt-in profile as the ollama service — only pulls models
+    # when you're running the in-docker ollama instead of the host one.
+    profiles: ["local-ollama"]
     <<: *default-logging
     depends_on:
       ollama:
@@ -197,11 +211,10 @@ services:
     cap_add:
       - SYS_PTRACE
     <<: [*default-restart, *default-logging]
+    # NOTE: no ollama / ollama-init dependency. NebulaDB uses the ollama
+    # instance running on the host (NEBULA_OLLAMA_URL below), so the
+    # server must not wait on — or implicitly start — an in-docker ollama.
     depends_on:
-      ollama:
-        condition: service_healthy
-      ollama-init:
-        condition: service_completed_successfully
       redis:
         condition: service_healthy
       snapshots-init:
@@ -244,14 +257,16 @@ services:
       # separated. Empty by default.
       NEBULA_PEERS: "${NEBULA_PEERS:-nebula-follower=http://nebula-follower:8080}"
 
-      # LLM: point at the Ollama sidecar.
-      NEBULA_LLM_OLLAMA_URL: "http://ollama:11434"
+      # LLM: point at the ollama instance on the host. Override with
+      # NEBULA_OLLAMA_URL (e.g. http://ollama:11434 when running the
+      # in-docker ollama via `--profile local-ollama`).
+      NEBULA_LLM_OLLAMA_URL: "${NEBULA_OLLAMA_URL:-http://192.168.1.177:11434}"
       NEBULA_LLM_MODEL: "${OLLAMA_CHAT_MODEL:-llama3}"
 
       # Embeddings: default to MockEmbedder so the demo runs offline.
       # To use Ollama's embedding model instead, uncomment these:
       #   NEBULA_OPENAI_API_KEY: "dummy"
-      #   NEBULA_OPENAI_BASE_URL: "http://ollama:11434/v1"
+      #   NEBULA_OPENAI_BASE_URL: "${NEBULA_OLLAMA_URL:-http://192.168.1.177:11434}/v1"
       #   NEBULA_OPENAI_MODEL: "${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
       #   NEBULA_EMBED_DIM: "768"
       NEBULA_EMBED_DIM: "384"

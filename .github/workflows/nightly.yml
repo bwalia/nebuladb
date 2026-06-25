@@ -5,9 +5,11 @@
 #      and catches the bulk of regressions before we burn compose
 #      runtime. If this fails, `e2e` is skipped — no point spinning
 #      up a stack built from broken code.
-#   2. `e2e`: builds the server image, boots the full docker-compose
-#      stack (Ollama + Redis + Prometheus + Grafana + nebula-server),
-#      and runs scripts/*.sh against it. Covers every transport we
+#   2. `e2e`: builds the server image, boots the docker-compose stack
+#      (Redis + Prometheus + Grafana + nebula-server) and runs
+#      scripts/*.sh against it. Ollama is NOT containerized — the stack
+#      talks to the host ollama at 192.168.1.177, so this job needs a
+#      runner that can route to that LAN host. Covers every transport we
 #      ship (REST, SQL-over-REST, pgwire, RAG-SSE) plus /metrics and a
 #      concurrent-traffic smoke load.
 #   3. `multiregion`: boots the two-region docker-compose topology
@@ -121,7 +123,11 @@ jobs:
       PG_HOST: localhost
       PG_PORT: "5433"
       PROM_URL: http://localhost:9090
-      OLLAMA_URL: http://localhost:11434
+      # Ollama runs on the LAN host, not in docker. This requires a
+      # runner that can route to 192.168.1.177 (i.e. a self-hosted
+      # runner on that network — GitHub-hosted runners cannot reach it).
+      OLLAMA_URL: http://192.168.1.177:11434
+      NEBULA_OLLAMA_URL: http://192.168.1.177:11434
     steps:
       - uses: actions/checkout@v4
 
@@ -146,11 +152,11 @@ jobs:
         # container; this confirms the host-forwarded port is live.
         run: ./scripts/wait_for.sh "$BASE_URL/healthz" 120 '"status":"ok"'
 
-      - name: Wait for Ollama model pull
-        # The `ollama-init` service exits 0 when both models are
-        # pulled. `--wait` above handles service_completed_successfully,
-        # but we also confirm the models are listed before running
-        # tests that depend on them.
+      - name: Wait for host Ollama + model
+        # Ollama is NOT in the compose stack anymore — it runs on the
+        # LAN host (192.168.1.177). Confirm the daemon is reachable and
+        # the chat model is already pulled there before running the
+        # tests that depend on it. (Pull it on the host out of band.)
         run: ./scripts/wait_for.sh "$OLLAMA_URL/api/tags" 600 "$OLLAMA_CHAT_MODEL"
 
       # Tests run in dependency order: Ollama first (if Ollama is
@@ -202,7 +208,7 @@ jobs:
         if: always()
         run: |
           mkdir -p logs
-          for svc in nebula-server ollama ollama-init redis prometheus grafana; do
+          for svc in nebula-server redis prometheus grafana; do
             # 2>&1 catches stderr from stopped containers; tail keeps
             # artifacts under GitHub's 10GB/job cap.
             docker compose logs --no-color --tail=2000 "$svc" >"logs/${svc}.log" 2>&1 || true
