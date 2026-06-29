@@ -359,6 +359,17 @@ impl Wal {
         replay_dir(&self.dir)
     }
 
+    /// Streaming variant of [`replay`](Self::replay): applies each
+    /// record via `apply` as it is decoded, so the whole log is never
+    /// resident at once. Recovery on boot uses this — see
+    /// [`replay_each`] for the memory rationale.
+    pub fn replay_apply<F>(&self, apply: F) -> Result<()>
+    where
+        F: FnMut(WalRecord) -> Result<()>,
+    {
+        replay_each(&self.dir, apply)
+    }
+
     /// Flush + fsync. Call before a snapshot that expects every
     /// buffered record on disk.
     pub fn flush(&self) -> Result<()> {
@@ -587,11 +598,18 @@ fn validate_and_truncate(path: &Path) -> Result<u64> {
     Ok(valid_end)
 }
 
-/// Scan every segment in the directory in seq order, returning
-/// the parsed records. Used both by `Wal::replay` and by tests
-/// that want to read a WAL without reopening it for writes.
-pub fn replay_dir(dir: &Path) -> Result<Vec<WalRecord>> {
-    let mut out = Vec::new();
+/// Scan every segment in seq order, invoking `apply` on each decoded
+/// record as it is read. Records are applied and dropped one at a time,
+/// so peak memory is a single `WalRecord` (plus whatever the callback
+/// retains) rather than the entire WAL — important on boot, where an
+/// uncompacted log can hold thousands of upserts each carrying a full
+/// embedding vector. Short reads / CRC mismatches at the tail of any
+/// segment stop that segment cleanly: this is where crash recovery
+/// happens (a torn final record is treated as "not committed").
+pub fn replay_each<F>(dir: &Path, mut apply: F) -> Result<()>
+where
+    F: FnMut(WalRecord) -> Result<()>,
+{
     for seg in list_segments(dir)? {
         let file = File::open(&seg.path)?;
         let mut reader = BufReader::new(file);
@@ -628,9 +646,22 @@ pub fn replay_dir(dir: &Path) -> Result<Vec<WalRecord>> {
             }
             let rec: WalRecord = bincode::deserialize(&body)
                 .map_err(|e| WalError::Codec(e.to_string()))?;
-            out.push(rec);
+            apply(rec)?;
         }
     }
+    Ok(())
+}
+
+/// Scan every segment in the directory in seq order, returning
+/// the parsed records. Used by tests that want to read a WAL without
+/// reopening it for writes. Production recovery uses [`replay_each`] to
+/// avoid materializing the whole log in memory at once.
+pub fn replay_dir(dir: &Path) -> Result<Vec<WalRecord>> {
+    let mut out = Vec::new();
+    replay_each(dir, |rec| {
+        out.push(rec);
+        Ok(())
+    })?;
     Ok(out)
 }
 

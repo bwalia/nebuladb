@@ -385,14 +385,30 @@ impl TextIndex {
         // everything. `snapshot_wal_seq` = 0 means "no records
         // superseded yet"; WAL seq numbers the server cares about
         // are 1-based from here, so nothing is skipped.
-        let records = wal.replay().map_err(durability::wal_err)?;
         let _ = snapshot_wal_seq; // currently we replay ALL records
                                   // in the WAL, relying on compact
                                   // to have pruned already-snapshotted
                                   // segments. See compact_wal.
-        for rec in records {
-            index.apply_wal_record(&rec)?;
+        // Stream the WAL: each record is applied and dropped before the
+        // next is read, so boot peaks at one record (each carrying a
+        // full embedding vector) instead of the whole uncompacted log.
+        // The apply error is captured out-of-band — the callback can
+        // only return a WAL error, so we stash the IndexError and abort
+        // the stream with a sentinel, then surface the real error.
+        let mut apply_err: Option<IndexError> = None;
+        let stream = wal.replay_apply(|rec| {
+            match index.apply_wal_record(&rec) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    apply_err = Some(e);
+                    Err(nebula_wal::WalError::Codec("wal replay apply aborted".into()))
+                }
+            }
+        });
+        if let Some(e) = apply_err {
+            return Err(e);
         }
+        stream.map_err(durability::wal_err)?;
         Ok(index)
     }
 
