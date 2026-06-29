@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use nebula_core::{Id, NebulaError, Result};
 
-use crate::distance::Metric;
+use crate::distance::{dequantize_into, quantize, Metric};
 
 /// Hard cap on graph height. 16 layers covers >10^20 nodes at M=16, so
 /// this is effectively "unreachable in practice" and mainly exists so the
@@ -129,10 +129,19 @@ impl Ord for Candidate {
 }
 
 struct Inner {
-    /// Flat vector arena; node `n` occupies `vectors[n*dim..(n+1)*dim]`.
-    /// A single contiguous allocation is cache-friendlier than
-    /// `Vec<Vec<f32>>` and amortizes reallocation cost across inserts.
-    vectors: Vec<f32>,
+    /// Flat int8-quantized vector arena; node `n`'s codes occupy
+    /// `codes[n*dim..(n+1)*dim]`, with its companion scale in
+    /// `scales[n]` (see [`crate::distance::quantize`]). Storing int8
+    /// rather than f32 is a ~4x cut in resident vector RAM — the single
+    /// largest allocation in the process — at the cost of a small,
+    /// bounded recall delta. A single contiguous allocation is
+    /// cache-friendlier than `Vec<Vec<i8>>` and amortizes reallocation.
+    /// The on-disk snapshot is still f32 (the arena is rebuilt by
+    /// quantizing on restore), so the persistent format is unchanged.
+    codes: Vec<i8>,
+    /// Per-node quantization scale; `scales[n]` pairs with the codes at
+    /// `codes[n*dim..(n+1)*dim]`.
+    scales: Vec<f32>,
     /// Level assigned to each node at insert time.
     node_levels: Vec<u8>,
     /// `neighbors[node][level]` is the adjacency list at that layer.
@@ -166,7 +175,10 @@ pub struct HnswSnapshot {
     pub dim: usize,
     pub metric: Metric,
     pub config: HnswConfig,
-    /// Flat arena, same layout as live.
+    /// Flat f32 arena, node-major (`vectors[n*dim..(n+1)*dim]`). The
+    /// live index now stores int8 codes; this is the dequantized view,
+    /// kept f32 so the on-disk snapshot format is unchanged. Restore
+    /// re-quantizes it back into the arena.
     pub vectors: Vec<f32>,
     pub node_levels: Vec<u8>,
     pub neighbors: Vec<Vec<Vec<u32>>>,
@@ -185,12 +197,35 @@ struct HnswSnapshotView<'a> {
     dim: usize,
     metric: Metric,
     config: &'a HnswConfig,
-    vectors: &'a [f32],
+    vectors: DequantizedArenaView<'a>,
     node_levels: &'a [u8],
     neighbors: &'a [Vec<Vec<u32>>],
     external: &'a [Id],
     tombstones: TombstoneSetView<'a>,
     entry: Option<(u32, u8)>,
+}
+
+/// Serializes the int8 arena as the f32 sequence bincode would emit for
+/// a `Vec<f32>`, dequantizing element-by-element so the snapshot stays
+/// f32-on-disk without ever materializing a full f32 copy of the arena
+/// (which would defeat the point of the streaming writer). Per node `n`,
+/// emits `codes[n*dim..(n+1)*dim]` each multiplied by `scales[n]`.
+struct DequantizedArenaView<'a> {
+    codes: &'a [i8],
+    scales: &'a [f32],
+    dim: usize,
+}
+
+impl<'a> Serialize for DequantizedArenaView<'a> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.codes.len()))?;
+        for (node, &scale) in self.scales.iter().enumerate() {
+            for &c in &self.codes[node * self.dim..(node + 1) * self.dim] {
+                seq.serialize_element(&(c as f32 * scale))?;
+            }
+        }
+        seq.end()
+    }
 }
 
 /// Serializes an `AHashSet<u32>` as a bincode sequence — same wire
@@ -228,7 +263,8 @@ impl Hnsw {
             metric,
             config,
             inner: RwLock::new(Inner {
-                vectors: Vec::new(),
+                codes: Vec::new(),
+                scales: Vec::new(),
                 node_levels: Vec::new(),
                 neighbors: Vec::new(),
                 external: Vec::new(),
@@ -284,7 +320,11 @@ impl Hnsw {
             dim: self.dim,
             metric: self.metric,
             config: &self.config,
-            vectors: &g.vectors,
+            vectors: DequantizedArenaView {
+                codes: &g.codes,
+                scales: &g.scales,
+                dim: self.dim,
+            },
             node_levels: &g.node_levels,
             neighbors: &g.neighbors,
             // `external` in the persisted snapshot is `Vec<u64>`, but
@@ -306,11 +346,17 @@ impl Hnsw {
     /// statistically indistinguishable.
     pub fn to_snapshot(&self) -> HnswSnapshot {
         let g = self.inner.read();
+        // Dequantize the int8 arena back to f32 for the on-disk format.
+        let mut vectors = vec![0.0f32; g.codes.len()];
+        for (node, &scale) in g.scales.iter().enumerate() {
+            let r = node * self.dim..(node + 1) * self.dim;
+            dequantize_into(&g.codes[r.clone()], scale, &mut vectors[r]);
+        }
         HnswSnapshot {
             dim: self.dim,
             metric: self.metric,
             config: self.config.clone(),
-            vectors: g.vectors.clone(),
+            vectors,
             node_levels: g.node_levels.clone(),
             neighbors: g.neighbors.clone(),
             external: g.external.iter().map(|id| id.0).collect(),
@@ -340,12 +386,22 @@ impl Hnsw {
         for (i, id) in snap.external.iter().enumerate() {
             by_external.insert(Id(*id), i as u32);
         }
+        // Re-quantize the f32-on-disk vectors into the int8 arena.
+        let n_nodes = snap.external.len();
+        let mut codes = Vec::with_capacity(snap.vectors.len());
+        let mut scales = Vec::with_capacity(n_nodes);
+        for node in 0..n_nodes {
+            let (c, s) = quantize(&snap.vectors[node * snap.dim..(node + 1) * snap.dim]);
+            codes.extend_from_slice(&c);
+            scales.push(s);
+        }
         Ok(Self {
             dim: snap.dim,
             metric: snap.metric,
             config: snap.config,
             inner: RwLock::new(Inner {
-                vectors: snap.vectors,
+                codes,
+                scales,
                 node_levels: snap.node_levels,
                 neighbors: snap.neighbors,
                 external: snap.external.into_iter().map(Id).collect(),
@@ -375,8 +431,13 @@ impl Hnsw {
         let level = sample_level(&mut g.rng, self.config.ml);
 
         // Commit node identity before any graph surgery so a panic mid-
-        // insert does not leave dangling half-registered IDs.
-        g.vectors.extend_from_slice(vector);
+        // insert does not leave dangling half-registered IDs. The vector
+        // is quantized to int8 here; the original f32 query is kept in
+        // `query` below for the graph walk so build-time distances stay
+        // full-precision (only stored vectors are quantized).
+        let (codes, scale) = quantize(vector);
+        g.codes.extend_from_slice(&codes);
+        g.scales.push(scale);
         g.node_levels.push(level);
         g.neighbors
             .push((0..=level).map(|_| Vec::new()).collect());
@@ -431,14 +492,20 @@ impl Hnsw {
                     self.config.m
                 };
                 if nb_list.len() > cap {
-                    let nb_vec = vec_at(&g.vectors, nb as usize, self.dim).to_vec();
+                    // Dequantize the pivot once into an f32 buffer; all
+                    // distances against it then fuse the other nodes'
+                    // codes via `distance_code` (no per-candidate buffer).
+                    let (nb_code, nb_scale) = code_at(&g, nb as usize, self.dim);
+                    let mut nb_vec = vec![0.0f32; self.dim];
+                    dequantize_into(nb_code, nb_scale, &mut nb_vec);
                     let pool: Vec<Candidate> = g.neighbors[nb as usize][l as usize]
                         .iter()
-                        .map(|&x| Candidate {
-                            node: x,
-                            distance: self
-                                .metric
-                                .distance(&nb_vec, vec_at(&g.vectors, x as usize, self.dim)),
+                        .map(|&x| {
+                            let (xc, xs) = code_at(&g, x as usize, self.dim);
+                            Candidate {
+                                node: x,
+                                distance: self.metric.distance_code(&nb_vec, xc, xs),
+                            }
                         })
                         .collect();
                     let pruned =
@@ -474,15 +541,21 @@ impl Hnsw {
     /// Used by the bucket export path so a rebalance target can ingest
     /// raw vectors without re-running the embedder. Skips tombstoned
     /// nodes since the caller is about to delete the source.
+    /// Returns the dequantized f32 vector; the int8 round-trip means it
+    /// is close to but not bit-identical to the originally inserted
+    /// vector (within one quantization step per component). The export
+    /// path is tolerant of this — recall on the rebalanced target is
+    /// unaffected within the same bound as live search.
     pub fn get_vector(&self, id: Id) -> Option<Vec<f32>> {
         let g = self.inner.read();
         let node = *g.by_external.get(&id)? as usize;
         if g.tombstones.contains(&(node as u32)) {
             return None;
         }
-        let start = node * self.dim;
-        let end = start + self.dim;
-        g.vectors.get(start..end).map(|s| s.to_vec())
+        let (code, scale) = code_at(&g, node, self.dim);
+        let mut out = vec![0.0f32; self.dim];
+        dequantize_into(code, scale, &mut out);
+        Some(out)
     }
 
     /// k-NN search. `ef` overrides the configured `ef_search`; pass
@@ -533,15 +606,13 @@ impl Hnsw {
     /// descent used between layers where we don't need ef>1.
     fn greedy_step(&self, g: &Inner, query: &[f32], entry: u32, level: u8) -> u32 {
         let mut current = entry;
-        let mut best = self
-            .metric
-            .distance(query, vec_at(&g.vectors, current as usize, self.dim));
+        let (c_code, c_scale) = code_at(g, current as usize, self.dim);
+        let mut best = self.metric.distance_code(query, c_code, c_scale);
         loop {
             let mut improved = false;
             for &nb in &g.neighbors[current as usize][level as usize] {
-                let d = self
-                    .metric
-                    .distance(query, vec_at(&g.vectors, nb as usize, self.dim));
+                let (nb_code, nb_scale) = code_at(g, nb as usize, self.dim);
+                let d = self.metric.distance_code(query, nb_code, nb_scale);
                 if d < best {
                     best = d;
                     current = nb;
@@ -573,7 +644,8 @@ impl Hnsw {
 
         for &e in entries {
             if visited.insert(e) {
-                let d = self.metric.distance(query, vec_at(&g.vectors, e as usize, self.dim));
+                let (e_code, e_scale) = code_at(g, e as usize, self.dim);
+                let d = self.metric.distance_code(query, e_code, e_scale);
                 let c = Candidate {
                     distance: d,
                     node: e,
@@ -599,9 +671,8 @@ impl Hnsw {
                 if !visited.insert(nb) {
                     continue;
                 }
-                let d = self
-                    .metric
-                    .distance(query, vec_at(&g.vectors, nb as usize, self.dim));
+                let (nb_code, nb_scale) = code_at(g, nb as usize, self.dim);
+                let d = self.metric.distance_code(query, nb_code, nb_scale);
                 let worst_now = results.peek().map(|x| x.distance).unwrap_or(f32::INFINITY);
                 if results.len() < ef || d < worst_now {
                     let cand = Candidate {
@@ -646,7 +717,11 @@ fn select_neighbors_heuristic(
     });
 
     let mut selected: Vec<u32> = Vec::with_capacity(m);
-    let mut selected_vecs: Vec<&[f32]> = Vec::with_capacity(m);
+    // Dequantized f32 copies of the selected neighbors, so the diversity
+    // check can fuse each candidate's codes against them via
+    // `distance_code`. Owning the f32 (rather than borrowing the arena)
+    // also sidesteps a borrow conflict on `inner`.
+    let mut selected_vecs: Vec<Vec<f32>> = Vec::with_capacity(m);
     let mut discarded: Vec<Candidate> = Vec::new();
 
     for c in sorted {
@@ -654,14 +729,16 @@ fn select_neighbors_heuristic(
             discarded.push(c);
             continue;
         }
-        let cv = vec_at(&inner.vectors, c.node as usize, dim);
+        let (c_code, c_scale) = code_at(inner, c.node as usize, dim);
         // Algorithm 4: keep `c` iff it is closer to the query than to
         // any already-selected neighbor, under the same metric used for
         // the pool distances.
         let is_diverse = selected_vecs
             .iter()
-            .all(|sv| c.distance < metric.distance(cv, sv));
+            .all(|sv| c.distance < metric.distance_code(sv, c_code, c_scale));
         if is_diverse {
+            let mut cv = vec![0.0f32; dim];
+            dequantize_into(c_code, c_scale, &mut cv);
             selected.push(c.node);
             selected_vecs.push(cv);
         } else {
@@ -682,10 +759,12 @@ fn select_neighbors_heuristic(
     selected
 }
 
-/// Slice into the flat arena for node `n`.
+/// Borrow node `n`'s quantized codes and its companion scale from the
+/// arena. Pair with [`Metric::distance_code`] to compute a distance
+/// without dequantizing into a temporary buffer.
 #[inline]
-fn vec_at(arena: &[f32], n: usize, dim: usize) -> &[f32] {
-    &arena[n * dim..(n + 1) * dim]
+fn code_at(g: &Inner, n: usize, dim: usize) -> (&[i8], f32) {
+    (&g.codes[n * dim..(n + 1) * dim], g.scales[n])
 }
 
 /// Geometric level sampling: `floor(-ln(U) * mL)`, capped at MAX_LEVEL.
@@ -722,7 +801,12 @@ mod tests {
         let r = h.search(&[1.0, 2.0, 3.0, 4.0], 1, None).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].id, Id(1));
-        assert!(r[0].distance.abs() < 1e-6);
+        // Not exactly zero: the stored vector is int8-quantized while the
+        // query stays f32, so self-distance reflects one quantization
+        // step per component. max_abs=4 → scale=4/127, and L2Sq sums
+        // dim*(scale/2)^2 ≈ 1e-3 in the worst case. A loose bound here
+        // still distinguishes "found itself" from "found a wrong node".
+        assert!(r[0].distance < 1e-2, "self-distance too large: {}", r[0].distance);
     }
 
     #[test]
