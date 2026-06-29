@@ -44,8 +44,11 @@ pub enum IndexError {
 pub type Result<T> = std::result::Result<T, IndexError>;
 
 /// A single stored document or chunk. `text` is kept for RAG context
-/// return; `vector` is kept so we can re-insert into a rebuilt HNSW
-/// without re-running the embedder.
+/// return. The embedding is NOT stored here: the HNSW arena is the
+/// single authority for vectors, and code that needs a vector back
+/// (e.g. [`TextIndex::export_bucket`]) reads it from there via
+/// `Hnsw::get_vector`. Keeping a copy on every `Document` doubled the
+/// resident vector RAM for the whole live corpus for no reader.
 ///
 /// `parent_doc_id` is `Some` for chunks and `None` for standalone
 /// documents inserted via [`TextIndex::upsert_text`]. It lets
@@ -56,8 +59,6 @@ pub struct Document {
     pub bucket: String,
     pub external_id: String,
     pub text: String,
-    #[serde(skip)]
-    pub vector: Vec<f32>,
     #[serde(default)]
     pub metadata: serde_json::Value,
     #[serde(default)]
@@ -149,17 +150,14 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
         let id = Id(d.internal_id);
         by_key.insert((d.bucket.clone(), d.external_id.clone()), id);
         bm25.add(id.0, &d.text);
-        // Vectors live in the HNSW snapshot — the `Document`
-        // struct we materialize here has an empty vector because
-        // we'd be duplicating bytes otherwise. The HNSW is the
-        // authority for the vector arena.
+        // Vectors live in the HNSW snapshot, which is the authority
+        // for the vector arena — `Document` no longer carries a copy.
         docs.insert(
             id,
             Document {
                 bucket: d.bucket,
                 external_id: d.external_id,
                 text: d.text,
-                vector: Vec::new(),
                 metadata,
                 parent_doc_id: d.parent_doc_id,
                 chunk_index: d.chunk_index,
@@ -602,7 +600,6 @@ impl TextIndex {
                 bucket: bucket.to_string(),
                 external_id: external_id.to_string(),
                 text: text.to_string(),
-                vector,
                 metadata,
                 parent_doc_id,
                 chunk_index,
@@ -719,7 +716,6 @@ impl TextIndex {
                         bucket: bucket.to_string(),
                         external_id: id.clone(),
                         text: text.clone(),
-                        vector: vec.clone(),
                         metadata: meta.clone(),
                         parent_doc_id: None,
                         chunk_index: None,
@@ -896,7 +892,6 @@ impl TextIndex {
                     bucket: bucket.to_string(),
                     external_id: external_id.clone(),
                     text: chunk.text.clone(),
-                    vector: chunk.vector.clone(),
                     metadata: metadata.clone(),
                     parent_doc_id: Some(doc_id.to_string()),
                     chunk_index: Some(chunk.index),
