@@ -18,6 +18,7 @@ pub mod backup_routes;
 pub mod build_info;
 pub mod cluster;
 pub mod cross_region_status;
+pub mod embedder_identity;
 pub mod error;
 pub mod home_region;
 pub mod jwt;

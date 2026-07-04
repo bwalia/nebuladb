@@ -2936,3 +2936,167 @@ async fn one_bad_sample_does_not_gate_writes() {
         "one sample must not commit a transition"
     );
 }
+
+// -------------------------------------------------------------------------
+// AI decoupling tests (design 0010 §5, Phase 2)
+// -------------------------------------------------------------------------
+
+use nebula_embed::{BreakerConfig, CircuitBreakerEmbedder, EmbedError};
+
+/// Embedder that always fails transiently — simulates a hard provider
+/// outage for breaker-driven behavior.
+struct DeadEmbedder {
+    dim: usize,
+}
+
+#[async_trait::async_trait]
+impl Embedder for DeadEmbedder {
+    fn dim(&self) -> usize {
+        self.dim
+    }
+    fn model(&self) -> &str {
+        "dead-provider"
+    }
+    async fn embed(&self, _inputs: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        Err(EmbedError::Provider {
+            status: 503,
+            body: "provider outage".into(),
+        })
+    }
+}
+
+/// State whose embedder is a dead provider behind a circuit breaker
+/// with threshold 1 (first failure opens it).
+fn app_state_ai_down() -> AppState {
+    let breaker = Arc::new(CircuitBreakerEmbedder::new(
+        Arc::new(DeadEmbedder { dim: 32 }),
+        BreakerConfig {
+            failure_threshold: 1,
+            cooldown: std::time::Duration::from_secs(3600),
+        },
+    ));
+    let health = breaker.health();
+    let index = Arc::new(
+        TextIndex::new(
+            breaker as Arc<dyn Embedder>,
+            Metric::Cosine,
+            HnswConfig::default(),
+        )
+        .unwrap(),
+    );
+    AppState::new(index, AppConfig::default()).with_ai_health(health)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_deferred_write_succeeds_without_provider() {
+    let app = build_router(app_state_ai_down());
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/b/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"id":"d1","text":"deferred hello","embed_mode":"deferred"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(
+        body.contains("\"status\":\"embedding_pending\""),
+        "got {body}"
+    );
+
+    // The doc is immediately readable.
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/bucket/b/doc/d1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn circuit_open_falls_back_to_deferred_instead_of_502() {
+    let state = app_state_ai_down();
+    // Trip the breaker with one failing call (threshold 1).
+    assert!(state.index.embedder().embed_one("warmup").await.is_err());
+    assert!(state.ai_health.as_ref().unwrap().is_degraded());
+    let app = build_router(state.clone());
+
+    // A plain sync write — pre-Phase-2 this was a 502. Now it lands
+    // as a deferred write.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/b/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"d2","text":"written during outage"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    assert!(
+        body.contains("\"status\":\"embedding_pending\""),
+        "got {body}"
+    );
+    assert_eq!(state.index.pending_embedding_count(), 1);
+
+    // Health + reliability surfaces report the degradation.
+    let res = app
+        .clone()
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"ai_degraded\":true"), "got {body}");
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/admin/reliability")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+    assert_eq!(v["ai"]["degraded"], true);
+    assert_eq!(v["ai"]["embedding_pending"], 1);
+
+    let res = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("nebula_ai_degraded 1"), "got:\n{body}");
+    assert!(body.contains("nebula_embedding_pending 1"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn semantic_search_fails_fast_with_distinct_code_when_circuit_open() {
+    let state = app_state_ai_down();
+    assert!(state.index.embedder().embed_one("warmup").await.is_err());
+    let app = build_router(state);
+    // search_text embeds the query — with the circuit open it must be
+    // 503 embedder_unavailable (fail-fast), not a slow 502.
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/ai/search")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"anything","top_k":3}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("embedder_unavailable"), "got {body}");
+}

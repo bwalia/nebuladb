@@ -2655,6 +2655,7 @@ dependencies = [
  "ahash 0.8.12",
  "async-trait",
  "nebula-core",
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
