@@ -299,6 +299,18 @@ impl Hnsw {
         self.len_live() == 0
     }
 
+    /// True when `id` has a live (non-tombstoned) node in the graph.
+    /// Used by the index to rebuild its vector-pending set on boot: a
+    /// document present in the doc map but absent here is awaiting
+    /// deferred embedding (design 0010 §5).
+    pub fn contains(&self, id: Id) -> bool {
+        let g = self.inner.read();
+        match g.by_external.get(&id) {
+            Some(node) => !g.tombstones.contains(node),
+            None => false,
+        }
+    }
+
     /// Bincode-stream this index's state into `writer`, producing the
     /// same bytes that `bincode::serialize(&self.to_snapshot())` would,
     /// but without ever materializing the intermediate `HnswSnapshot`
@@ -311,10 +323,7 @@ impl Hnsw {
     /// `HnswSnapshot` field-for-field, and bincode's format depends
     /// only on field order + element types + sequence layout — not on
     /// struct or field names.
-    pub fn serialize_snapshot_into<W: std::io::Write>(
-        &self,
-        writer: W,
-    ) -> bincode::Result<()> {
+    pub fn serialize_snapshot_into<W: std::io::Write>(&self, writer: W) -> bincode::Result<()> {
         let g = self.inner.read();
         let view = HnswSnapshotView {
             dim: self.dim,
@@ -371,7 +380,9 @@ impl Hnsw {
     /// silently produce wrong results.
     pub fn restore_from_snapshot(snap: HnswSnapshot) -> Result<Self> {
         if snap.dim == 0 {
-            return Err(NebulaError::InvalidConfig("snapshot dim must be > 0".into()));
+            return Err(NebulaError::InvalidConfig(
+                "snapshot dim must be > 0".into(),
+            ));
         }
         if snap.vectors.len() != snap.external.len() * snap.dim {
             return Err(NebulaError::InvalidConfig(format!(
@@ -439,8 +450,7 @@ impl Hnsw {
         g.codes.extend_from_slice(&codes);
         g.scales.push(scale);
         g.node_levels.push(level);
-        g.neighbors
-            .push((0..=level).map(|_| Vec::new()).collect());
+        g.neighbors.push((0..=level).map(|_| Vec::new()).collect());
         g.external.push(id);
         g.by_external.insert(id, node);
 
@@ -466,7 +476,8 @@ impl Hnsw {
         let start_level = level.min(ep_level);
         let mut entry_points = vec![ep];
         for l in (0..=start_level).rev() {
-            let neighbors_pool = self.search_layer(&g, &query, &entry_points, self.config.ef_construction, l);
+            let neighbors_pool =
+                self.search_layer(&g, &query, &entry_points, self.config.ef_construction, l);
             let m = if l == 0 {
                 self.config.m_max0
             } else {
@@ -806,7 +817,11 @@ mod tests {
         // step per component. max_abs=4 → scale=4/127, and L2Sq sums
         // dim*(scale/2)^2 ≈ 1e-3 in the worst case. A loose bound here
         // still distinguishes "found itself" from "found a wrong node".
-        assert!(r[0].distance < 1e-2, "self-distance too large: {}", r[0].distance);
+        assert!(
+            r[0].distance < 1e-2,
+            "self-distance too large: {}",
+            r[0].distance
+        );
     }
 
     #[test]

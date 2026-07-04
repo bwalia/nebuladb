@@ -190,6 +190,11 @@ struct Health {
     /// readiness and degradation are different signals; a node under
     /// memory pressure still serves.
     mode: &'static str,
+    /// True when the embedding provider's circuit breaker is open
+    /// (design 0010 §5). Orthogonal to `mode`: the node keeps serving
+    /// every embedder-free path (BM25, client-vector search, SQL).
+    /// Always false when no breaker is wired (mock/dev setups).
+    ai_degraded: bool,
 }
 
 async fn healthz(State(s): State<AppState>) -> Json<Health> {
@@ -201,17 +206,42 @@ async fn healthz(State(s): State<AppState>) -> Json<Health> {
         version: crate::build_info::VERSION,
         git_commit: crate::build_info::GIT_COMMIT,
         mode: s.resource.mode().as_str(),
+        ai_degraded: s.ai_health.as_ref().is_some_and(|h| h.is_degraded()),
     })
+}
+
+/// AI-subsystem block of the `/admin/reliability` response.
+#[derive(Serialize)]
+struct AiReliability {
+    degraded: bool,
+    circuit_opens_total: u64,
+    calls_rejected_total: u64,
+    embedding_pending: usize,
+}
+
+#[derive(Serialize)]
+struct ReliabilityResponse {
+    #[serde(flatten)]
+    resource: nebula_resource::ReliabilitySnapshot,
+    /// `None` when no circuit breaker is wired (mock/dev setups).
+    ai: Option<AiReliability>,
 }
 
 /// `GET /api/v1/admin/reliability` — the operator's one-stop answer to
 /// "what mode is this node in, why, and since when" (design 0010 §9):
 /// current mode, per-resource pressure levels, the raw readings behind
-/// them, and the recent transition history with causes.
-async fn admin_reliability(
-    State(s): State<AppState>,
-) -> Json<nebula_resource::ReliabilitySnapshot> {
-    Json(s.resource.snapshot())
+/// them, recent transitions with causes, and AI-subsystem health.
+async fn admin_reliability(State(s): State<AppState>) -> Json<ReliabilityResponse> {
+    let ai = s.ai_health.as_ref().map(|h| AiReliability {
+        degraded: h.is_degraded(),
+        circuit_opens_total: h.opens_total(),
+        calls_rejected_total: h.rejected_total(),
+        embedding_pending: s.index.pending_embedding_count(),
+    });
+    Json(ReliabilityResponse {
+        resource: s.resource.snapshot(),
+        ai,
+    })
 }
 
 async fn metrics_handler(
@@ -416,6 +446,32 @@ fn render_reliability_metrics(body: &mut String, s: &AppState) {
         "nebula_mode_transitions_total {}",
         snap.transitions_total
     );
+
+    // AI subsystem health (design 0010 §5): breaker gauges only when a
+    // circuit breaker is wired, so dev/mock setups don't report a
+    // misleading healthy-forever signal.
+    if let Some(h) = &s.ai_health {
+        let _ = writeln!(body, "# HELP nebula_ai_degraded 1 when the embedding provider circuit breaker is open, else 0");
+        let _ = writeln!(body, "# TYPE nebula_ai_degraded gauge");
+        let _ = writeln!(body, "nebula_ai_degraded {}", u8::from(h.is_degraded()));
+        let _ = writeln!(body, "# HELP nebula_embed_circuit_opens_total Times the embedder circuit breaker has opened since boot");
+        let _ = writeln!(body, "# TYPE nebula_embed_circuit_opens_total counter");
+        let _ = writeln!(body, "nebula_embed_circuit_opens_total {}", h.opens_total());
+        let _ = writeln!(body, "# HELP nebula_embed_calls_rejected_total Embed calls failed fast while the circuit was open");
+        let _ = writeln!(body, "# TYPE nebula_embed_calls_rejected_total counter");
+        let _ = writeln!(
+            body,
+            "nebula_embed_calls_rejected_total {}",
+            h.rejected_total()
+        );
+    }
+    let _ = writeln!(body, "# HELP nebula_embedding_pending Documents accepted with deferred embedding, awaiting the background worker");
+    let _ = writeln!(body, "# TYPE nebula_embedding_pending gauge");
+    let _ = writeln!(
+        body,
+        "nebula_embedding_pending {}",
+        s.index.pending_embedding_count()
+    );
 }
 
 /// cgroup memory accounting, exposed so an alert can fire BEFORE the
@@ -464,6 +520,22 @@ struct UpsertDoc {
     text: String,
     #[serde(default)]
     metadata: serde_json::Value,
+    /// `"sync"` (default) embeds inline; `"deferred"` accepts the
+    /// write without calling the embedder — durable and BM25-visible
+    /// immediately, vector-searchable once the background worker
+    /// embeds it (design 0010 §5). Deferred is also the automatic
+    /// fallback when the embedder circuit is open, so writes keep
+    /// flowing through a provider outage.
+    #[serde(default)]
+    embed_mode: EmbedMode,
+}
+
+#[derive(Deserialize, Default, Clone, Copy, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum EmbedMode {
+    #[default]
+    Sync,
+    Deferred,
 }
 
 #[derive(Serialize)]
@@ -471,6 +543,11 @@ struct UpsertResponse {
     bucket: String,
     id: String,
     dim: usize,
+    /// `"indexed"` when the vector is live; `"embedding_pending"` when
+    /// the write was accepted deferred (explicitly or as the
+    /// circuit-open fallback) and the worker will embed it shortly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'static str>,
 }
 
 #[derive(Deserialize)]
@@ -637,16 +714,48 @@ async fn upsert_doc(
             metadata_json: body.metadata.to_string(),
         });
         raft.submit_mutation(payload).await?;
+        s.metrics.inc_insert();
+        return Ok(Json(UpsertResponse {
+            bucket,
+            id: body.id,
+            dim: s.index.dim(),
+            status: Some("indexed"),
+        }));
+    }
+
+    // Deferred path (design 0010 §5): explicit request, or automatic
+    // fallback when the embedder circuit is open — a provider outage
+    // must not fail writes. Never falls back on other embed errors
+    // (a 400 from the provider is a real caller problem).
+    let circuit_open = s.ai_health.as_ref().is_some_and(|h| h.is_degraded());
+    let deferred = body.embed_mode == EmbedMode::Deferred || circuit_open;
+    let status = if deferred {
+        if circuit_open && body.embed_mode == EmbedMode::Sync {
+            tracing::info!(bucket = %bucket, id = %body.id, "embedder circuit open; accepting write with deferred embedding");
+        }
+        let idx = std::sync::Arc::clone(&s.index);
+        let (b, i, t, m) = (
+            bucket.clone(),
+            body.id.clone(),
+            body.text.clone(),
+            body.metadata,
+        );
+        tokio::task::spawn_blocking(move || idx.upsert_text_deferred(&b, &i, &t, m))
+            .await
+            .map_err(|e| ApiError::Internal(format!("deferred upsert task: {e}")))??;
+        Some("embedding_pending")
     } else {
         s.index
             .upsert_text(&bucket, &body.id, &body.text, body.metadata)
             .await?;
-    }
+        Some("indexed")
+    };
     s.metrics.inc_insert();
     Ok(Json(UpsertResponse {
         bucket,
         id: body.id,
         dim: s.index.dim(),
+        status,
     }))
 }
 

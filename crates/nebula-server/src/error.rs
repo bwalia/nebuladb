@@ -76,8 +76,28 @@ impl ApiError {
             ApiError::Index(IndexError::DocNotFound { .. }) => ("not_found", StatusCode::NOT_FOUND),
             ApiError::Index(IndexError::Invalid(_)) => ("bad_request", StatusCode::BAD_REQUEST),
             ApiError::Index(IndexError::BucketNotFound(_)) => ("not_found", StatusCode::NOT_FOUND),
+            // Embed failures reach handlers wrapped in IndexError on
+            // the search/upsert paths — unwrap to the same mapping as
+            // the direct Embed arm so the circuit-open fail-fast keeps
+            // its distinct 503 regardless of which layer surfaced it.
+            ApiError::Index(IndexError::Embed(EmbedError::CircuitOpen)) => {
+                ("embedder_unavailable", StatusCode::SERVICE_UNAVAILABLE)
+            }
+            ApiError::Index(IndexError::Embed(EmbedError::Provider { .. })) => {
+                ("upstream_error", StatusCode::BAD_GATEWAY)
+            }
+            ApiError::Index(IndexError::Embed(_)) => ("embed_error", StatusCode::BAD_GATEWAY),
             ApiError::Index(_) => ("internal", StatusCode::INTERNAL_SERVER_ERROR),
-            ApiError::Embed(EmbedError::Provider { .. }) => ("upstream_error", StatusCode::BAD_GATEWAY),
+            ApiError::Embed(EmbedError::Provider { .. }) => {
+                ("upstream_error", StatusCode::BAD_GATEWAY)
+            }
+            // Circuit open: the provider is degraded and calls fail
+            // fast (design 0010 §5). 503 + a distinct code so clients
+            // back off (or switch to embed_mode=deferred) instead of
+            // treating it as a one-off upstream hiccup.
+            ApiError::Embed(EmbedError::CircuitOpen) => {
+                ("embedder_unavailable", StatusCode::SERVICE_UNAVAILABLE)
+            }
             ApiError::Embed(_) => ("embed_error", StatusCode::BAD_GATEWAY),
             ApiError::Sql(SqlError::Parse(_)) => ("sql_parse", StatusCode::BAD_REQUEST),
             ApiError::Sql(SqlError::Unsupported(_)) => ("sql_unsupported", StatusCode::BAD_REQUEST),

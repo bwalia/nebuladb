@@ -20,8 +20,8 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use nebula_chunk::Chunker;
 use nebula_bm25::{Bm25Index, Bm25Params};
+use nebula_chunk::Chunker;
 use nebula_core::{Id, NebulaError};
 use nebula_embed::{EmbedError, Embedder};
 use nebula_vector::{Hnsw, HnswConfig, Metric};
@@ -145,8 +145,8 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
     // living only in the HNSW arena: we don't persist derivable state.
     let mut bm25 = Bm25Index::new(Bm25Params::default());
     for d in state.docs {
-        let metadata: serde_json::Value = serde_json::from_str(&d.metadata_json)
-            .unwrap_or(serde_json::Value::Null);
+        let metadata: serde_json::Value =
+            serde_json::from_str(&d.metadata_json).unwrap_or(serde_json::Value::Null);
         let id = Id(d.internal_id);
         by_key.insert((d.bucket.clone(), d.external_id.clone()), id);
         bm25.add(id.0, &d.text);
@@ -177,6 +177,9 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
         parents,
         bm25,
         next_id: state.next_id,
+        // Rebuilt by the caller once the HNSW is restored — a doc
+        // with no live graph node is vector-pending.
+        pending_embedding: AHashSet::new(),
     }
 }
 
@@ -199,6 +202,12 @@ struct Inner {
     /// vectors and this is the authority for nothing persistent.
     bm25: Bm25Index,
     next_id: u64,
+    /// Internal ids of documents accepted via deferred embedding
+    /// (design 0010 §5): durable and BM25/metadata-visible, but with
+    /// NO HNSW node yet. The embedding worker drains this set; it is
+    /// not serialized — rebuilt on boot as "in `docs` but not in the
+    /// HNSW graph", which stays correct across snapshots and replay.
+    pending_embedding: AHashSet<Id>,
 }
 
 impl Inner {
@@ -214,8 +223,11 @@ impl Inner {
     /// Remove a document by internal id from both `docs` and the BM25
     /// index. Returns the removed `Document`, mirroring
     /// `HashMap::remove`, so callers keep their existing control flow.
+    /// Also clears any vector-pending mark — deleting or replacing a
+    /// deferred doc cancels its outstanding embedding work.
     fn remove_doc(&mut self, id: Id) -> Option<Document> {
         self.bm25.remove(id.0);
+        self.pending_embedding.remove(&id);
         self.docs.remove(&id)
     }
 }
@@ -251,6 +263,7 @@ impl TextIndex {
                 parents: AHashMap::new(),
                 bm25: Bm25Index::new(Bm25Params::default()),
                 next_id: 1,
+                pending_embedding: AHashSet::new(),
             }),
             wal: None,
             data_dir: None,
@@ -304,7 +317,8 @@ impl TextIndex {
         let wal_dir = data_dir.join("wal");
         let snapshots_dir = snapshot_dir.unwrap_or_else(|| Self::resolve_snapshot_dir(&data_dir));
         std::fs::create_dir_all(&wal_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
-        std::fs::create_dir_all(&snapshots_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
+        std::fs::create_dir_all(&snapshots_dir)
+            .map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
 
         // Load snapshot first, then replay only later WAL records.
         //
@@ -333,35 +347,35 @@ impl TextIndex {
             }
             None => None,
         };
-        let (inner, hnsw, snapshot_wal_seq) =
-            match loaded_snapshot {
-                Some((header, hnsw_snap)) => {
-                    if hnsw_snap.dim != dim {
-                        return Err(IndexError::Invalid(format!(
-                            "snapshot dim {} != embedder dim {}",
-                            hnsw_snap.dim, dim
-                        )));
-                    }
-                    let hnsw = Hnsw::restore_from_snapshot(hnsw_snap)?;
-                    let inner = inner_from_serialized(header.docs);
-                    (inner, hnsw, header.wal_seq_at_snapshot)
+        let (inner, hnsw, snapshot_wal_seq) = match loaded_snapshot {
+            Some((header, hnsw_snap)) => {
+                if hnsw_snap.dim != dim {
+                    return Err(IndexError::Invalid(format!(
+                        "snapshot dim {} != embedder dim {}",
+                        hnsw_snap.dim, dim
+                    )));
                 }
-                None => {
-                    let hnsw = Hnsw::new(dim, metric, config.clone())?;
-                    let inner = Inner {
-                        by_key: AHashMap::new(),
-                        docs: AHashMap::new(),
-                        parents: AHashMap::new(),
-                        bm25: Bm25Index::new(Bm25Params::default()),
-                        next_id: 1,
-                    };
-                    // No snapshot yet: every WAL record is fresh.
-                    // `u64::MAX` as "nothing superseded" would be
-                    // confusing; 0 is clearer since WAL seqs start
-                    // there.
-                    (inner, hnsw, 0)
-                }
-            };
+                let hnsw = Hnsw::restore_from_snapshot(hnsw_snap)?;
+                let inner = inner_from_serialized(header.docs);
+                (inner, hnsw, header.wal_seq_at_snapshot)
+            }
+            None => {
+                let hnsw = Hnsw::new(dim, metric, config.clone())?;
+                let inner = Inner {
+                    by_key: AHashMap::new(),
+                    docs: AHashMap::new(),
+                    parents: AHashMap::new(),
+                    bm25: Bm25Index::new(Bm25Params::default()),
+                    next_id: 1,
+                    pending_embedding: AHashSet::new(),
+                };
+                // No snapshot yet: every WAL record is fresh.
+                // `u64::MAX` as "nothing superseded" would be
+                // confusing; 0 is clearer since WAL seqs start
+                // there.
+                (inner, hnsw, 0)
+            }
+        };
 
         let wal = Arc::new(Wal::open(&wal_dir, WalConfig::default()).map_err(durability::wal_err)?);
 
@@ -387,26 +401,48 @@ impl TextIndex {
                                   // in the WAL, relying on compact
                                   // to have pruned already-snapshotted
                                   // segments. See compact_wal.
-        // Stream the WAL: each record is applied and dropped before the
-        // next is read, so boot peaks at one record (each carrying a
-        // full embedding vector) instead of the whole uncompacted log.
-        // The apply error is captured out-of-band — the callback can
-        // only return a WAL error, so we stash the IndexError and abort
-        // the stream with a sentinel, then surface the real error.
+                                  // Stream the WAL: each record is applied and dropped before the
+                                  // next is read, so boot peaks at one record (each carrying a
+                                  // full embedding vector) instead of the whole uncompacted log.
+                                  // The apply error is captured out-of-band — the callback can
+                                  // only return a WAL error, so we stash the IndexError and abort
+                                  // the stream with a sentinel, then surface the real error.
         let mut apply_err: Option<IndexError> = None;
-        let stream = wal.replay_apply(|rec| {
-            match index.apply_wal_record(&rec) {
-                Ok(()) => Ok(()),
-                Err(e) => {
-                    apply_err = Some(e);
-                    Err(nebula_wal::WalError::Codec("wal replay apply aborted".into()))
-                }
+        let stream = wal.replay_apply(|rec| match index.apply_wal_record(&rec) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                apply_err = Some(e);
+                Err(nebula_wal::WalError::Codec(
+                    "wal replay apply aborted".into(),
+                ))
             }
         });
         if let Some(e) = apply_err {
             return Err(e);
         }
         stream.map_err(durability::wal_err)?;
+
+        // Rebuild the vector-pending set (design 0010 §5): replay
+        // repopulates it for post-snapshot pending records, but docs
+        // restored FROM the snapshot arrive with an empty set — the
+        // graph is the authority, so any doc without a live HNSW node
+        // is awaiting embedding. Idempotent with what replay added.
+        {
+            let mut g = index.inner.write();
+            let pending: Vec<Id> = g
+                .docs
+                .keys()
+                .filter(|id| !index.hnsw.contains(**id))
+                .copied()
+                .collect();
+            if !pending.is_empty() {
+                tracing::info!(
+                    count = pending.len(),
+                    "recovered vector-pending documents; embedding worker will drain them"
+                );
+            }
+            g.pending_embedding.extend(pending);
+        }
         Ok(index)
     }
 
@@ -473,9 +509,17 @@ impl TextIndex {
                 vector,
                 metadata_json,
             } => {
-                let metadata: serde_json::Value = serde_json::from_str(metadata_json)
-                    .unwrap_or(serde_json::Value::Null);
-                self.apply_upsert_single(bucket, external_id, text, vector.clone(), metadata, None, None)?;
+                let metadata: serde_json::Value =
+                    serde_json::from_str(metadata_json).unwrap_or(serde_json::Value::Null);
+                self.apply_upsert_single(
+                    bucket,
+                    external_id,
+                    text,
+                    vector.clone(),
+                    metadata,
+                    None,
+                    None,
+                )?;
             }
             WalRecord::UpsertDocument {
                 bucket,
@@ -483,11 +527,14 @@ impl TextIndex {
                 chunks,
                 metadata_json,
             } => {
-                let metadata: serde_json::Value = serde_json::from_str(metadata_json)
-                    .unwrap_or(serde_json::Value::Null);
+                let metadata: serde_json::Value =
+                    serde_json::from_str(metadata_json).unwrap_or(serde_json::Value::Null);
                 self.apply_upsert_document(bucket, doc_id, chunks, metadata)?;
             }
-            WalRecord::Delete { bucket, external_id } => {
+            WalRecord::Delete {
+                bucket,
+                external_id,
+            } => {
                 // delete() returns NotFound if the id's gone — that's
                 // fine during replay (earlier record was superseded).
                 let _ = self.delete_internal(bucket, external_id);
@@ -497,6 +544,16 @@ impl TextIndex {
             }
             WalRecord::EmptyBucket { bucket } => {
                 self.empty_bucket_internal(bucket);
+            }
+            WalRecord::UpsertTextPending {
+                bucket,
+                external_id,
+                text,
+                metadata_json,
+            } => {
+                let metadata: serde_json::Value =
+                    serde_json::from_str(metadata_json).unwrap_or(serde_json::Value::Null);
+                self.apply_upsert_pending(bucket, external_id, text, metadata);
             }
         }
         Ok(())
@@ -536,7 +593,9 @@ impl TextIndex {
         metadata: serde_json::Value,
     ) -> Result<()> {
         if bucket.is_empty() || external_id.is_empty() {
-            return Err(IndexError::Invalid("bucket and id must be non-empty".into()));
+            return Err(IndexError::Invalid(
+                "bucket and id must be non-empty".into(),
+            ));
         }
 
         let vector = self.embedder.embed_one(text).await?;
@@ -570,6 +629,152 @@ impl TextIndex {
 
             self.apply_upsert_single(bucket, external_id, text, vector, metadata, None, None)
         })
+    }
+
+    /// Accept a text upsert WITHOUT calling the embedder (design 0010
+    /// §5). The document is WAL-durable and immediately visible to
+    /// BM25 / metadata / get-by-id; vector search covers it once the
+    /// embedding worker drains it via [`Self::embed_pending_batch`].
+    ///
+    /// This is the availability escape hatch: it never touches the
+    /// provider, so it succeeds while the embedder is down — writes
+    /// keep flowing in `AiDegraded` mode instead of failing 502.
+    pub fn upsert_text_deferred(
+        &self,
+        bucket: &str,
+        external_id: &str,
+        text: &str,
+        metadata: serde_json::Value,
+    ) -> Result<()> {
+        if bucket.is_empty() || external_id.is_empty() {
+            return Err(IndexError::Invalid(
+                "bucket and id must be non-empty".into(),
+            ));
+        }
+        // Same WAL-first discipline as upsert_text; fully synchronous
+        // (no embedder await), so callers off the async runtime can
+        // use it directly and handlers wrap it in block_in_place.
+        self.wal_append(&WalRecord::UpsertTextPending {
+            bucket: bucket.to_string(),
+            external_id: external_id.to_string(),
+            text: text.to_string(),
+            metadata_json: metadata.to_string(),
+        })?;
+        self.apply_upsert_pending(bucket, external_id, text, metadata);
+        Ok(())
+    }
+
+    /// In-memory apply for a vector-pending upsert; shared by
+    /// [`Self::upsert_text_deferred`] and WAL replay. Replace
+    /// semantics match `apply_upsert_single`: an existing key is
+    /// tombstoned first so BM25 never holds two live copies.
+    fn apply_upsert_pending(
+        &self,
+        bucket: &str,
+        external_id: &str,
+        text: &str,
+        metadata: serde_json::Value,
+    ) {
+        let key = (bucket.to_string(), external_id.to_string());
+        let mut g = self.inner.write();
+        if let Some(&old_id) = g.by_key.get(&key) {
+            let _ = self.hnsw.delete(old_id);
+            g.remove_doc(old_id);
+            g.by_key.remove(&key);
+        }
+        let id = Id(g.next_id);
+        g.next_id += 1;
+        g.by_key.insert(key, id);
+        g.insert_doc(
+            id,
+            Document {
+                bucket: bucket.to_string(),
+                external_id: external_id.to_string(),
+                text: text.to_string(),
+                metadata,
+                parent_doc_id: None,
+                chunk_index: None,
+            },
+        );
+        g.pending_embedding.insert(id);
+    }
+
+    /// Number of documents awaiting deferred embedding. Surfaced on
+    /// `/metrics` (`nebula_embedding_pending`) and used by the worker
+    /// to decide whether to run.
+    pub fn pending_embedding_count(&self) -> usize {
+        self.inner.read().pending_embedding.len()
+    }
+
+    /// Embed and graph-insert up to `limit` vector-pending documents
+    /// in one batched provider call. Returns how many completed.
+    ///
+    /// Called by the background embedding worker. On success each doc
+    /// gets a normal `UpsertText` WAL record (carrying the vector), so
+    /// replication and recovery see the completed write exactly as if
+    /// it had been synchronous — replay applies the pending record,
+    /// then the completed one replaces it idempotently.
+    ///
+    /// On provider failure the batch stays pending — nothing is lost,
+    /// the worker retries next tick (the embedder stack already
+    /// retries transients and fails fast when the circuit is open).
+    pub async fn embed_pending_batch(&self, limit: usize) -> Result<usize> {
+        // Snapshot a batch under a short read lock; embed OUTSIDE any
+        // lock (provider round-trip can be seconds).
+        let batch: Vec<(Id, String, String, String, serde_json::Value)> = {
+            let g = self.inner.read();
+            g.pending_embedding
+                .iter()
+                .take(limit)
+                .filter_map(|id| {
+                    g.docs.get(id).map(|d| {
+                        (
+                            *id,
+                            d.bucket.clone(),
+                            d.external_id.clone(),
+                            d.text.clone(),
+                            d.metadata.clone(),
+                        )
+                    })
+                })
+                .collect()
+        };
+        if batch.is_empty() {
+            return Ok(0);
+        }
+        let inputs: Vec<String> = batch
+            .iter()
+            .map(|(_, _, _, text, _)| text.clone())
+            .collect();
+        let vectors = self.embedder.embed(&inputs).await?;
+
+        let mut completed = 0usize;
+        for ((id, bucket, external_id, text, metadata), vector) in batch.into_iter().zip(vectors) {
+            if vector.len() != self.dim() {
+                return Err(IndexError::Embed(EmbedError::DimensionMismatch {
+                    expected: self.dim(),
+                    actual: vector.len(),
+                }));
+            }
+            // The doc may have been deleted or replaced while we were
+            // embedding — remove_doc cleared its pending mark; skip
+            // stale ids instead of resurrecting them.
+            if !self.inner.read().pending_embedding.contains(&id) {
+                continue;
+            }
+            tokio::task::block_in_place(|| -> Result<()> {
+                self.wal_append(&WalRecord::UpsertText {
+                    bucket: bucket.clone(),
+                    external_id: external_id.clone(),
+                    text: text.clone(),
+                    vector: vector.clone(),
+                    metadata_json: metadata.to_string(),
+                })?;
+                self.apply_upsert_single(&bucket, &external_id, &text, vector, metadata, None, None)
+            })?;
+            completed += 1;
+        }
+        Ok(completed)
     }
 
     /// Pure in-memory apply shared by `upsert_text` and WAL replay.
@@ -761,10 +966,13 @@ impl TextIndex {
     fn delete_internal(&self, bucket: &str, external_id: &str) -> Result<()> {
         let mut g = self.inner.write();
         let key = (bucket.to_string(), external_id.to_string());
-        let id = g.by_key.remove(&key).ok_or_else(|| IndexError::DocNotFound {
-            bucket: bucket.to_string(),
-            id: external_id.to_string(),
-        })?;
+        let id = g
+            .by_key
+            .remove(&key)
+            .ok_or_else(|| IndexError::DocNotFound {
+                bucket: bucket.to_string(),
+                id: external_id.to_string(),
+            })?;
         if let Some(doc) = g.remove_doc(id) {
             if let Some(parent) = doc.parent_doc_id {
                 if let Some(set) = g.parents.get_mut(&(bucket.to_string(), parent.clone())) {
@@ -1176,8 +1384,9 @@ impl TextIndex {
         // is blocked behind us, i.e. data loss. The former is the
         // preferable failure mode until WAL append + inner apply
         // are made atomic on the write path.
-        let wal_seq =
-            nebula_wal::current_seq(wal.dir()).map_err(durability::wal_err)?.unwrap_or(0);
+        let wal_seq = nebula_wal::current_seq(wal.dir())
+            .map_err(durability::wal_err)?
+            .unwrap_or(0);
 
         let g = self.inner.read();
         let path = durability::write_snapshot_streaming(
@@ -1358,11 +1567,13 @@ impl TextIndex {
         }
         let mut per_bucket: AHashMap<&str, Acc<'_>> = AHashMap::new();
         for doc in g.docs.values() {
-            let entry = per_bucket.entry(doc.bucket.as_str()).or_insert_with(|| Acc {
-                docs: 0,
-                parents: AHashSet::new(),
-                keys: AHashMap::new(),
-            });
+            let entry = per_bucket
+                .entry(doc.bucket.as_str())
+                .or_insert_with(|| Acc {
+                    docs: 0,
+                    parents: AHashSet::new(),
+                    keys: AHashMap::new(),
+                });
             entry.docs += 1;
             if let Some(parent) = &doc.parent_doc_id {
                 entry.parents.insert(parent.as_str());
@@ -1413,7 +1624,11 @@ impl TextIndex {
         // Over-fetch when filtering because ANN results are post-filtered.
         // 4x is a rule-of-thumb; a real system would adapt based on the
         // bucket's share of the corpus.
-        let fetch = if bucket.is_some() { k.saturating_mul(4).max(32) } else { k };
+        let fetch = if bucket.is_some() {
+            k.saturating_mul(4).max(32)
+        } else {
+            k
+        };
 
         // Lock order discipline: `inner` before `hnsw`, everywhere.
         // Writers take `inner.write()` then drive `hnsw` under it;
@@ -1469,7 +1684,11 @@ impl TextIndex {
         let g = self.inner.read();
         // Over-fetch when bucket-filtering, same rationale as the
         // vector path: BM25 ranks the whole corpus and we post-filter.
-        let fetch = if bucket.is_some() { k.saturating_mul(4).max(32) } else { k };
+        let fetch = if bucket.is_some() {
+            k.saturating_mul(4).max(32)
+        } else {
+            k
+        };
         let raw = g.bm25.search(query, fetch);
         let mut hits = Vec::with_capacity(raw.len().min(k));
         for r in raw {
@@ -1540,8 +1759,10 @@ impl TextIndex {
                 (h.id.clone(), sim, h)
             })
             .collect();
-        let bm_scored: Vec<(String, f32, Hit)> =
-            bm_hits.into_iter().map(|h| (h.id.clone(), h.score, h)).collect();
+        let bm_scored: Vec<(String, f32, Hit)> = bm_hits
+            .into_iter()
+            .map(|h| (h.id.clone(), h.score, h))
+            .collect();
 
         let vec_norm = min_max_normalize(vec_scored.iter().map(|(_, s, _)| *s));
         let bm_norm = min_max_normalize(bm_scored.iter().map(|(_, s, _)| *s));
@@ -1631,11 +1852,9 @@ impl TextIndex {
         k: usize,
         ef: Option<usize>,
     ) -> Result<Vec<Hit>> {
-        tokio::task::spawn_blocking(move || {
-            self.search_vector(&vector, bucket.as_deref(), k, ef)
-        })
-        .await
-        .map_err(|e| IndexError::Invalid(format!("blocking search task failed: {e}")))?
+        tokio::task::spawn_blocking(move || self.search_vector(&vector, bucket.as_deref(), k, ef))
+            .await
+            .map_err(|e| IndexError::Invalid(format!("blocking search task failed: {e}")))?
     }
 
     /// Async wrapper around [`search_text`] with the same blocking-pool
@@ -1677,8 +1896,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replace_drops_old_vector() {
         let idx = make_index();
-        idx.upsert_text("docs", "a", "v1", serde_json::json!({})).await.unwrap();
-        idx.upsert_text("docs", "a", "v2", serde_json::json!({})).await.unwrap();
+        idx.upsert_text("docs", "a", "v1", serde_json::json!({}))
+            .await
+            .unwrap();
+        idx.upsert_text("docs", "a", "v2", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(idx.len(), 1);
         assert_eq!(idx.get("docs", "a").unwrap().text, "v2");
     }
@@ -1686,17 +1909,28 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bucket_filter_excludes_other_buckets() {
         let idx = make_index();
-        idx.upsert_text("a", "1", "zero trust", serde_json::json!({})).await.unwrap();
-        idx.upsert_text("b", "1", "zero trust", serde_json::json!({})).await.unwrap();
-        let hits = idx.search_text("zero trust", Some("a"), 5, None).await.unwrap();
+        idx.upsert_text("a", "1", "zero trust", serde_json::json!({}))
+            .await
+            .unwrap();
+        idx.upsert_text("b", "1", "zero trust", serde_json::json!({}))
+            .await
+            .unwrap();
+        let hits = idx
+            .search_text("zero trust", Some("a"), 5, None)
+            .await
+            .unwrap();
         assert!(hits.iter().all(|h| h.bucket == "a"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn delete_removes_from_results() {
         let idx = make_index();
-        idx.upsert_text("docs", "a", "foo", serde_json::json!({})).await.unwrap();
-        idx.upsert_text("docs", "b", "bar", serde_json::json!({})).await.unwrap();
+        idx.upsert_text("docs", "a", "foo", serde_json::json!({}))
+            .await
+            .unwrap();
+        idx.upsert_text("docs", "b", "bar", serde_json::json!({}))
+            .await
+            .unwrap();
         idx.delete("docs", "a").unwrap();
         let hits = idx.search_text("foo", None, 10, None).await.unwrap();
         assert!(hits.iter().all(|h| h.id != "a"));
@@ -1705,8 +1939,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn empty_bucket_or_id_rejected() {
         let idx = make_index();
-        assert!(idx.upsert_text("", "a", "x", serde_json::json!({})).await.is_err());
-        assert!(idx.upsert_text("b", "", "x", serde_json::json!({})).await.is_err());
+        assert!(idx
+            .upsert_text("", "a", "x", serde_json::json!({}))
+            .await
+            .is_err());
+        assert!(idx
+            .upsert_text("b", "", "x", serde_json::json!({}))
+            .await
+            .is_err());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1715,7 +1955,13 @@ mod tests {
         let chunker = nebula_chunk::FixedSizeChunker::new(10, 0).unwrap();
         let text = "abcdefghij".repeat(5); // 50 chars → 5 chunks at size 10
         let n = idx
-            .upsert_document("docs", "d1", &text, &chunker, serde_json::json!({"src": "unit"}))
+            .upsert_document(
+                "docs",
+                "d1",
+                &text,
+                &chunker,
+                serde_json::json!({"src": "unit"}),
+            )
             .await
             .unwrap();
         assert_eq!(n, 5);
@@ -1750,9 +1996,15 @@ mod tests {
         let idx = make_index();
         assert_eq!(idx.count_chunks("docs", "missing"), 0);
         let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
-        idx.upsert_document("docs", "d1", "aaaaabbbbbccccc", &chunker, serde_json::json!({}))
-            .await
-            .unwrap();
+        idx.upsert_document(
+            "docs",
+            "d1",
+            "aaaaabbbbbccccc",
+            &chunker,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
         assert_eq!(idx.count_chunks("docs", "d1"), 3);
         assert_eq!(idx.count_chunks("other-bucket", "d1"), 0);
     }
@@ -1761,9 +2013,15 @@ mod tests {
     async fn delete_document_removes_all_chunks() {
         let idx = make_index();
         let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
-        idx.upsert_document("docs", "d1", "aaaaabbbbbccccc", &chunker, serde_json::json!({}))
-            .await
-            .unwrap();
+        idx.upsert_document(
+            "docs",
+            "d1",
+            "aaaaabbbbbccccc",
+            &chunker,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
         idx.upsert_document("docs", "d2", "zzzzz", &chunker, serde_json::json!({}))
             .await
             .unwrap();
@@ -1784,9 +2042,14 @@ mod tests {
         let idx = make_index();
         // Two buckets with different metadata shapes; parent_doc_id on
         // some docs so `parent_docs` differs from `docs`.
-        idx.upsert_text("a", "1", "x", serde_json::json!({"region": "eu", "lang": "en"}))
-            .await
-            .unwrap();
+        idx.upsert_text(
+            "a",
+            "1",
+            "x",
+            serde_json::json!({"region": "eu", "lang": "en"}),
+        )
+        .await
+        .unwrap();
         idx.upsert_text("a", "2", "x", serde_json::json!({"region": "us"}))
             .await
             .unwrap();
@@ -1794,9 +2057,15 @@ mod tests {
             .await
             .unwrap();
         let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
-        idx.upsert_document("a", "doc1", "aaaaabbbbbccccc", &chunker, serde_json::json!({}))
-            .await
-            .unwrap();
+        idx.upsert_document(
+            "a",
+            "doc1",
+            "aaaaabbbbbccccc",
+            &chunker,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
 
         let stats = idx.bucket_stats(10);
         assert_eq!(stats.len(), 2, "two buckets");
@@ -1822,7 +2091,13 @@ mod tests {
     async fn upsert_text_bulk_inserts_and_replaces() {
         let idx = make_index();
         let batch: Vec<(String, String, serde_json::Value)> = (0..50)
-            .map(|i| (format!("d{i}"), format!("text {i}"), serde_json::json!({"i": i})))
+            .map(|i| {
+                (
+                    format!("d{i}"),
+                    format!("text {i}"),
+                    serde_json::json!({"i": i}),
+                )
+            })
             .collect();
         let n = idx.upsert_text_bulk("docs", &batch).await.unwrap();
         assert_eq!(n, 50);
@@ -1830,7 +2105,13 @@ mod tests {
         // Replace-semantics on the second pass: same ids, different
         // text. Doc count stays 50, but the text is the updated one.
         let batch2: Vec<(String, String, serde_json::Value)> = (0..50)
-            .map(|i| (format!("d{i}"), format!("updated {i}"), serde_json::json!({})))
+            .map(|i| {
+                (
+                    format!("d{i}"),
+                    format!("updated {i}"),
+                    serde_json::json!({}),
+                )
+            })
             .collect();
         let n2 = idx.upsert_text_bulk("docs", &batch2).await.unwrap();
         assert_eq!(n2, 50);
@@ -1856,9 +2137,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn empty_bucket_drops_only_that_bucket() {
         let idx = make_index();
-        idx.upsert_text("a", "1", "x", serde_json::json!({})).await.unwrap();
-        idx.upsert_text("a", "2", "x", serde_json::json!({})).await.unwrap();
-        idx.upsert_text("b", "1", "x", serde_json::json!({})).await.unwrap();
+        idx.upsert_text("a", "1", "x", serde_json::json!({}))
+            .await
+            .unwrap();
+        idx.upsert_text("a", "2", "x", serde_json::json!({}))
+            .await
+            .unwrap();
+        idx.upsert_text("b", "1", "x", serde_json::json!({}))
+            .await
+            .unwrap();
         let removed = idx.empty_bucket("a");
         assert_eq!(removed, 2);
         assert!(idx.get("a", "1").is_none());
@@ -1922,19 +2209,23 @@ mod tests {
         assert!(out.path.starts_with(&alt_snaps));
         let default_dir = data.path().join("snapshots");
         let default_has_snap = std::fs::read_dir(&default_dir)
-            .map(|rd| rd.filter_map(|e| e.ok()).any(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .ends_with(".nsnap.ok")
-            }))
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .any(|e| e.file_name().to_string_lossy().ends_with(".nsnap.ok"))
+            })
             .unwrap_or(false);
-        assert!(!default_has_snap, "no snapshot should land in the default dir");
+        assert!(
+            !default_has_snap,
+            "no snapshot should land in the default dir"
+        );
 
         drop(idx);
         // Recovery from the same override dir restores the document.
         let recovered = persistent_index(data.path(), Some(alt_snaps.clone()));
         assert_eq!(recovered.get("docs", "a").unwrap().text, "persisted");
-        let header = recovered.latest_snapshot_header().expect("header via override dir");
+        let header = recovered
+            .latest_snapshot_header()
+            .expect("header via override dir");
         assert_eq!(header.wal_seq_at_snapshot, out.wal_seq_captured);
     }
 
@@ -2039,9 +2330,14 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let snaps = data.path().join("snapshots");
         let idx = persistent_index(data.path(), Some(snaps.clone()));
-        idx.upsert_text("docs", "1", "recoverable bm25 token zeta", serde_json::json!({}))
-            .await
-            .unwrap();
+        idx.upsert_text(
+            "docs",
+            "1",
+            "recoverable bm25 token zeta",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
         idx.snapshot().unwrap();
         drop(idx);
 
@@ -2059,7 +2355,10 @@ mod tests {
         // Single value → 1.0 (maximally relevant within its stage).
         assert_eq!(min_max_normalize([5.0].into_iter()), vec![1.0]);
         // All-equal → all 1.0, not a stage-erasing flat zero.
-        assert_eq!(min_max_normalize([3.0, 3.0, 3.0].into_iter()), vec![1.0, 1.0, 1.0]);
+        assert_eq!(
+            min_max_normalize([3.0, 3.0, 3.0].into_iter()),
+            vec![1.0, 1.0, 1.0]
+        );
         // Spread → endpoints at 0 and 1.
         let n = min_max_normalize([0.0, 5.0, 10.0].into_iter());
         assert_eq!(n, vec![0.0, 0.5, 1.0]);

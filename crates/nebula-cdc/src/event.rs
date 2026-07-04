@@ -66,6 +66,11 @@ pub enum CdcOp {
     DeleteDocument,
     /// Bucket-wide tombstone. Maps to `WalRecord::EmptyBucket`.
     EmptyBucket,
+    /// Text upsert accepted without a vector (deferred embedding,
+    /// design 0010 §5). Maps to `WalRecord::UpsertTextPending`. The
+    /// body carries text + metadata; `vector` is absent. A follow-up
+    /// `Insert` for the same key arrives once embedding completes.
+    InsertPending,
 }
 
 /// Composite key. We carry both `bucket` and the entity id so a
@@ -187,6 +192,24 @@ impl CdcEvent {
                     id: String::new(),
                 },
                 None,
+            ),
+            WalRecord::UpsertTextPending {
+                bucket,
+                external_id,
+                text,
+                metadata_json,
+            } => (
+                CdcOp::InsertPending,
+                CdcKey {
+                    bucket,
+                    id: external_id,
+                },
+                Some(CdcBody {
+                    text: Some(text),
+                    vector: None,
+                    chunks: Vec::new(),
+                    metadata: parse_metadata(&metadata_json),
+                }),
             ),
         };
         Self {
