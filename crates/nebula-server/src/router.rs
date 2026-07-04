@@ -74,17 +74,33 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/bucket/:bucket/export", get(admin_export_bucket))
         .route("/admin/bucket/:bucket/import", post(admin_import_bucket))
         .route("/admin/bucket/:bucket/home-region", get(admin_home_region))
-        .route("/admin/backup", post(crate::backup_routes::admin_backup_start))
-        .route("/admin/backup/:id", get(crate::backup_routes::admin_backup_status))
-        .route("/admin/backups", get(crate::backup_routes::admin_backups_list))
+        .route(
+            "/admin/backup",
+            post(crate::backup_routes::admin_backup_start),
+        )
+        .route(
+            "/admin/backup/:id",
+            get(crate::backup_routes::admin_backup_status),
+        )
+        .route(
+            "/admin/backups",
+            get(crate::backup_routes::admin_backups_list),
+        )
         .route(
             "/admin/backup/manifest",
             post(crate::backup_routes::admin_backup_manifest),
         )
-        .route("/admin/restore", post(crate::backup_routes::admin_restore_start))
-        .route("/admin/restore/:id", get(crate::backup_routes::admin_restore_status))
+        .route(
+            "/admin/restore",
+            post(crate::backup_routes::admin_restore_start),
+        )
+        .route(
+            "/admin/restore/:id",
+            get(crate::backup_routes::admin_restore_status),
+        )
         .route("/admin/cluster/nodes", get(admin_cluster_nodes))
         .route("/admin/replication", get(admin_replication))
+        .route("/admin/reliability", get(admin_reliability))
         .route("/admin/promote", post(admin_promote));
     let api_normal = if let Some(t) = request_timeout {
         api_normal.layer(TimeoutLayer::with_status_code(
@@ -113,6 +129,14 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             crate::middleware::guard_writes_on_follower,
         ))
+        // Disk-critical write gate (design 0010 §3). Runs alongside
+        // the follower guard — before auth for the same reason (the
+        // answer is "not now" regardless of who's asking), after
+        // audit so refused writes are still recorded.
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::guard_writes_under_disk_pressure,
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::guard_wrong_home_region,
@@ -133,10 +157,7 @@ pub fn build_router(state: AppState) -> Router {
         // healthcheck uses this so a slow recovery doesn't trip the
         // unhealthy → kill loop. /healthz remains the rich readiness
         // probe (returns 503 during recovery via the boot stub).
-        .route(
-            "/healthz/live",
-            get(|| async { (StatusCode::OK, "alive") }),
-        )
+        .route("/healthz/live", get(|| async { (StatusCode::OK, "alive") }))
         // Catch-up readiness (design 0009 §6): 200 when this node is
         // caught up to its leader (or is a leader/standalone), 503 while
         // it trails. The rolling orchestrator polls this between steps.
@@ -163,6 +184,12 @@ struct Health {
     /// Git sha at build time when exposed via the `NEBULADB_GIT_SHA`
     /// environment variable during `cargo build`. `"unknown"` otherwise.
     git_commit: &'static str,
+    /// Operating mode from the resource manager (design 0010 §3):
+    /// "normal", "cpu_pressure", "memory_pressure", "disk_pressure",
+    /// or "disk_critical". The status stays "ok" while degraded —
+    /// readiness and degradation are different signals; a node under
+    /// memory pressure still serves.
+    mode: &'static str,
 }
 
 async fn healthz(State(s): State<AppState>) -> Json<Health> {
@@ -173,10 +200,23 @@ async fn healthz(State(s): State<AppState>) -> Json<Health> {
         model: s.index.embedder_model().to_string(),
         version: crate::build_info::VERSION,
         git_commit: crate::build_info::GIT_COMMIT,
+        mode: s.resource.mode().as_str(),
     })
 }
 
-async fn metrics_handler(State(s): State<AppState>) -> (StatusCode, [(&'static str, &'static str); 1], String) {
+/// `GET /api/v1/admin/reliability` — the operator's one-stop answer to
+/// "what mode is this node in, why, and since when" (design 0010 §9):
+/// current mode, per-resource pressure levels, the raw readings behind
+/// them, and the recent transition history with causes.
+async fn admin_reliability(
+    State(s): State<AppState>,
+) -> Json<nebula_resource::ReliabilitySnapshot> {
+    Json(s.resource.snapshot())
+}
+
+async fn metrics_handler(
+    State(s): State<AppState>,
+) -> (StatusCode, [(&'static str, &'static str); 1], String) {
     let mut body = s.metrics.render();
     // Append embedding-cache counters when a cache is registered. We
     // render from here (not inside `Metrics::render`) because the
@@ -185,22 +225,35 @@ async fn metrics_handler(State(s): State<AppState>) -> (StatusCode, [(&'static s
     if let Some(stats) = &s.cache_stats {
         let (hits, misses, evictions, inserts) = stats.snapshot();
         use std::fmt::Write as _;
-        let _ = writeln!(body, "# HELP nebula_embed_cache_hits Cache hits on embedding lookup");
+        let _ = writeln!(
+            body,
+            "# HELP nebula_embed_cache_hits Cache hits on embedding lookup"
+        );
         let _ = writeln!(body, "# TYPE nebula_embed_cache_hits counter");
         let _ = writeln!(body, "nebula_embed_cache_hits {hits}");
-        let _ = writeln!(body, "# HELP nebula_embed_cache_misses Cache misses on embedding lookup");
+        let _ = writeln!(
+            body,
+            "# HELP nebula_embed_cache_misses Cache misses on embedding lookup"
+        );
         let _ = writeln!(body, "# TYPE nebula_embed_cache_misses counter");
         let _ = writeln!(body, "nebula_embed_cache_misses {misses}");
-        let _ = writeln!(body, "# HELP nebula_embed_cache_evictions Entries evicted from the LRU");
+        let _ = writeln!(
+            body,
+            "# HELP nebula_embed_cache_evictions Entries evicted from the LRU"
+        );
         let _ = writeln!(body, "# TYPE nebula_embed_cache_evictions counter");
         let _ = writeln!(body, "nebula_embed_cache_evictions {evictions}");
-        let _ = writeln!(body, "# HELP nebula_embed_cache_inserts New entries written into the cache");
+        let _ = writeln!(
+            body,
+            "# HELP nebula_embed_cache_inserts New entries written into the cache"
+        );
         let _ = writeln!(body, "# TYPE nebula_embed_cache_inserts counter");
         let _ = writeln!(body, "nebula_embed_cache_inserts {inserts}");
     }
 
     render_durability_metrics(&mut body, &s);
     render_memory_metrics(&mut body);
+    render_reliability_metrics(&mut body, &s);
 
     // Replication catch-up gauges (design 0009 §6). On a follower this
     // probes the leader (≤500ms, gated to followers only); leaders /
@@ -262,7 +315,10 @@ fn render_durability_metrics(body: &mut String, s: &AppState) {
 
     let (wal_bytes, bytes_since, snapshot_taken_at_ms) = s.durability_cache.load();
 
-    let _ = writeln!(body, "# HELP nebula_wal_bytes Total bytes in the WAL on disk (0 when in-memory only)");
+    let _ = writeln!(
+        body,
+        "# HELP nebula_wal_bytes Total bytes in the WAL on disk (0 when in-memory only)"
+    );
     let _ = writeln!(body, "# TYPE nebula_wal_bytes gauge");
     let _ = writeln!(body, "nebula_wal_bytes {wal_bytes}");
 
@@ -287,7 +343,10 @@ fn render_durability_metrics(body: &mut String, s: &AppState) {
             .unwrap_or(0);
         let taken_secs = snapshot_taken_at_ms / 1000;
         let age = now_secs.saturating_sub(taken_secs);
-        let _ = writeln!(body, "# HELP nebula_snapshot_age_seconds Wall time since the most recent committed snapshot");
+        let _ = writeln!(
+            body,
+            "# HELP nebula_snapshot_age_seconds Wall time since the most recent committed snapshot"
+        );
         let _ = writeln!(body, "# TYPE nebula_snapshot_age_seconds gauge");
         let _ = writeln!(body, "nebula_snapshot_age_seconds {age}");
     }
@@ -296,6 +355,67 @@ fn render_durability_metrics(body: &mut String, s: &AppState) {
     let _ = writeln!(body, "# HELP nebula_snapshot_scheduler_enabled 1 if the snapshot scheduler has any trigger enabled, 0 if disabled (Bug C)");
     let _ = writeln!(body, "# TYPE nebula_snapshot_scheduler_enabled gauge");
     let _ = writeln!(body, "nebula_snapshot_scheduler_enabled {enabled}");
+}
+
+/// Operating-mode and resource-pressure gauges (design 0010 §9).
+/// Everything here reads the resource manager's atomics / one short
+/// mutex — no OS probing on the scrape path; the 5s background sampler
+/// does that. Value mapping for `nebula_operating_mode` matches the
+/// enum discriminants: 0=normal 1=cpu 2=memory 3=disk 4=disk_critical.
+fn render_reliability_metrics(body: &mut String, s: &AppState) {
+    use std::fmt::Write as _;
+    let snap = s.resource.snapshot();
+
+    let _ = writeln!(body, "# HELP nebula_operating_mode Node operating mode: 0=normal 1=cpu_pressure 2=memory_pressure 3=disk_pressure 4=disk_critical");
+    let _ = writeln!(body, "# TYPE nebula_operating_mode gauge");
+    let _ = writeln!(body, "nebula_operating_mode {}", snap.mode as u8);
+
+    let _ = writeln!(body, "# HELP nebula_resource_pressure Per-resource pressure level: 0=ok 1=high 2=critical (absent when the source is unreadable)");
+    let _ = writeln!(body, "# TYPE nebula_resource_pressure gauge");
+    for (name, level) in [
+        ("memory", snap.levels.memory),
+        ("disk", snap.levels.disk),
+        ("cpu", snap.levels.cpu),
+    ] {
+        if let Some(l) = level {
+            let _ = writeln!(
+                body,
+                "nebula_resource_pressure{{resource=\"{name}\"}} {}",
+                l as u8
+            );
+        }
+    }
+
+    if let (Some(free), Some(total)) = (snap.sample.disk_free, snap.sample.disk_total) {
+        let _ = writeln!(
+            body,
+            "# HELP nebula_disk_free_bytes Free bytes on the data volume (unprivileged-available)"
+        );
+        let _ = writeln!(body, "# TYPE nebula_disk_free_bytes gauge");
+        let _ = writeln!(body, "nebula_disk_free_bytes {free}");
+        let _ = writeln!(
+            body,
+            "# HELP nebula_disk_total_bytes Total bytes on the data volume"
+        );
+        let _ = writeln!(body, "# TYPE nebula_disk_total_bytes gauge");
+        let _ = writeln!(body, "nebula_disk_total_bytes {total}");
+    }
+    if let Some(cpu) = snap.sample.cpu_ratio {
+        let _ = writeln!(body, "# HELP nebula_cpu_utilization_ratio Process CPU over the last sampling window as a fraction of all cores");
+        let _ = writeln!(body, "# TYPE nebula_cpu_utilization_ratio gauge");
+        let _ = writeln!(body, "nebula_cpu_utilization_ratio {cpu:.4}");
+    }
+
+    let _ = writeln!(
+        body,
+        "# HELP nebula_mode_transitions_total Committed operating-mode transitions since boot"
+    );
+    let _ = writeln!(body, "# TYPE nebula_mode_transitions_total counter");
+    let _ = writeln!(
+        body,
+        "nebula_mode_transitions_total {}",
+        snap.transitions_total
+    );
 }
 
 /// cgroup memory accounting, exposed so an alert can fire BEFORE the
@@ -307,9 +427,8 @@ fn render_durability_metrics(body: &mut String, s: &AppState) {
 /// (e.g. running outside a container in tests).
 fn render_memory_metrics(body: &mut String) {
     use std::fmt::Write as _;
-    let read_u64 = |p: &str| -> Option<u64> {
-        std::fs::read_to_string(p).ok()?.trim().parse::<u64>().ok()
-    };
+    let read_u64 =
+        |p: &str| -> Option<u64> { std::fs::read_to_string(p).ok()?.trim().parse::<u64>().ok() };
     // current usage
     let current = read_u64("/sys/fs/cgroup/memory.current")
         .or_else(|| read_u64("/sys/fs/cgroup/memory/memory.usage_in_bytes"));
@@ -317,12 +436,18 @@ fn render_memory_metrics(body: &mut String) {
     let limit = read_u64("/sys/fs/cgroup/memory.max")
         .or_else(|| read_u64("/sys/fs/cgroup/memory/memory.limit_in_bytes"));
     if let Some(c) = current {
-        let _ = writeln!(body, "# HELP nebula_memory_resident_bytes Process cgroup memory usage in bytes");
+        let _ = writeln!(
+            body,
+            "# HELP nebula_memory_resident_bytes Process cgroup memory usage in bytes"
+        );
         let _ = writeln!(body, "# TYPE nebula_memory_resident_bytes gauge");
         let _ = writeln!(body, "nebula_memory_resident_bytes {c}");
     }
     if let Some(l) = limit {
-        let _ = writeln!(body, "# HELP nebula_memory_limit_bytes cgroup memory hard limit in bytes");
+        let _ = writeln!(
+            body,
+            "# HELP nebula_memory_limit_bytes cgroup memory hard limit in bytes"
+        );
         let _ = writeln!(body, "# TYPE nebula_memory_limit_bytes gauge");
         let _ = writeln!(body, "nebula_memory_limit_bytes {l}");
     }
@@ -434,19 +559,20 @@ async fn upsert_docs_bulk(
         let mut committed = 0usize;
         for (item, vector) in body.items.into_iter().zip(vectors) {
             if vector.len() != s.index.dim() {
-                return Err(ApiError::Embed(nebula_embed::EmbedError::DimensionMismatch {
-                    expected: s.index.dim(),
-                    actual: vector.len(),
-                }));
+                return Err(ApiError::Embed(
+                    nebula_embed::EmbedError::DimensionMismatch {
+                        expected: s.index.dim(),
+                        actual: vector.len(),
+                    },
+                ));
             }
-            let payload =
-                nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::UpsertText {
-                    bucket: bucket.clone(),
-                    external_id: item.id,
-                    text: item.text,
-                    vector,
-                    metadata_json: item.metadata.to_string(),
-                });
+            let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::UpsertText {
+                bucket: bucket.clone(),
+                external_id: item.id,
+                text: item.text,
+                vector,
+                metadata_json: item.metadata.to_string(),
+            });
             raft.submit_mutation(payload).await?;
             committed += 1;
         }
@@ -477,7 +603,9 @@ async fn upsert_doc(
         return Err(ApiError::BadRequest("text must be non-empty".into()));
     }
     if bucket.is_empty() || body.id.is_empty() {
-        return Err(ApiError::BadRequest("bucket and id must be non-empty".into()));
+        return Err(ApiError::BadRequest(
+            "bucket and id must be non-empty".into(),
+        ));
     }
 
     if let Some(raft) = &s.raft {
@@ -494,10 +622,12 @@ async fn upsert_doc(
             .await
             .map_err(ApiError::Embed)?;
         if vector.len() != s.index.dim() {
-            return Err(ApiError::Embed(nebula_embed::EmbedError::DimensionMismatch {
-                expected: s.index.dim(),
-                actual: vector.len(),
-            }));
+            return Err(ApiError::Embed(
+                nebula_embed::EmbedError::DimensionMismatch {
+                    expected: s.index.dim(),
+                    actual: vector.len(),
+                },
+            ));
         }
         let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::UpsertText {
             bucket: bucket.clone(),
@@ -656,10 +786,12 @@ async fn upsert_document(
         }
         for v in &vectors {
             if v.len() != s.index.dim() {
-                return Err(ApiError::Embed(nebula_embed::EmbedError::DimensionMismatch {
-                    expected: s.index.dim(),
-                    actual: v.len(),
-                }));
+                return Err(ApiError::Embed(
+                    nebula_embed::EmbedError::DimensionMismatch {
+                        expected: s.index.dim(),
+                        actual: v.len(),
+                    },
+                ));
             }
         }
         let wal_chunks: Vec<nebula_wal::WalChunk> = chunks
@@ -778,7 +910,6 @@ fn default_top_k() -> usize {
     10
 }
 
-
 #[derive(Serialize)]
 struct SearchResponse {
     hits: Vec<nebula_index::Hit>,
@@ -844,9 +975,7 @@ fn validate_top_k(top_k: usize, max: usize) -> Result<usize, ApiError> {
         return Err(ApiError::BadRequest("top_k must be > 0".into()));
     }
     if top_k > max {
-        return Err(ApiError::BadRequest(format!(
-            "top_k exceeds max ({max})"
-        )));
+        return Err(ApiError::BadRequest(format!("top_k exceeds max ({max})")));
     }
     Ok(top_k)
 }
@@ -969,7 +1098,9 @@ fn rag_sse_response(
         .map(|h| Ok::<_, Infallible>(Event::default().event("context").json_data(h).unwrap()));
 
     let answer_events = llm_stream.map(|item| match item {
-        Ok(LlmChunk::Delta(t)) => Ok::<_, Infallible>(Event::default().event("answer_delta").data(t)),
+        Ok(LlmChunk::Delta(t)) => {
+            Ok::<_, Infallible>(Event::default().event("answer_delta").data(t))
+        }
         Ok(LlmChunk::Done) => Ok(Event::default()
             .event("done")
             .json_data(serde_json::json!({ "reason": "llm_done" }))
@@ -984,12 +1115,11 @@ fn rag_sse_response(
             .unwrap(),
     );
 
-    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
-        Box::pin(
-            stream::iter(context_events)
-                .chain(answer_events)
-                .chain(stream::iter(std::iter::once(trailer))),
-        );
+    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(
+        stream::iter(context_events)
+            .chain(answer_events)
+            .chain(stream::iter(std::iter::once(trailer))),
+    );
 
     Sse::new(stream)
         .keep_alive(
@@ -1136,9 +1266,13 @@ async fn retrieve_grounding(
     // and the no-rerank path agree. Hybrid: descending; vector: ascending.
     merged.sort_by(|a, b| {
         if hybrid {
-            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         } else {
-            a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal)
+            a.score
+                .partial_cmp(&b.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         }
         .then(a.id.cmp(&b.id))
     });
@@ -1365,9 +1499,7 @@ async fn admin_audit(
 /// Slow-query log. Fixed-capacity priority queue of the slowest
 /// SQL queries seen since boot. Returned sorted descending by
 /// `took_ms` — the first entry is the worst offender.
-async fn admin_slow(
-    State(s): State<AppState>,
-) -> Json<Vec<crate::slow_log::SlowQueryEntry>> {
+async fn admin_slow(State(s): State<AppState>) -> Json<Vec<crate::slow_log::SlowQueryEntry>> {
     Json(s.slow_log.snapshot())
 }
 
@@ -1628,26 +1760,24 @@ async fn admin_replication(State(s): State<AppState>) -> Json<ReplicationInfo> {
     // local_newest — that's the number we compare against to
     // compute lag. Only do this on followers; leaders and
     // standalones have nothing to measure against.
-    let (leader_newest_probed, lag_bytes, behind) = match (
-        s.cluster.is_follower(),
-        &follower_applied,
-    ) {
-        (true, Some(applied)) => match fetch_leader_newest().await {
-            Some(leader) => {
-                let behind_flag = leader.segment_seq > applied.segment_seq
-                    || (leader.segment_seq == applied.segment_seq
-                        && leader.byte_offset > applied.byte_offset);
-                let lag = if leader.segment_seq == applied.segment_seq {
-                    Some(leader.byte_offset.saturating_sub(applied.byte_offset))
-                } else {
-                    None
-                };
-                (Some(leader), lag, Some(behind_flag))
-            }
-            None => (None, None, None),
-        },
-        _ => (None, None, None),
-    };
+    let (leader_newest_probed, lag_bytes, behind) =
+        match (s.cluster.is_follower(), &follower_applied) {
+            (true, Some(applied)) => match fetch_leader_newest().await {
+                Some(leader) => {
+                    let behind_flag = leader.segment_seq > applied.segment_seq
+                        || (leader.segment_seq == applied.segment_seq
+                            && leader.byte_offset > applied.byte_offset);
+                    let lag = if leader.segment_seq == applied.segment_seq {
+                        Some(leader.byte_offset.saturating_sub(applied.byte_offset))
+                    } else {
+                        None
+                    };
+                    (Some(leader), lag, Some(behind_flag))
+                }
+                None => (None, None, None),
+            },
+            _ => (None, None, None),
+        };
 
     let remotes = s.cross_region_status.snapshot();
     let region = s.cluster.region.clone();
@@ -1801,37 +1931,32 @@ async fn admin_logs_stream(
     // Live tail: convert the broadcast receiver into a stream so
     // we can chain it after the historical snapshot.
     let rx = s.log_bus.subscribe();
-    let live = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-        move |item| {
-            let keep = keep.clone();
-            async move {
-                match item {
-                    Ok(e) if keep(&e) => Some(Ok::<_, Infallible>(
-                        Event::default()
-                            .event("log")
-                            .json_data(&e)
-                            .unwrap_or_else(|_| Event::default().event("log").data("{}")),
-                    )),
-                    // Filtered out — don't emit anything.
-                    Ok(_) => None,
-                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
-                        Some(Ok::<_, Infallible>(
-                            Event::default()
-                                .event("lagged")
-                                .data(format!("missed {n} events; reconnect for a fresh snapshot")),
-                        ))
-                    }
+    let live = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |item| {
+        let keep = keep.clone();
+        async move {
+            match item {
+                Ok(e) if keep(&e) => Some(Ok::<_, Infallible>(
+                    Event::default()
+                        .event("log")
+                        .json_data(&e)
+                        .unwrap_or_else(|_| Event::default().event("log").data("{}")),
+                )),
+                // Filtered out — don't emit anything.
+                Ok(_) => None,
+                Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                    Some(Ok::<_, Infallible>(Event::default().event("lagged").data(
+                        format!("missed {n} events; reconnect for a fresh snapshot"),
+                    )))
                 }
             }
-        },
-    );
+        }
+    });
 
-    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
-        Box::pin(
-            stream::iter(snapshot_events)
-                .chain(stream::iter(std::iter::once(snapshot_done)))
-                .chain(live),
-        );
+    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(
+        stream::iter(snapshot_events)
+            .chain(stream::iter(std::iter::once(snapshot_done)))
+            .chain(live),
+    );
 
     Sse::new(stream)
         .keep_alive(
@@ -1901,8 +2026,7 @@ async fn compute_caught_up(s: &AppState) -> CaughtUpStatus {
             };
             // Caught up when not behind, OR within-threshold in the
             // same segment (a record or two may be mid-flight).
-            let caught_up = !behind
-                || lag.map(|l| l <= catchup_threshold_bytes()).unwrap_or(false);
+            let caught_up = !behind || lag.map(|l| l <= catchup_threshold_bytes()).unwrap_or(false);
             CaughtUpStatus {
                 caught_up,
                 lag_bytes: lag,
@@ -1930,9 +2054,7 @@ struct CaughtUpResponse {
 /// (safe to treat as serving / safe to proceed to the next node) and
 /// 503 when it is still trailing its leader. A leader/standalone is
 /// trivially 200.
-async fn healthz_caught_up(
-    State(s): State<AppState>,
-) -> (StatusCode, Json<CaughtUpResponse>) {
+async fn healthz_caught_up(State(s): State<AppState>) -> (StatusCode, Json<CaughtUpResponse>) {
     let status = compute_caught_up(&s).await;
     let code = if status.caught_up {
         StatusCode::OK
@@ -1960,7 +2082,10 @@ async fn fetch_leader_newest() -> Option<CursorView> {
         .timeout(std::time::Duration::from_millis(500))
         .build()
         .ok()?;
-    let url = format!("{}/api/v1/admin/replication", rest_base.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/v1/admin/replication",
+        rest_base.trim_end_matches('/')
+    );
     let v: serde_json::Value = client.get(&url).send().await.ok()?.json().await.ok()?;
     let newest = v.get("local_newest")?;
     Some(CursorView {

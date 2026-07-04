@@ -80,3 +80,57 @@ groups:
           description: >-
             Resident memory is within 7% of the cgroup cap — an OOM kill on
             the next snapshot is likely. Raise the cap now.
+
+  # Operating-mode / resource-pressure alerts (design 0010). The server
+  # derives a single operating mode from memory/disk/CPU pressure with
+  # hysteresis and debounce; these alert on the modes that matter and on
+  # mode flapping (which means the watermarks need tuning).
+  # Mode values: 0=normal 1=cpu 2=memory 3=disk 4=disk_critical.
+  - name: nebula-operating-mode
+    rules:
+      - alert: NebulaDiskCriticalWritesGated
+        expr: nebula_operating_mode == 4
+        labels:
+          severity: critical
+        annotations:
+          summary: "nebula-server is REFUSING WRITES: data volume critically low on {{ $labels.instance }}"
+          description: >-
+            Free space on the data volume is below the critical watermark
+            (3% or under 2x a WAL segment). Mutations return 503 until
+            space is reclaimed: force a snapshot + WAL compact
+            (POST /api/v1/admin/snapshot, /api/v1/admin/wal/compact),
+            prune old snapshots, or grow the volume.
+            See GET /api/v1/admin/reliability for details.
+
+      - alert: NebulaNodeDegraded
+        expr: nebula_operating_mode > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "nebula-server degraded (mode {{ $value }}) for 15m+ on {{ $labels.instance }}"
+          description: >-
+            The node has been under sustained resource pressure. Check
+            GET /api/v1/admin/reliability for which resource and the
+            transition history.
+
+      - alert: NebulaModeFlapping
+        expr: increase(nebula_mode_transitions_total[30m]) > 6
+        labels:
+          severity: warning
+        annotations:
+          summary: "nebula-server operating mode is flapping on {{ $labels.instance }}"
+          description: >-
+            More than 6 mode transitions in 30 minutes despite hysteresis +
+            debounce — a resource is oscillating around a watermark. Widen
+            the hysteresis band or fix the underlying pressure source.
+
+      - alert: NebulaWritesRejected
+        expr: increase(nebula_writes_rejected_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Clients are receiving 503 write_unavailable on {{ $labels.instance }}"
+          description: >-
+            The disk-critical write gate rejected client mutations in the
+            last 5 minutes. Reclaim disk space immediately.
