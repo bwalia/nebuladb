@@ -99,8 +99,35 @@ impl CachingEmbedder {
         Arc::clone(&self.stats)
     }
 
+    /// Configured (full-size) capacity. [`Self::set_capacity`] resizes
+    /// the live LRU without touching this, so a later restore knows
+    /// what "full size" means.
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Resize the live LRU (design 0010 §6): shrinking under memory
+    /// pressure evicts LRU-order down to the new cap immediately —
+    /// freeing vector memory — and growing back on recovery restores
+    /// hit-rate headroom. The configured [`Self::capacity`] is
+    /// unchanged; this adjusts the working size. Evictions from a
+    /// shrink count in the stats like any other eviction.
+    pub fn set_capacity(&self, new_capacity: usize) {
+        let cap = NonZeroUsize::new(new_capacity.max(1)).expect("capacity >= 1");
+        let mut cache = self.cache.lock();
+        let before = cache.len();
+        cache.resize(cap);
+        let evicted = before.saturating_sub(cache.len());
+        if evicted > 0 {
+            self.stats
+                .evictions
+                .fetch_add(evicted as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// Current working capacity of the live LRU.
+    pub fn current_capacity(&self) -> usize {
+        self.cache.lock().cap().get()
     }
 
     /// Current entry count. Takes the lock; intended for tests /
@@ -132,10 +159,7 @@ impl Embedder for CachingEmbedder {
         self.inner.model()
     }
 
-    async fn embed(
-        &self,
-        inputs: &[String],
-    ) -> Result<Vec<Vec<f32>>, EmbedError> {
+    async fn embed(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
         if inputs.is_empty() {
             return Err(EmbedError::EmptyBatch);
         }
@@ -246,16 +270,12 @@ mod tests {
         fn model(&self) -> &str {
             &self.model
         }
-        async fn embed(
-            &self,
-            inputs: &[String],
-        ) -> Result<Vec<Vec<f32>>, EmbedError> {
+        async fn embed(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
             if inputs.is_empty() {
                 return Err(EmbedError::EmptyBatch);
             }
             self.calls.fetch_add(1, Ordering::Relaxed);
-            self.inputs_seen
-                .fetch_add(inputs.len(), Ordering::Relaxed);
+            self.inputs_seen.fetch_add(inputs.len(), Ordering::Relaxed);
             // Deterministic fake vector per input.
             Ok(inputs
                 .iter()
@@ -280,7 +300,11 @@ mod tests {
 
         // Second call: both should hit.
         let _ = cache.embed(&batch).await.unwrap();
-        assert_eq!(upstream.calls.load(Ordering::Relaxed), 1, "upstream hit again");
+        assert_eq!(
+            upstream.calls.load(Ordering::Relaxed),
+            1,
+            "upstream hit again"
+        );
 
         let (hits, misses, _, _) = cache.stats().snapshot();
         assert_eq!(hits, 2);
@@ -296,7 +320,10 @@ mod tests {
         assert_eq!(upstream.inputs_seen.load(Ordering::Relaxed), 1);
 
         // "a" should hit, "b" and "c" miss → upstream sees 2 inputs.
-        let _ = cache.embed(&["a".into(), "b".into(), "c".into()]).await.unwrap();
+        let _ = cache
+            .embed(&["a".into(), "b".into(), "c".into()])
+            .await
+            .unwrap();
         assert_eq!(upstream.inputs_seen.load(Ordering::Relaxed), 3);
         assert_eq!(upstream.calls.load(Ordering::Relaxed), 2);
     }

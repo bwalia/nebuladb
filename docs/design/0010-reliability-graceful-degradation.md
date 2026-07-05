@@ -202,8 +202,8 @@ debounce, severity ordering are pure functions and cheap to cover.
 | Phase | Contents | Status |
 |---|---|---|
 | 1 | `nebula-resource` crate, mode state machine, disk-critical write gate, metrics + `/admin/reliability` | done (PR #90) |
-| 2 | AI decoupling: embed retries, circuit breaker, deferred embedding (WAL-durable), embedder-identity guard | **this PR** |
-| 3 | Workload classes, class-aware admission, actuator registry (adaptive caches/concurrency) | |
+| 2 | AI decoupling: embed retries, circuit breaker, deferred embedding (WAL-durable), embedder-identity guard | done (PR #91) |
+| 3 | Workload classes, class-aware admission, actuator registry (adaptive caches/concurrency/snapshots) | **this PR** |
 | 4 | Adaptive replication, disk-pressure compaction/throttling, restore checkpoints | |
 | 5 | Operator: lag-restart, autoscaling, mode-aware cluster phase | |
 

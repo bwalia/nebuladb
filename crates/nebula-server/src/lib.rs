@@ -13,6 +13,7 @@
 //! Middleware: request tracing, bearer-token auth, per-route metrics.
 //! All handlers return structured JSON errors with stable `code` strings.
 
+pub mod actuators;
 pub mod audit;
 pub mod backup_routes;
 pub mod build_info;
@@ -30,6 +31,7 @@ pub mod router;
 pub mod slow_log;
 pub mod snapshot_scheduler;
 pub mod state;
+pub mod workload;
 
 pub use audit::AuditLog;
 pub use cluster::{ClusterConfig, CrossRegionPeer, NodeRole, PeerInfo};
