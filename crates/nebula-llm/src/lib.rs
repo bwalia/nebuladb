@@ -15,6 +15,7 @@
 //! with [`LlmChunk::Done`]. Callers forward deltas onto their own SSE
 //! stream, so a single `/ai/rag` handler works unchanged for any backend.
 
+mod claude;
 mod mock;
 mod ollama;
 mod openai_chat;
@@ -22,9 +23,10 @@ mod openai_chat;
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 
+pub use claude::{ClaudeConfig, ClaudeLlm};
 pub use mock::MockLlm;
-pub use ollama::{OllamaLlm, OllamaConfig};
-pub use openai_chat::{OpenAiChatLlm, OpenAiChatConfig};
+pub use ollama::{OllamaConfig, OllamaLlm};
+pub use openai_chat::{OpenAiChatConfig, OpenAiChatLlm};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -73,10 +75,7 @@ pub trait LlmClient: Send + Sync {
     /// Produce a streaming response. Returning a boxed stream keeps
     /// the trait object-safe; the cost is one allocation per call,
     /// which is fine next to a network round-trip.
-    async fn generate(
-        &self,
-        prompt: Prompt,
-    ) -> Result<BoxStream<'static, Result<LlmChunk>>>;
+    async fn generate(&self, prompt: Prompt) -> Result<BoxStream<'static, Result<LlmChunk>>>;
 }
 
 /// Build a default RAG prompt. Public so callers can override formatting

@@ -623,7 +623,30 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     let connect_timeout = Duration::from_secs(llm_connect_secs);
     let read_timeout = llm_read_secs.map(Duration::from_secs);
 
-    let llm: Arc<dyn LlmClient> = if let Ok(key) = std::env::var("NEBULA_LLM_OPENAI_KEY") {
+    let llm: Arc<dyn LlmClient> = if let Ok(key) = std::env::var("NEBULA_LLM_ANTHROPIC_KEY") {
+        // Anthropic Claude (design 0010-adjacent: native client, not
+        // the OpenAI shim — Anthropic's SSE framing and required
+        // headers differ). Default model is Claude Fable 5 (most
+        // capable tier); override with NEBULA_LLM_MODEL.
+        // Fable 5's safety classifiers can decline a request; the
+        // client opts into server-side fallbacks (to
+        // NEBULA_LLM_ANTHROPIC_FALLBACK, default claude-opus-4-8) so
+        // a decline is transparently re-served instead of failing the
+        // RAG call. Set the fallback env to "off" to disable.
+        let model = std::env::var("NEBULA_LLM_MODEL").unwrap_or_else(|_| "claude-fable-5".into());
+        let mut cfg = nebula_llm::ClaudeConfig::new(key, model);
+        if let Ok(base) = std::env::var("NEBULA_LLM_ANTHROPIC_BASE") {
+            cfg.base_url = base;
+        }
+        match std::env::var("NEBULA_LLM_ANTHROPIC_FALLBACK").as_deref() {
+            Ok("off") => cfg.fallback_model = None,
+            Ok(m) if !m.is_empty() => cfg.fallback_model = Some(m.to_string()),
+            _ => {}
+        }
+        cfg.timeout = connect_timeout;
+        cfg.read_timeout = read_timeout;
+        Arc::new(nebula_llm::ClaudeLlm::new(cfg)?)
+    } else if let Ok(key) = std::env::var("NEBULA_LLM_OPENAI_KEY") {
         let base = std::env::var("NEBULA_LLM_OPENAI_BASE")
             .unwrap_or_else(|_| "https://api.openai.com/v1".into());
         let model = std::env::var("NEBULA_LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
