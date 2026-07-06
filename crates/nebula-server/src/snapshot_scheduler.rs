@@ -139,10 +139,30 @@ pub fn spawn(
     cfg: SnapshotSchedulerConfig,
     mode: SnapshotMode,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move { run(index, cfg, mode).await })
+    tokio::spawn(async move { run(index, cfg, mode, None).await })
 }
 
-async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig, mode: SnapshotMode) {
+/// Like [`spawn`], but mode-aware (design 0010 §6): snapshot triggers
+/// are deferred while the node is under memory pressure — the
+/// snapshot's serialize transient is exactly what tips a
+/// near-cap arena over into an OOM kill (ADR 0007's incident). WAL
+/// compaction is unaffected, and an in-flight snapshot is never
+/// interrupted.
+pub fn spawn_with_resource(
+    index: Arc<TextIndex>,
+    cfg: SnapshotSchedulerConfig,
+    mode: SnapshotMode,
+    resource: Arc<nebula_resource::ResourceManager>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move { run(index, cfg, mode, Some(resource)).await })
+}
+
+async fn run(
+    index: Arc<TextIndex>,
+    cfg: SnapshotSchedulerConfig,
+    mode: SnapshotMode,
+    resource: Option<Arc<nebula_resource::ResourceManager>>,
+) {
     if !cfg.any_trigger_enabled() {
         tracing::info!("snapshot scheduler disabled (no triggers configured)");
         return;
@@ -174,10 +194,7 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig, mode: Snapshot
     // it crosses the threshold — pegging the inner read lock and
     // starving writers. Observed on 192.168.1.193 leader: 30+
     // snapshots in 9 minutes before the runtime wedged.
-    let mut wal_bytes_at_last_snapshot: u64 = index
-        .wal_stats()
-        .map(|s| s.total_bytes)
-        .unwrap_or(0);
+    let mut wal_bytes_at_last_snapshot: u64 = index.wal_stats().map(|s| s.total_bytes).unwrap_or(0);
     loop {
         tokio::time::sleep(cfg.poll_interval).await;
 
@@ -208,12 +225,8 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig, mode: Snapshot
             continue;
         }
 
-        let wal_bytes = index
-            .wal_stats()
-            .map(|s| s.total_bytes)
-            .unwrap_or(0);
-        let time_fired = cfg.time_trigger_enabled()
-            && last_snapshot.elapsed() >= cfg.interval;
+        let wal_bytes = index.wal_stats().map(|s| s.total_bytes).unwrap_or(0);
+        let time_fired = cfg.time_trigger_enabled() && last_snapshot.elapsed() >= cfg.interval;
         // Growth-based size trigger: how many bytes have been
         // appended since the last snapshot. Saturating sub because
         // compact may have shrunk the WAL.
@@ -221,6 +234,23 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig, mode: Snapshot
         let size_fired = cfg.size_trigger_enabled() && growth >= cfg.wal_bytes_threshold;
         if !(time_fired || size_fired) {
             continue;
+        }
+
+        // Memory pressure: defer the trigger (design 0010 §6). The
+        // snapshot's serialize transient is what historically tipped
+        // a near-cap arena into an OOM kill. `last_snapshot` /
+        // `wal_bytes_at_last_snapshot` are NOT updated, so the
+        // trigger re-fires on the first poll after recovery. Disk
+        // pressure does NOT defer — under disk pressure a snapshot +
+        // compact is the *cure* (it frees WAL segments).
+        if let Some(mgr) = &resource {
+            if mgr.mode() == nebula_resource::OperatingMode::MemoryPressure {
+                tracing::warn!(
+                    "snapshot trigger deferred: node under memory pressure; \
+                     will retry next poll after recovery"
+                );
+                continue;
+            }
         }
 
         // Follower not yet caught up to the leader: skip this cycle so
@@ -291,11 +321,7 @@ async fn run(index: Arc<TextIndex>, cfg: SnapshotSchedulerConfig, mode: Snapshot
                     if let Some(own_seq) = own_seq_before {
                         let removed = idx.compact_own_wal_to(own_seq)?;
                         if removed > 0 {
-                            tracing::info!(
-                                removed,
-                                own_seq,
-                                "follower compacted its own WAL"
-                            );
+                            tracing::info!(removed, own_seq, "follower compacted its own WAL");
                         }
                     }
                     snap
@@ -440,7 +466,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         handle.abort();
 
-        assert!(count_snapshots(shared.path()) >= 1, "follower should snapshot");
+        assert!(
+            count_snapshots(shared.path()) >= 1,
+            "follower should snapshot"
+        );
         let header = idx.latest_snapshot_header().expect("snapshot header");
         assert_eq!(header.wal_seq_at_snapshot, 7, "stamped with cursor seg");
     }

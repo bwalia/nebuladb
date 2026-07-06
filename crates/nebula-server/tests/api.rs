@@ -3100,3 +3100,137 @@ async fn semantic_search_fails_fast_with_distinct_code_when_circuit_open() {
     let body = body_string(res.into_body()).await;
     assert!(body.contains("embedder_unavailable"), "got {body}");
 }
+
+// -------------------------------------------------------------------------
+// Workload-class admission tests (design 0010 §6, Phase 3)
+// -------------------------------------------------------------------------
+
+use nebula_server::workload::{AdmissionController, WorkloadClass};
+
+/// State with a tiny admission controller (workers=2) driven into CPU
+/// pressure, so the Low-class budget is 2*2=4.
+fn app_state_cpu_pressured() -> AppState {
+    let state = app_state(&[]);
+    let hot = nebula_resource::ResourceSample {
+        cpu_ratio: Some(0.99),
+        ..Default::default()
+    };
+    state.resource.observe(hot);
+    state.resource.observe(hot);
+    assert_eq!(
+        state.resource.mode(),
+        nebula_resource::OperatingMode::CpuPressure
+    );
+    let controller = Arc::new(AdmissionController::new(2, Arc::clone(&state.resource)));
+    state.with_admission(controller)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saturated_low_class_gets_429_but_critical_flows() {
+    let state = app_state_cpu_pressured();
+    let controller = state.admission.as_ref().unwrap().clone();
+    // Exhaust the Low budget (4 under CPU pressure) out-of-band, as
+    // if 4 RAG requests were mid-flight.
+    let _held: Vec<_> = (0..4)
+        .map(|_| controller.try_admit(WorkloadClass::Low))
+        .collect();
+    let app = build_router(state);
+
+    // A 5th RAG request refuses with the stable code.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/rag/answer")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"q"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(res.headers().get("retry-after").is_some());
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("class_saturated"), "got {body}");
+
+    // Critical-class mutation is untouched by the saturation.
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/bucket/b/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"x","text":"y"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "critical must never be shed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admission_stats_surface_on_reliability_and_metrics() {
+    let state = app_state_cpu_pressured();
+    let controller = state.admission.as_ref().unwrap().clone();
+    let _held: Vec<_> = (0..4)
+        .map(|_| controller.try_admit(WorkloadClass::Low))
+        .collect();
+    assert!(!controller.try_admit(WorkloadClass::Low).is_admitted());
+    let app = build_router(state);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/admin/reliability")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+    let low = v["admission"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["class"] == "low")
+        .unwrap()
+        .clone();
+    assert_eq!(low["budget"], 4);
+    assert_eq!(low["in_flight"], 4);
+    assert_eq!(low["rejected_total"], 1);
+
+    let res = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(
+        body.contains("nebula_admission_budget{class=\"low\"} 4"),
+        "got:\n{body}"
+    );
+    assert!(body.contains("nebula_admission_rejected_total{class=\"low\"} 1"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn permits_release_when_responses_complete() {
+    // End-to-end: requests through the router must release their
+    // permits — serve the full Low budget twice sequentially.
+    let state = app_state_cpu_pressured();
+    let app = build_router(state);
+    for round in 0..2 {
+        for i in 0..4 {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/ai/rag")
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"query":"hello"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                res.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "round {round} req {i}: sequential requests must never saturate"
+            );
+        }
+    }
+}

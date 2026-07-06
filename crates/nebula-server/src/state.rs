@@ -338,6 +338,11 @@ pub struct AppState {
     /// state) — the observability endpoints then omit the AI-health
     /// lines rather than reporting a misleading healthy-forever zero.
     pub ai_health: Option<Arc<nebula_embed::AiHealth>>,
+    /// Class-aware admission controller (design 0010 §6). `None`
+    /// (tests / dev default) admits everything; `main.rs` wires one
+    /// sized to the worker count. Reads the resource manager's mode,
+    /// so budgets shrink automatically under pressure.
+    pub admission: Option<Arc<crate::workload::AdmissionController>>,
     /// Resource manager + operating-mode state machine (design 0010).
     /// A background sampler in `main.rs` feeds it every ~5s; the
     /// disk-critical write gate and the reliability endpoints read it
@@ -406,6 +411,7 @@ impl AppState {
             query_expander: Arc::new(NoopQueryExpander),
             hybrid_weights: Arc::new(HybridWeights::default()),
             ai_health: None,
+            admission: None,
             resource: Arc::new(nebula_resource::ResourceManager::new(
                 nebula_resource::Thresholds::default(),
             )),
@@ -518,6 +524,12 @@ impl AppState {
 
     pub fn with_rate_limiter(mut self, limiter: RateLimiter) -> Self {
         self.rate_limiter = Some(limiter);
+        self
+    }
+
+    /// Wire in the class-aware admission controller (design 0010 §6).
+    pub fn with_admission(mut self, controller: Arc<crate::workload::AdmissionController>) -> Self {
+        self.admission = Some(controller);
         self
     }
 
