@@ -100,8 +100,8 @@ impl CursorStore for FileCursorStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
-        let p: PersistedCursor = serde_json::from_slice(&bytes)
-            .map_err(|e| CursorStoreError::Codec(e.to_string()))?;
+        let p: PersistedCursor =
+            serde_json::from_slice(&bytes).map_err(|e| CursorStoreError::Codec(e.to_string()))?;
         Ok(Some(WalCursor {
             segment_seq: p.segment_seq,
             byte_offset: p.byte_offset,
@@ -337,11 +337,7 @@ async fn drain_stream(
 /// with exponential backoff. Cursor progress is held only in
 /// memory — on crash, the task restarts from `initial_cursor`.
 /// Use [`spawn_with_store`] to persist progress across restarts.
-pub fn spawn(
-    channel: Channel,
-    index: Arc<TextIndex>,
-    initial_cursor: WalCursor,
-) -> FollowerHandle {
+pub fn spawn(channel: Channel, index: Arc<TextIndex>, initial_cursor: WalCursor) -> FollowerHandle {
     spawn_with_store(channel, index, initial_cursor, None)
 }
 
@@ -379,14 +375,7 @@ pub fn spawn_with_store(
         };
         let mut backoff = Duration::from_millis(100);
         loop {
-            match run_once_with_store(
-                channel.clone(),
-                index.clone(),
-                cursor,
-                store.clone(),
-            )
-            .await
-            {
+            match run_once_with_store(channel.clone(), index.clone(), cursor, store.clone()).await {
                 Ok(last) => {
                     info!(
                         seg = last.segment_seq,
@@ -397,6 +386,24 @@ pub fn spawn_with_store(
                     backoff = Duration::from_millis(100);
                 }
                 Err(e) => {
+                    // FAILED_PRECONDITION from TailWal means our cursor
+                    // predates the leader's oldest surviving segment
+                    // (compacted gap). Retrying can never succeed and
+                    // each retry would silently offer to build a
+                    // partial copy — stop the task and tell the
+                    // operator how to recover instead.
+                    if let FollowerError::Rpc(status) = &e {
+                        if status.code() == tonic::Code::FailedPrecondition {
+                            tracing::error!(
+                                error = %status.message(),
+                                "follower cursor predates leader's compacted WAL; \
+                                 replication STOPPED. Recover by seeding this node \
+                                 from a recent snapshot (shared NEBULA_SNAPSHOT_DIR \
+                                 or backup restore), then restart it"
+                            );
+                            return;
+                        }
+                    }
                     warn!(error = %e, "follower stream error; backing off");
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(5));

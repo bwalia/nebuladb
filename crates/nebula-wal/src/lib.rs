@@ -68,6 +68,18 @@ pub enum WalError {
     Codec(String),
     #[error("wal format: {0}")]
     Format(String),
+    /// A subscriber asked to start at a segment that compaction has
+    /// already deleted. Serving the request anyway would silently
+    /// skip every record in the missing segments — the subscriber
+    /// would build an incomplete index with no error anywhere
+    /// (design 0010 follow-up: the fresh-follower WAL gap). Callers
+    /// must bootstrap from a snapshot at/after `oldest_seq` instead.
+    #[error(
+        "requested WAL cursor (segment {requested_seq}) predates the oldest surviving \
+         segment ({oldest_seq}); earlier segments were compacted away — bootstrap from \
+         a snapshot instead of replaying"
+    )]
+    CompactedGap { requested_seq: u64, oldest_seq: u64 },
 }
 
 pub type Result<T> = std::result::Result<T, WalError>;
@@ -355,6 +367,21 @@ impl Wal {
     /// oldest surviving segment. Pass the `next_cursor` of the last
     /// successfully-acked entry to resume.
     pub fn subscribe(&self, start: subscriber::WalCursor) -> Result<subscriber::WalSubscriber> {
+        // Refuse a cursor that predates the oldest surviving segment.
+        // read_from would otherwise skip the missing segments and the
+        // subscriber would silently build an incomplete copy — this
+        // bites both a fresh follower (cursor BEGIN after the leader
+        // compacted) and a long-offline follower whose acked segments
+        // were compacted while it was disconnected (min_ack only
+        // protects *connected* subscribers).
+        if let Some(oldest) = list_segments(&self.dir)?.first().map(|s| s.seq) {
+            if start.segment_seq < oldest {
+                return Err(WalError::CompactedGap {
+                    requested_seq: start.segment_seq,
+                    oldest_seq: oldest,
+                });
+            }
+        }
         // Read historical first. We deliberately do this *outside*
         // the writer lock — writes racing in parallel are delivered
         // via the broadcast tail; the `live_start` handshake in the
@@ -895,5 +922,64 @@ mod tests {
         let after = list_segments(dir.path()).unwrap().len();
         assert_eq!(before - after, removed);
         assert_eq!(after, 1, "current segment must survive compact");
+    }
+
+    #[test]
+    fn subscribe_refuses_cursor_older_than_compacted_history() {
+        let dir = tempdir().unwrap();
+        let wal = Wal::open(
+            dir.path(),
+            WalConfig {
+                segment_size_bytes: 256,
+                fsync_on_append: false,
+            },
+        )
+        .unwrap();
+        for i in 0..20 {
+            wal.append(&mk_rec(i)).unwrap();
+        }
+        wal.flush().unwrap();
+        wal.compact(u64::MAX).unwrap();
+        let oldest = list_segments(dir.path()).unwrap()[0].seq;
+        assert!(oldest > 0, "test setup: compaction must have removed seg 0");
+
+        // A fresh subscriber at BEGIN would silently miss every
+        // compacted record — must be refused, not served.
+        let Err(err) = wal.subscribe(subscriber::WalCursor::BEGIN) else {
+            panic!("subscribe at BEGIN must fail after compaction");
+        };
+        assert!(
+            matches!(
+                err,
+                WalError::CompactedGap { requested_seq: 0, oldest_seq } if oldest_seq == oldest
+            ),
+            "expected CompactedGap, got {err:?}"
+        );
+
+        // A cursor at/after the oldest surviving segment still works.
+        let sub = wal.subscribe(subscriber::WalCursor {
+            segment_seq: oldest,
+            byte_offset: 0,
+        });
+        assert!(
+            sub.is_ok(),
+            "cursor at oldest surviving segment must subscribe"
+        );
+    }
+
+    #[test]
+    fn subscribe_from_begin_works_when_nothing_compacted() {
+        let dir = tempdir().unwrap();
+        let wal = Wal::open(
+            dir.path(),
+            WalConfig {
+                segment_size_bytes: 1024 * 1024,
+                fsync_on_append: false,
+            },
+        )
+        .unwrap();
+        wal.append(&mk_rec(1)).unwrap();
+        wal.flush().unwrap();
+        assert!(wal.subscribe(subscriber::WalCursor::BEGIN).is_ok());
     }
 }
