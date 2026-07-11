@@ -122,20 +122,16 @@ impl NebulaStateMachine {
     pub fn apply_payload(&self, payload: &LogPayload) -> Result<(), StateMachineError> {
         match payload {
             LogPayload::Mutation(rec) => self.apply_mutation(rec),
+            // Membership and blank entries carry no state-machine effect.
+            // The trait-level `apply_entries` records membership entries
+            // via `record_membership` and never routes them here, but a
+            // direct caller (e.g. a boot-time full-log replay) may hit
+            // these arms — they are correctly no-ops for the index.
+            LogPayload::Membership(_) | LogPayload::Blank => Ok(()),
         }
     }
 
     fn apply_mutation(&self, rec: &WalRecord) -> Result<(), StateMachineError> {
-        // Skip the no-op marker we use for openraft membership/blank
-        // entries — see `from_openraft_entry` in storage.rs. A real
-        // mutation always names a non-empty bucket; the marker has
-        // an empty one. This keeps the apply path branch-free of
-        // openraft entry-payload variants.
-        if let WalRecord::EmptyBucket { bucket } = rec {
-            if bucket.is_empty() {
-                return Ok(());
-            }
-        }
         self.inner
             .index
             .apply_wal_record(rec)

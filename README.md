@@ -6,13 +6,19 @@ HNSW vector index, a pluggable embedder, a multi-tier embedding
 cache, and a streaming RAG endpoint — plus a React showcase app
 that demos the whole thing end-to-end.
 
+Runs standalone or as a Raft cluster with quorum-durable writes,
+automatic leader failover, **self-healing membership** (take a node
+down, bring a new one up, and the cluster reconfigures itself), and
+active-active multi-region replication with automatic failover.
+See [High availability & clustering](#high-availability--clustering).
+
 ![NebulaDB end-to-end architecture](docs/architecture.png)
 
 > See [`docs/architecture.svg`](docs/architecture.svg) for the
 > source diagram, and [`docs/durability-architecture.svg`](docs/durability-architecture.svg)
 > for a deeper view of the WAL + snapshot + recovery path.
 
-- **124 tests passing**, clippy-clean on Rust stable.
+- **493 tests passing**, clippy-clean on Rust stable.
 - **Nightly GitHub Actions** run the unit suite *and* the full
   docker-compose stack against real Ollama models; see
   `.github/workflows/nightly.yml`.
@@ -217,10 +223,109 @@ Same env vars apply. With nothing set, the server boots with the
 MockEmbedder + MockLlm — fully offline, deterministic, and suitable
 for integration tests.
 
+## High availability & clustering
+
+NebulaDB scales from a single node to a multi-region, self-healing
+cluster. All of it is opt-in — a default deployment is a single node
+and behaves exactly as it always has.
+
+### Raft mode (within-region HA)
+
+Set `NEBULA_RAFT_PEERS` (with `NEBULA_RAFT_NODE_ID` and
+`NEBULA_RAFT_DATA_DIR`) to run the node as part of a Raft cluster
+(built on [openraft](https://github.com/databendlabs/openraft)):
+
+- **Quorum-durable writes.** A write is acknowledged only after a
+  majority of nodes have persisted it (fsync'd Raft log). A committed
+  write survives the loss of any minority of nodes, including the
+  leader — **no data loss**.
+- **Automatic leader failover.** If the leader dies, the surviving
+  nodes elect a new one automatically. Writes sent to a non-leader
+  return `421 Misdirected Request` with the new leader's address, so
+  a smart client re-targets without downtime.
+
+```bash
+NEBULA_RAFT_NODE_ID=1 \
+NEBULA_RAFT_PEERS=1=node1:50052,2=node2:50052,3=node3:50052 \
+NEBULA_RAFT_DATA_DIR=/var/lib/nebula/raft \
+  cargo run --release -p nebula-server
+# Form the cluster once, on any node:
+curl -X POST http://node1:8080/api/v1/admin/raft/initialize
+```
+
+### Self-healing membership — take a node down, bring a new one up
+
+The cluster reconfigures itself at runtime with no write outage and
+no data loss, using a **learner catch-up → promote → evict** flow.
+To replace a dead node `2` with a fresh node `4`:
+
+```bash
+# 1. Add the new node as a non-voting learner. openraft streams it a
+#    snapshot + log tail and BLOCKS until it is caught up. Quorum is
+#    unchanged during this phase, so writes keep flowing.
+curl -X POST http://leader:8080/api/v1/admin/raft/learner \
+  -H 'content-type: application/json' \
+  -d '{"node_id": 4, "addr": "node4:50052"}'
+
+# 2. Promote the caught-up learner to a voter (joint consensus).
+curl -X POST http://leader:8080/api/v1/admin/raft/voter/4
+
+# 3. Evict the dead node from the quorum.
+curl -X DELETE http://leader:8080/api/v1/admin/raft/node/2
+
+# Inspect membership at any time:
+curl http://leader:8080/api/v1/admin/raft/membership
+```
+
+`scripts/replace_node.sh` drives this whole sequence and refuses to
+run if evicting the old node would break quorum:
+
+```bash
+scripts/replace_node.sh --leader http://leader:8080 \
+  --new-id 4 --new-addr node4:50052 --old-id 2
+```
+
+At every step a quorum of the *current* voter set stays available,
+so committed writes are never lost and the leader never stalls.
+
+| Endpoint                                | Method   | Action                                    |
+|-----------------------------------------|----------|-------------------------------------------|
+| `/api/v1/admin/raft/membership`         | `GET`    | Current voters / learners / leader        |
+| `/api/v1/admin/raft/initialize`         | `POST`   | One-time cluster formation (idempotent)   |
+| `/api/v1/admin/raft/learner`            | `POST`   | Add a learner, block until caught up      |
+| `/api/v1/admin/raft/voter/:id`          | `POST`   | Promote a caught-up learner to voter      |
+| `/api/v1/admin/raft/node/:id`           | `DELETE` | Evict a voter from the quorum             |
+
+### Multi-region active-active with automatic failover
+
+Across regions, NebulaDB runs active-active: each bucket has a
+*home region* (a monotonic `home_epoch` fences out a deposed region's
+stale writes) and regions tail each other's WAL. A **region failover
+monitor** detects a dead home region and self-promotes the local
+region automatically — no operator required:
+
+```bash
+NEBULA_REGION=us-west-2 \
+NEBULA_REGION_FAILOVER_CANDIDATE=true \
+NEBULA_REGION_FAILOVER_BUCKETS=catalog=us-east-1,orders=us-east-1 \
+NEBULA_REGION_FAILOVER_GRACE_SECS=60 \
+  cargo run --release -p nebula-server
+```
+
+When `us-east-1` is unreachable for the grace period, this region
+bumps the bucket's epoch and takes over as the new home. Anti-flap by
+design: continuous-unreachability grace + hysteresis, a single opt-in
+candidate per home, monotonic epochs (no auto-failback / oscillation),
+and a post-promotion cooldown.
+
+The full design — including the two pre-existing multi-node Raft bugs
+this work surfaced and fixed — is documented in
+[`docs/design/0011-dynamic-membership-and-failover.md`](docs/design/0011-dynamic-membership-and-failover.md).
+
 ## Testing
 
 ```bash
-cargo test --workspace                                   # 124 tests
+cargo test --workspace                                   # 493 tests
 cargo clippy --workspace --all-targets -- -D warnings    # clippy gate
 ```
 
@@ -316,8 +421,10 @@ crates/
   nebula-chunk/        Chunker trait + fixed / sentence implementations
   nebula-llm/          LlmClient trait + MockLlm, OllamaLlm, OpenAiChatLlm
   nebula-index/        TextIndex: buckets, chunks, parent-child, delete
+  nebula-wal/          Write-ahead log: CRC-framed, fsync, snapshots
+  nebula-raft/         openraft log/state-machine/snapshot/gRPC + membership
   nebula-sql/          Parser → typed plan tree → executor + result cache
-  nebula-grpc/         Tonic services mirroring the REST surface
+  nebula-grpc/         Tonic services + WAL streaming + cross-region + failover
   nebula-pgwire/       pgwire SimpleQueryHandler over SqlEngine
   nebula-server/       Axum router + auth + rate limit + metrics + wiring
 

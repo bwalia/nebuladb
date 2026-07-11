@@ -32,3 +32,4 @@ tokio-stream = { workspace = true, features = ["net"] }
 nebula-embed = { path = "../nebula-embed" }
 nebula-vector = { path = "../nebula-vector" }
 serde_json = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

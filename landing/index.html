@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NebulaDB — AI-native database that heals itself</title>
+    <meta
+      name="description"
+      content="AI-native hybrid database in Rust. Raft-backed HA with quorum-durable writes, automatic leader failover, self-healing cluster membership, and active-active multi-region failover."
+    />
+    <!-- Set theme before paint so there's no light-then-dark flash. -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("nebula-theme");
+          var prefersDark =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          if (stored === "dark" || (!stored && prefersDark)) {
+            document.documentElement.classList.add("dark");
+          }
+        } catch (_) {}
+      })();
+    </script>
+    <style>
+      /*
+        Self-contained landing page — zero build step, zero dependencies.
+        Palette mirrors the showcase app's brand accent (#2563eb) so the
+        marketing page and the live UI feel like one product.
+      */
+      :root {
+        color-scheme: light dark;
+        --bg: #f8fafc;
+        --bg-elev: #ffffff;
+        --border: #e2e8f0;
+        --text: #0f172a;
+        --text-muted: #475569;
+        --text-faint: #64748b;
+        --brand: #2563eb;
+        --brand-strong: #1d4ed8;
+        --brand-faint: #eff6ff;
+        --ok: #16a34a;
+        --code-bg: #0f172a;
+        --code-text: #e2e8f0;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+      }
+      html.dark {
+        --bg: #020617;
+        --bg-elev: #0b1120;
+        --border: #1e293b;
+        --text: #f1f5f9;
+        --text-muted: #cbd5e1;
+        --text-faint: #94a3b8;
+        --brand: #3b82f6;
+        --brand-strong: #60a5fa;
+        --brand-faint: #0b1a33;
+        --code-bg: #0b1120;
+        --code-text: #e2e8f0;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--sans);
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      a {
+        color: var(--brand);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      .wrap {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      /* ---- top bar ---- */
+      header.bar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        backdrop-filter: blur(8px);
+        background: color-mix(in srgb, var(--bg) 82%, transparent);
+        border-bottom: 1px solid var(--border);
+      }
+      .bar-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 700;
+        font-size: 18px;
+        letter-spacing: -0.01em;
+      }
+      .brand .dot {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: radial-gradient(circle at 30% 30%, var(--brand-strong), var(--brand));
+        box-shadow: 0 0 14px color-mix(in srgb, var(--brand) 55%, transparent);
+      }
+      .bar nav {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        font-size: 14px;
+      }
+      .bar nav a {
+        color: var(--text-muted);
+      }
+      .theme-toggle {
+        border: 1px solid var(--border);
+        background: var(--bg-elev);
+        color: var(--text-muted);
+        border-radius: 8px;
+        padding: 5px 10px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      @media (max-width: 640px) {
+        .bar nav a.navlink {
+          display: none;
+        }
+      }
+      /* ---- hero ---- */
+      .hero {
+        padding: 72px 0 40px;
+        text-align: center;
+      }
+      .pill {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: var(--brand);
+        background: var(--brand-faint);
+        border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+        padding: 5px 12px;
+        border-radius: 999px;
+        margin-bottom: 22px;
+      }
+      .hero h1 {
+        font-size: clamp(34px, 6vw, 56px);
+        line-height: 1.05;
+        letter-spacing: -0.03em;
+        margin: 0 0 18px;
+        font-weight: 800;
+      }
+      .hero h1 .accent {
+        background: linear-gradient(90deg, var(--brand), var(--brand-strong));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .hero p.lede {
+        font-size: clamp(16px, 2.3vw, 20px);
+        color: var(--text-muted);
+        max-width: 680px;
+        margin: 0 auto 30px;
+      }
+      .cta {
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 10px;
+        padding: 11px 20px;
+        font-weight: 600;
+        font-size: 15px;
+        cursor: pointer;
+        border: 1px solid transparent;
+      }
+      .btn-primary {
+        background: var(--brand);
+        color: #fff;
+      }
+      .btn-primary:hover {
+        background: var(--brand-strong);
+        text-decoration: none;
+      }
+      .btn-ghost {
+        background: var(--bg-elev);
+        color: var(--text);
+        border-color: var(--border);
+      }
+      .btn-ghost:hover {
+        text-decoration: none;
+        border-color: var(--brand);
+      }
+      /* ---- sections ---- */
+      section {
+        padding: 44px 0;
+        border-top: 1px solid var(--border);
+      }
+      .section-head {
+        max-width: 720px;
+        margin: 0 auto 34px;
+        text-align: center;
+      }
+      .section-head h2 {
+        font-size: clamp(24px, 3.5vw, 34px);
+        letter-spacing: -0.02em;
+        margin: 0 0 10px;
+        font-weight: 700;
+      }
+      .section-head p {
+        color: var(--text-muted);
+        margin: 0;
+        font-size: 16px;
+      }
+      .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--brand);
+        margin-bottom: 8px;
+      }
+      /* ---- feature grid ---- */
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 18px;
+      }
+      .card {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 22px;
+      }
+      .card h3 {
+        font-size: 17px;
+        margin: 0 0 8px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+      }
+      .card p {
+        margin: 0;
+        color: var(--text-muted);
+        font-size: 14.5px;
+      }
+      .ico {
+        width: 30px;
+        height: 30px;
+        flex: none;
+        border-radius: 8px;
+        background: var(--brand-faint);
+        color: var(--brand);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .ico svg {
+        width: 17px;
+        height: 17px;
+      }
+      /* ---- self-healing flow ---- */
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+        margin-top: 8px;
+      }
+      @media (max-width: 720px) {
+        .flow {
+          grid-template-columns: 1fr;
+        }
+      }
+      .step {
+        position: relative;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 20px;
+      }
+      .step .num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--brand);
+        color: #fff;
+        font-weight: 700;
+        font-size: 14px;
+        margin-bottom: 12px;
+      }
+      .step h4 {
+        margin: 0 0 6px;
+        font-size: 16px;
+        font-weight: 700;
+      }
+      .step p {
+        margin: 0;
+        font-size: 14px;
+        color: var(--text-muted);
+      }
+      .step .verb {
+        color: var(--brand-strong);
+        font-family: var(--mono);
+        font-size: 13px;
+      }
+      /* ---- code ---- */
+      pre {
+        background: var(--code-bg);
+        color: var(--code-text);
+        border-radius: 12px;
+        padding: 18px 20px;
+        overflow-x: auto;
+        font-family: var(--mono);
+        font-size: 13.5px;
+        line-height: 1.7;
+        border: 1px solid var(--border);
+      }
+      pre .c {
+        color: #7c8aa5;
+      }
+      pre .k {
+        color: #7dd3fc;
+      }
+      .callout {
+        margin-top: 18px;
+        padding: 14px 18px;
+        border-radius: 10px;
+        border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+        background: color-mix(in srgb, var(--ok) 8%, transparent);
+        font-size: 14px;
+        color: var(--text-muted);
+      }
+      .callout strong {
+        color: var(--text);
+      }
+      /* ---- guarantees strip ---- */
+      .guarantees {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+      }
+      .g {
+        text-align: center;
+        padding: 8px;
+      }
+      .g .big {
+        font-size: 26px;
+        font-weight: 800;
+        color: var(--brand);
+        letter-spacing: -0.02em;
+      }
+      .g .lbl {
+        font-size: 14px;
+        color: var(--text-muted);
+        margin-top: 4px;
+      }
+      /* ---- footer ---- */
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 28px 0 48px;
+        color: var(--text-faint);
+        font-size: 13.5px;
+        text-align: center;
+      }
+      footer a {
+        color: var(--text-muted);
+      }
+    </style>
+  </head>
+  <body>
+    <header class="bar">
+      <div class="wrap bar-inner">
+        <div class="brand"><span class="dot"></span> NebulaDB</div>
+        <nav>
+          <a class="navlink" href="#ha">High availability</a>
+          <a class="navlink" href="#healing">Self-healing</a>
+          <a class="navlink" href="#multiregion">Multi-region</a>
+          <a
+            class="navlink"
+            href="https://github.com/bwalia/nebuladb"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+          >
+          <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
+            Theme
+          </button>
+        </nav>
+      </div>
+    </header>
+
+    <!-- ================= HERO ================= -->
+    <div class="wrap">
+      <section class="hero" style="border-top: none">
+        <span class="pill">Rust · Raft · AI-native</span>
+        <h1>
+          The AI-native database<br />that
+          <span class="accent">heals itself</span>
+        </h1>
+        <p class="lede">
+          One Rust binary serves REST, gRPC, and the Postgres wire protocol
+          over a shared corpus — HNSW vector search, streaming RAG, and a
+          clustering story that lets you take a node down, bring a new one up,
+          and watch the cluster reconfigure itself. No data loss. No downtime.
+        </p>
+        <div class="cta">
+          <a class="btn btn-primary" href="#healing">See self-healing ↓</a>
+          <a
+            class="btn btn-ghost"
+            href="https://github.com/bwalia/nebuladb"
+            target="_blank"
+            rel="noopener"
+            >View on GitHub</a
+          >
+        </div>
+      </section>
+    </div>
+
+    <!-- ================= HA OVERVIEW ================= -->
+    <section id="ha">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="eyebrow">Within-region HA</div>
+          <h2>Raft-backed clustering, quorum-durable by default</h2>
+          <p>
+            Opt into cluster mode with a single env var. Built on
+            <a href="https://github.com/databendlabs/openraft" target="_blank" rel="noopener">openraft</a>,
+            every acknowledged write is committed by a majority before it
+            returns.
+          </p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h3>
+              <span class="ico"
+                ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z"/></svg
+              ></span>
+              Quorum-durable writes
+            </h3>
+            <p>
+              A write is acknowledged only after a majority of nodes fsync it
+              to the Raft log. It survives loss of any minority — including the
+              leader. No data loss.
+            </p>
+          </div>
+          <div class="card">
+            <h3>
+              <span class="ico"
+                ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg
+              ></span>
+              Automatic leader failover
+            </h3>
+            <p>
+              If the leader dies, survivors elect a new one in milliseconds.
+              Writes to a non-leader return the new leader's address so smart
+              clients re-target instantly.
+            </p>
+          </div>
+          <div class="card">
+            <h3>
+              <span class="ico"
+                ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg
+              ></span>
+              One binary, three protocols
+            </h3>
+            <p>
+              REST, gRPC, and Postgres wire all serve the same corpus. The
+              same node that answers a semantic search also participates in
+              consensus.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= SELF-HEALING ================= -->
+    <section id="healing">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="eyebrow">Self-healing membership</div>
+          <h2>Take a node down, bring a new one up</h2>
+          <p>
+            The cluster reconfigures itself at runtime — no write outage, no
+            data loss — with a
+            <strong>learner&nbsp;catch-up&nbsp;→&nbsp;promote&nbsp;→&nbsp;evict</strong>
+            flow. Quorum of the current voter set stays available at every
+            step.
+          </p>
+        </div>
+
+        <div class="flow">
+          <div class="step">
+            <span class="num">1</span>
+            <h4>Catch up</h4>
+            <p>
+              Add the replacement as a non-voting <span class="verb">learner</span>.
+              openraft streams it a snapshot + log tail and blocks until it's
+              current. Quorum is unchanged, so writes keep flowing.
+            </p>
+          </div>
+          <div class="step">
+            <span class="num">2</span>
+            <h4>Promote</h4>
+            <p>
+              Once caught up, <span class="verb">promote</span> the learner to
+              a voter via joint consensus. The cluster now has its full voting
+              strength back.
+            </p>
+          </div>
+          <div class="step">
+            <span class="num">3</span>
+            <h4>Evict</h4>
+            <p>
+              <span class="verb">Remove</span> the dead node from the quorum.
+              Back to a healthy N-node cluster — one member brand new, zero
+              interruption.
+            </p>
+          </div>
+        </div>
+
+        <pre style="margin-top: 24px"><span class="c"># Replace dead node 2 with a fresh node 4 — one command, quorum-safe.</span>
+scripts/replace_node.sh <span class="k">--leader</span> http://leader:8080 \
+  <span class="k">--new-id</span> 4 <span class="k">--new-addr</span> node4:50052 <span class="k">--old-id</span> 2
+
+<span class="c"># …or drive the membership API directly:</span>
+curl <span class="k">-X POST</span>   .../admin/raft/learner <span class="k">-d</span> '{"node_id":4,"addr":"node4:50052"}'  <span class="c"># catch up</span>
+curl <span class="k">-X POST</span>   .../admin/raft/voter/4                                          <span class="c"># promote</span>
+curl <span class="k">-X DELETE</span> .../admin/raft/node/2                                           <span class="c"># evict</span></pre>
+        <div class="callout">
+          <strong>Quorum-safe by construction.</strong> A quorum of the
+          <em>current</em> voter set is available throughout, so committed
+          writes are never lost and the leader never stalls. The replacement
+          script refuses to run if evicting the old node would break quorum.
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= MULTI-REGION ================= -->
+    <section id="multiregion">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="eyebrow">Across regions</div>
+          <h2>Active-active multi-region, automatic failover</h2>
+          <p>
+            Each bucket has a home region; regions tail each other's WAL. A
+            failover monitor detects a dead home region and promotes the local
+            one automatically — no operator in the loop.
+          </p>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h3>Epoch-fenced ownership</h3>
+            <p>
+              A monotonic <code>home_epoch</code> fences out a deposed region's
+              stale writes. When it recovers, it self-demotes to a consumer.
+            </p>
+          </div>
+          <div class="card">
+            <h3>Autonomous detection</h3>
+            <p>
+              Continuous-unreachability grace + hysteresis. When a home region
+              is down past the grace window, a candidate region bumps the epoch
+              and takes over.
+            </p>
+          </div>
+          <div class="card">
+            <h3>No oscillation</h3>
+            <p>
+              A single opt-in candidate per home, monotonic epochs (no
+              auto-failback), and a post-promotion cooldown keep a flaky WAN
+              from flapping ownership.
+            </p>
+          </div>
+        </div>
+        <pre style="margin-top: 24px"><span class="c"># Mark us-west-2 a failover candidate for buckets homed in us-east-1.</span>
+NEBULA_REGION=us-west-2 \
+NEBULA_REGION_FAILOVER_CANDIDATE=true \
+NEBULA_REGION_FAILOVER_BUCKETS=catalog=us-east-1,orders=us-east-1 \
+  nebula-server</pre>
+      </div>
+    </section>
+
+    <!-- ================= GUARANTEES ================= -->
+    <section>
+      <div class="wrap">
+        <div class="guarantees">
+          <div class="g">
+            <div class="big">No data loss</div>
+            <div class="lbl">Majority-quorum, fsync'd writes</div>
+          </div>
+          <div class="g">
+            <div class="big">No downtime</div>
+            <div class="lbl">Auto leader &amp; region failover</div>
+          </div>
+          <div class="g">
+            <div class="big">Self-healing</div>
+            <div class="lbl">Learner → promote → evict</div>
+          </div>
+          <div class="g">
+            <div class="big">493 tests</div>
+            <div class="lbl">Clippy-clean on Rust stable</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap">
+        NebulaDB — AI-native hybrid database in Rust.
+        Design:
+        <a
+          href="https://github.com/bwalia/nebuladb/blob/main/docs/design/0011-dynamic-membership-and-failover.md"
+          target="_blank"
+          rel="noopener"
+          >ADR 0011 — dynamic membership &amp; failover</a
+        >
+        ·
+        <a href="https://github.com/bwalia/nebuladb" target="_blank" rel="noopener"
+          >github.com/bwalia/nebuladb</a
+        >
+      </div>
+    </footer>
+
+    <script>
+      // Theme toggle — persists to the same localStorage key the showcase
+      // app uses, so a visitor's choice carries across both surfaces.
+      document
+        .getElementById("themeToggle")
+        .addEventListener("click", function () {
+          var isDark = document.documentElement.classList.toggle("dark");
+          try {
+            localStorage.setItem("nebula-theme", isDark ? "dark" : "light");
+          } catch (_) {}
+        });
+    </script>
+  </body>
+</html>

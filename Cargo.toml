@@ -76,7 +76,15 @@ crc32fast = "1.4"
 bincode = "1.3"
 zstd = { version = "0.13", default-features = false }
 tempfile = "3"
-openraft = { version = "0.9.24", default-features = false, features = ["serde"] }
+# `single-term-leader`: NebulaDB runs vanilla elected-leader Raft (one
+# leader per term, never multi-leader-per-term). In this mode openraft's
+# `CommittedLeaderId` is term-only, which is exactly what the `.nrlog`
+# frame persists (term + index, no per-entry leader node_id). Without it,
+# the default `leader_id_adv` mode carries a node_id on every committed
+# LogId; our log can't supply one, so entries read back with node_id 0
+# and openraft sees phantom log conflicts that stall multi-node commit
+# (design 0011 §6). See crates/nebula-raft/src/log.rs wire-format doc.
+openraft = { version = "0.9.24", default-features = false, features = ["serde", "single-term-leader"] }
 
 # Observability
 tracing = "0.1"

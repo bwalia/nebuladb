@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use nebula_embed::EmbedError;
 use nebula_index::IndexError;
-use nebula_raft::SubmitError;
+use nebula_raft::{MembershipError, SubmitError};
 use nebula_sql::SqlError;
 
 #[derive(Debug, Error)]
@@ -46,6 +46,14 @@ pub enum ApiError {
     NotLeader {
         leader_id: Option<u64>,
         leader_addr: Option<String>,
+    },
+    /// A conflicting operation is in progress (e.g. a Raft membership
+    /// reconfiguration is still committing). Carries a stable code and
+    /// message; maps to HTTP 409 so the caller retries.
+    #[error("conflict: {message}")]
+    Conflict {
+        code: &'static str,
+        message: String,
     },
     #[error("internal: {0}")]
     Internal(String),
@@ -106,7 +114,37 @@ impl ApiError {
             ApiError::Sql(SqlError::Index(_)) => ("internal", StatusCode::INTERNAL_SERVER_ERROR),
             ApiError::Sql(SqlError::Llm(_)) => ("llm_error", StatusCode::BAD_GATEWAY),
             ApiError::NotLeader { .. } => ("not_leader", StatusCode::MISDIRECTED_REQUEST),
+            ApiError::Conflict { code, .. } => (code, StatusCode::CONFLICT),
             ApiError::Internal(_) => ("internal", StatusCode::INTERNAL_SERVER_ERROR),
+        }
+    }
+}
+
+impl From<MembershipError> for ApiError {
+    fn from(e: MembershipError) -> Self {
+        match e {
+            MembershipError::NotLeader {
+                leader_id,
+                leader_addr,
+            } => ApiError::NotLeader {
+                leader_id,
+                leader_addr,
+            },
+            MembershipError::InProgress => ApiError::Conflict {
+                code: "membership_in_progress",
+                message: "a Raft membership change is already committing; retry shortly".into(),
+            },
+            MembershipError::LearnerNotFound(id) => ApiError::BadRequest(format!(
+                "node {id} is not a known learner — add it via POST /admin/raft/learner first"
+            )),
+            // Idempotent formation: the caller treats this as success, but
+            // if it reaches the error path we surface it as a benign 409
+            // rather than a 500.
+            MembershipError::AlreadyInitialized => ApiError::Conflict {
+                code: "already_initialized",
+                message: "raft cluster is already initialized".into(),
+            },
+            MembershipError::Other(msg) => ApiError::Internal(msg),
         }
     }
 }
@@ -182,5 +220,40 @@ mod tests {
     fn submit_error_other_converts_to_internal() {
         let raft_err = SubmitError::Other("storage shrugged".into());
         assert!(matches!(ApiError::from(raft_err), ApiError::Internal(_)));
+    }
+
+    #[test]
+    fn membership_not_leader_maps_to_421() {
+        let err: ApiError = MembershipError::NotLeader {
+            leader_id: Some(3),
+            leader_addr: Some("node3:50052".into()),
+        }
+        .into();
+        let (code, status) = err.code_and_status();
+        assert_eq!(code, "not_leader");
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+    }
+
+    #[test]
+    fn membership_in_progress_maps_to_409() {
+        let err: ApiError = MembershipError::InProgress.into();
+        let (code, status) = err.code_and_status();
+        assert_eq!(code, "membership_in_progress");
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn membership_learner_not_found_maps_to_400() {
+        let err: ApiError = MembershipError::LearnerNotFound(7).into();
+        let (_, status) = err.code_and_status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn membership_already_initialized_maps_to_409() {
+        let err: ApiError = MembershipError::AlreadyInitialized.into();
+        let (code, status) = err.code_and_status();
+        assert_eq!(code, "already_initialized");
+        assert_eq!(status, StatusCode::CONFLICT);
     }
 }
