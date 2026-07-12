@@ -12,6 +12,11 @@ down, bring a new one up, and the cluster reconfigures itself), and
 active-active multi-region replication with automatic failover.
 See [High availability & clustering](#high-availability--clustering).
 
+**MCP-native**: point any Model Context Protocol client (Claude Desktop,
+IDE assistants, agent frameworks) at NebulaDB and an AI agent can query,
+search, run RAG, and operate the cluster through standard MCP tools — no
+custom plugin. See [MCP — NebulaDB for AI agents](#mcp--nebuladb-for-ai-agents).
+
 ![NebulaDB end-to-end architecture](docs/architecture.png)
 
 > See [`docs/architecture.svg`](docs/architecture.svg) for the
@@ -322,6 +327,62 @@ The full design — including the two pre-existing multi-node Raft bugs
 this work surfaced and fixed — is documented in
 [`docs/design/0011-dynamic-membership-and-failover.md`](docs/design/0011-dynamic-membership-and-failover.md).
 
+## MCP — NebulaDB for AI agents
+
+NebulaDB speaks the [Model Context Protocol](https://modelcontextprotocol.io):
+point any MCP-compatible AI assistant at it and the agent can query,
+search, run RAG, and operate the cluster through standard MCP tools —
+no custom plugin.
+
+`nebula-mcp` is a standalone server that speaks MCP over Streamable HTTP
+and translates tool calls into NebulaDB's REST API. It embeds no data;
+it forwards the caller's `Authorization` bearer token upstream, so an
+agent can only do what its token permits — MCP inherits NebulaDB's
+existing auth, rate limiting, and durability.
+
+```bash
+# Point it at a running nebula-server and start it:
+NEBULA_MCP_BIND=0.0.0.0:8090 \
+NEBULA_MCP_UPSTREAM_URL=http://localhost:8080 \
+  cargo run --release -p nebula-mcp
+# MCP endpoint: http://localhost:8090/mcp
+```
+
+Tools exposed (all backed by real endpoints): `execute_sql`,
+`explain_query`, `semantic_search`, `vector_search`, `answer_question`
+(RAG), `insert_document` / `get_document` / `delete_document`,
+`list_buckets`, `cluster_health`, `raft_membership` /
+`raft_add_learner` / `raft_promote_voter` / `raft_remove_node`,
+`create_snapshot`, `server_stats`, `reliability_status`,
+`replication_status`, `slow_queries`. Plus MCP **resources**
+(`nebula://buckets`, `nebula://cluster/topology`,
+`nebula://cluster/reliability`, `nebula://stats`) and **prompts**
+(`diagnose_cluster_health`, `explain_slow_queries`, `replace_dead_node`).
+
+Connect an MCP client (e.g. Claude Desktop) to the HTTP endpoint:
+
+```json
+{
+  "mcpServers": {
+    "nebuladb": {
+      "type": "streamable-http",
+      "url": "http://localhost:8090/mcp",
+      "headers": { "Authorization": "Bearer <your-nebula-token>" }
+    }
+  }
+}
+```
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `NEBULA_MCP_BIND` | `0.0.0.0:8090` | MCP HTTP bind |
+| `NEBULA_MCP_UPSTREAM_URL` | `http://localhost:8080` | nebula-server REST base |
+| `NEBULA_MCP_UPSTREAM_TOKEN` | *(unset)* | Default upstream bearer (when caller sends none) |
+| `NEBULA_MCP_ALLOW_ANY_HOST` | `false` | Allow non-loopback `Host` (proxy/remote) |
+
+Design and phased roadmap:
+[`docs/design/0012-mcp-native-platform.md`](docs/design/0012-mcp-native-platform.md).
+
 ## Testing
 
 ```bash
@@ -427,6 +488,7 @@ crates/
   nebula-grpc/         Tonic services + WAL streaming + cross-region + failover
   nebula-pgwire/       pgwire SimpleQueryHandler over SqlEngine
   nebula-server/       Axum router + auth + rate limit + metrics + wiring
+  nebula-mcp/          Model Context Protocol server for AI agents (rmcp)
 
 apps/
   showcase/            React + Vite + Tailwind demo UI (nginx in prod)
