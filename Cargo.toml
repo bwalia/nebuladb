@@ -21,6 +21,7 @@ members = [
     "crates/nebula-server",
     "crates/nebula-client",
     "crates/nebula-backup",
+    "crates/nebula-mcp",
     "crates/nebulactl",
     "apps/ingest-worker",
 ]
@@ -48,6 +49,11 @@ futures = "0.3"
 # HTTP
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 axum = { version = "0.7", features = ["macros"] }
+# Official Rust Model Context Protocol SDK. `nebula-mcp` exposes NebulaDB
+# to AI agents as MCP tools/resources/prompts over Streamable HTTP.
+rmcp = { version = "2.2", features = ["server", "macros", "transport-streamable-http-server"] }
+# rmcp 2.2 generates schemars 1.x JsonSchema impls — pin 1.x to match.
+schemars = "1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "limit", "timeout", "set-header"] }
 hyper = "1"
