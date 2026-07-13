@@ -2645,6 +2645,67 @@ async fn promote_rejects_standalone() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
+// ---- dynamic Raft membership (design 0011 §3.3) ----
+
+/// When the node did not boot in raft mode, every membership endpoint
+/// rejects with 400 `bad_request` rather than 404 or a panic. This is
+/// the guard `require_raft` enforces uniformly across the surface.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raft_membership_endpoints_400_when_raft_disabled() {
+    // Each case is (method+path, optional body). Default app_state has
+    // no raft handle, so all of these hit the require_raft gate.
+    let get_membership = build_router(app_state(&[]))
+        .oneshot(
+            Request::get("/api/v1/admin/raft/membership")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_membership.status(), StatusCode::BAD_REQUEST);
+
+    let initialize = build_router(app_state(&[]))
+        .oneshot(
+            Request::post("/api/v1/admin/raft/initialize")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initialize.status(), StatusCode::BAD_REQUEST);
+
+    let add_learner = build_router(app_state(&[]))
+        .oneshot(
+            Request::post("/api/v1/admin/raft/learner")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"node_id":4,"addr":"node4:50052"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(add_learner.status(), StatusCode::BAD_REQUEST);
+
+    let promote = build_router(app_state(&[]))
+        .oneshot(
+            Request::post("/api/v1/admin/raft/voter/4")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(promote.status(), StatusCode::BAD_REQUEST);
+
+    let remove = build_router(app_state(&[]))
+        .oneshot(
+            Request::delete("/api/v1/admin/raft/node/2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(remove.status(), StatusCode::BAD_REQUEST);
+}
+
 // ---- caught-up readiness (design 0009 §6) ----
 
 /// A standalone/leader node is trivially caught up: 200.

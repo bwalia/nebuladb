@@ -227,8 +227,8 @@ impl RaftHandle {
                     }
                     RaftError::APIError(ClientWriteError::ChangeMembershipError(_)) => {
                         // We never submit membership changes through
-                        // submit_mutation — those go through
-                        // Raft::change_membership directly.
+                        // submit_mutation — those go through the
+                        // dedicated membership methods below.
                         Err(SubmitError::Other(
                             "unexpected ChangeMembership variant".into(),
                         ))
@@ -237,6 +237,178 @@ impl RaftHandle {
                 }
             }
         }
+    }
+
+    // ---- dynamic membership (design 0011 §3) ----
+
+    /// One-time cluster formation. Commits the initial membership entry
+    /// (this node's boot peer map) and lets the node start campaigning.
+    ///
+    /// Idempotent: if the cluster is already initialized we return
+    /// [`MembershipError::AlreadyInitialized`] so a re-run of the boot
+    /// automation is a no-op rather than a hard error. openraft treats
+    /// re-`initialize` with the *same* member set as safe, but calling
+    /// `is_initialized` first avoids the log-spam and the ambiguous
+    /// `NotAllowed` it would otherwise return.
+    pub async fn initialize_cluster(&self) -> Result<(), MembershipError> {
+        // A quorum read of local state — no consensus round-trip.
+        if self
+            .raft
+            .is_initialized()
+            .await
+            .map_err(|e| MembershipError::Other(e.to_string()))?
+        {
+            return Err(MembershipError::AlreadyInitialized);
+        }
+        // openraft wants the full initial voter set, including self.
+        self.raft
+            .initialize(self.config.peers.clone())
+            .await
+            .map_err(map_initialize_error)
+    }
+
+    /// Add a non-voting learner and block until the leader believes its
+    /// log is caught up. Blocking is deliberate: a caller that wants to
+    /// grow the cluster wants "added *and* caught up" so the subsequent
+    /// [`Self::promote_to_voter`] can't trip `LearnerNotFound`/lagging.
+    ///
+    /// Must run on the leader; off-leader this surfaces as
+    /// [`MembershipError::NotLeader`] carrying the leader address.
+    pub async fn add_learner(&self, id: NodeId, addr: String) -> Result<(), MembershipError> {
+        self.raft
+            .add_learner(id, NebulaNode::new(addr), true)
+            .await
+            .map(|_| ())
+            .map_err(map_client_write_error)
+    }
+
+    /// Promote a previously-added, caught-up learner to a voting member
+    /// via a joint-consensus step. Quorum of the *current* voter set is
+    /// available throughout, so writes keep committing.
+    pub async fn promote_to_voter(&self, id: NodeId) -> Result<(), MembershipError> {
+        use openraft::ChangeMembers;
+        let mut ids = std::collections::BTreeSet::new();
+        ids.insert(id);
+        self.raft
+            .change_membership(ChangeMembers::AddVoterIds(ids), true)
+            .await
+            .map(|_| ())
+            .map_err(map_client_write_error)
+    }
+
+    /// Remove a voter from the quorum entirely (`retain = false`, so it
+    /// is dropped rather than demoted to a learner). Used to evict a
+    /// dead node after its replacement has joined. We keep the node's
+    /// address metadata so a bounced-but-alive node can rejoin as a
+    /// learner without the operator re-supplying its address.
+    pub async fn remove_node(&self, id: NodeId) -> Result<(), MembershipError> {
+        use openraft::ChangeMembers;
+        let mut ids = std::collections::BTreeSet::new();
+        ids.insert(id);
+        self.raft
+            .change_membership(ChangeMembers::RemoveVoters(ids), false)
+            .await
+            .map(|_| ())
+            .map_err(map_client_write_error)
+    }
+
+    /// Local, non-blocking view of the current membership: voters,
+    /// learners, the leader (if known), and this node's own id. Read
+    /// straight from the metrics watch channel — no consensus
+    /// round-trip — for the `/admin/raft/membership` endpoint.
+    pub fn membership(&self) -> MembershipView {
+        let m = self.raft.metrics().borrow().clone();
+        let stored = m.membership_config;
+        let membership = stored.membership();
+        let voters: Vec<NodeId> = membership.voter_ids().collect();
+        // Learner ids are "known nodes that are not voters".
+        let learners: Vec<NodeId> = membership.learner_ids().collect();
+        MembershipView {
+            this_id: m.id,
+            leader: m.current_leader,
+            voters,
+            learners,
+        }
+    }
+}
+
+/// Local snapshot of Raft membership for the admin/status surface.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MembershipView {
+    /// This node's own Raft id.
+    pub this_id: NodeId,
+    /// Current leader as this node last observed it, if any.
+    pub leader: Option<NodeId>,
+    /// Voting members.
+    pub voters: Vec<NodeId>,
+    /// Non-voting learners (catching up or read replicas).
+    pub learners: Vec<NodeId>,
+}
+
+/// Outcome of a failed membership operation. Kept distinct from
+/// [`SubmitError`] because the failure modes (in-progress reconfig,
+/// learner-not-found) and their HTTP mappings differ from a normal
+/// write.
+#[derive(Debug, thiserror::Error)]
+pub enum MembershipError {
+    /// A membership change must run on the leader; this node isn't it.
+    /// Carries the leader address so the caller can re-target (mirrors
+    /// [`SubmitError::NotLeader`]).
+    #[error("not leader (current leader: {leader_id:?}, addr: {leader_addr:?})")]
+    NotLeader {
+        leader_id: Option<NodeId>,
+        leader_addr: Option<String>,
+    },
+    /// Another reconfiguration is still committing. Retry shortly.
+    #[error("membership change already in progress")]
+    InProgress,
+    /// Tried to promote an id that isn't a known learner — call
+    /// `add_learner` first, or its catch-up didn't complete.
+    #[error("learner not found (add it first): {0}")]
+    LearnerNotFound(NodeId),
+    /// `initialize_cluster` on an already-formed cluster — treated as an
+    /// idempotent no-op by callers.
+    #[error("cluster already initialized")]
+    AlreadyInitialized,
+    /// Any other openraft failure (fatal state, empty membership, etc).
+    #[error("membership: {0}")]
+    Other(String),
+}
+
+/// Map openraft's `ClientWriteError` (as returned by `add_learner` /
+/// `change_membership`) onto our [`MembershipError`].
+fn map_client_write_error(
+    e: openraft::error::RaftError<
+        NodeId,
+        openraft::error::ClientWriteError<NodeId, NebulaNode>,
+    >,
+) -> MembershipError {
+    use openraft::error::{ChangeMembershipError, ClientWriteError, RaftError};
+    match e {
+        RaftError::APIError(ClientWriteError::ForwardToLeader(f)) => MembershipError::NotLeader {
+            leader_id: f.leader_id,
+            leader_addr: f.leader_node.map(|n| n.addr),
+        },
+        RaftError::APIError(ClientWriteError::ChangeMembershipError(ce)) => match ce {
+            ChangeMembershipError::InProgress(_) => MembershipError::InProgress,
+            ChangeMembershipError::LearnerNotFound(l) => MembershipError::LearnerNotFound(l.node_id),
+            other => MembershipError::Other(other.to_string()),
+        },
+        RaftError::Fatal(f) => MembershipError::Other(f.to_string()),
+    }
+}
+
+/// Map openraft's `InitializeError` onto our [`MembershipError`].
+fn map_initialize_error(
+    e: openraft::error::RaftError<NodeId, openraft::error::InitializeError<NodeId, NebulaNode>>,
+) -> MembershipError {
+    use openraft::error::{InitializeError, RaftError};
+    match e {
+        // NotAllowed means the cluster was already initialized between
+        // our is_initialized() check and this call — treat as idempotent.
+        RaftError::APIError(InitializeError::NotAllowed(_)) => MembershipError::AlreadyInitialized,
+        RaftError::APIError(other) => MembershipError::Other(other.to_string()),
+        RaftError::Fatal(f) => MembershipError::Other(f.to_string()),
     }
 }
 

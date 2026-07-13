@@ -157,11 +157,25 @@ impl RaftStorage<NebulaTypeConfig> for NebulaRaftStorage {
         // truncation horizon and openraft tracks that itself in
         // memory across a single process lifetime. A persistent
         // last-purged is a cleanup item for Phase 2.5.
+        // Report the *real* term of the last entry. openraft's
+        // replication-matching compares full LogIds (term + index); a
+        // fabricated term-0 makes every follower's log look like it
+        // conflicts, so quorum-commit never advances and client writes
+        // block forever. This is the bug the multi-node harness caught
+        // (design 0011 §6) — invisible single-node because a 1-node
+        // cluster is its own quorum and skips follower matching.
+        //
+        // `CommittedLeaderId::new(term, node_id)`: openraft's LeaderId
+        // for this type config carries a term and a node id, but the
+        // *index-comparison* path only needs term+index to match. We
+        // don't persist the originating node id per entry (the frame
+        // stores term+index only), and openraft only compares the
+        // (term, index) pair for log matching — node id 0 is fine here.
         let last_log_id = self
             .log
             .log()
-            .last_index()
-            .map(|idx| LogId::new(openraft::CommittedLeaderId::new(0, 0), idx));
+            .last_log_id_parts()
+            .map(|(idx, term)| LogId::new(openraft::CommittedLeaderId::new(term, 0), idx));
         Ok(LogState {
             last_purged_log_id: None,
             last_log_id,

@@ -93,6 +93,20 @@ impl nebula_grpc::cross_region::StatusSink for CrossRegionStatusHub {
     }
 }
 
+/// Read side consumed by the region failover monitor (design 0011 §4).
+/// A region we have no record of is treated as healthy: the monitor
+/// only fails over regions we are actively tailing and have observed
+/// fail, never one we simply haven't heard from.
+impl nebula_grpc::cross_region::RegionHealthSource for CrossRegionStatusHub {
+    fn is_region_healthy(&self, region: &str) -> bool {
+        self.inner
+            .read()
+            .ok()
+            .and_then(|g| g.get(region).map(|s| s.healthy))
+            .unwrap_or(true)
+    }
+}
+
 impl CrossRegionStatusHub {
     pub fn new() -> Self {
         Self::default()
