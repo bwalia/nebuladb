@@ -80,9 +80,8 @@ async fn follower_mirrors_leader_writes() {
         )
         .unwrap(),
     );
-    let follower = Arc::new(
-        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let follower =
+        Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
 
     let (addr, _srv) = spawn_leader(leader.clone()).await;
     let ch = channel(addr).await;
@@ -167,9 +166,8 @@ async fn run_once_applies_pending_records_and_returns_cursor() {
         )
         .unwrap(),
     );
-    let follower = Arc::new(
-        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let follower =
+        Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
     for i in 0..3 {
         leader
             .upsert_text(
@@ -222,9 +220,8 @@ async fn cursor_store_advances_after_apply() {
         )
         .unwrap(),
     );
-    let follower_idx = Arc::new(
-        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let follower_idx =
+        Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
     for i in 0..4 {
         leader
             .upsert_text("b", &format!("d{i}"), "t", serde_json::json!({}))
@@ -318,12 +315,11 @@ async fn file_store_resumes_across_restart() {
     // cursor to the file store, then aborts.
     {
         let ch = channel(addr).await;
-        let idx = Arc::new(
-            TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
-        );
-        let store: Arc<dyn follower::CursorStore> = Arc::new(
-            follower::FileCursorStore::new(follower_meta.path().join("follower.cursor")),
-        );
+        let idx =
+            Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
+        let store: Arc<dyn follower::CursorStore> = Arc::new(follower::FileCursorStore::new(
+            follower_meta.path().join("follower.cursor"),
+        ));
         let idx_for_task = idx.clone();
         let task = tokio::spawn(async move {
             follower::run_once_with_store(ch, idx_for_task, WalCursor::BEGIN, Some(store)).await
@@ -352,20 +348,13 @@ async fn file_store_resumes_across_restart() {
     // works, this follower should ONLY see the 2 new post-* records
     // (3 old ones are skipped because the cursor points past them).
     let ch2 = channel(addr).await;
-    let idx2 = Arc::new(
-        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
-    let store2: Arc<dyn follower::CursorStore> = Arc::new(
-        follower::FileCursorStore::new(follower_meta.path().join("follower.cursor")),
-    );
+    let idx2 = Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
+    let store2: Arc<dyn follower::CursorStore> = Arc::new(follower::FileCursorStore::new(
+        follower_meta.path().join("follower.cursor"),
+    ));
     // spawn_with_store loads the persisted cursor internally, so
     // the initial_cursor arg is effectively a fallback only.
-    let fh = follower::spawn_with_store(
-        ch2,
-        idx2.clone(),
-        WalCursor::BEGIN,
-        Some(store2),
-    );
+    let fh = follower::spawn_with_store(ch2, idx2.clone(), WalCursor::BEGIN, Some(store2));
     for _ in 0..50 {
         if idx2.len() == 2 {
             break;
@@ -379,7 +368,10 @@ async fn file_store_resumes_across_restart() {
     );
     // Confirm it's specifically the post-* docs, not the pre-* ones.
     assert!(idx2.get("b", "post-0").is_some());
-    assert!(idx2.get("b", "pre-0").is_none(), "pre-* docs were before the saved cursor");
+    assert!(
+        idx2.get("b", "pre-0").is_none(),
+        "pre-* docs were before the saved cursor"
+    );
     fh.abort();
 }
 
@@ -389,14 +381,12 @@ async fn file_store_resumes_across_restart() {
 // tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_memory_leader_rejects_followers() {
-    let leader = Arc::new(
-        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let leader =
+        Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
     let (addr, _srv) = spawn_leader(leader).await;
     let ch = channel(addr).await;
-    let follower = Arc::new(
-        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let follower =
+        Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
 
     let err = follower::run_once(ch, follower, WalCursor::BEGIN)
         .await
@@ -423,7 +413,9 @@ async fn spawn_leader_with_region(
     let state = GrpcState::new(index, llm, chunker);
     let r = region.to_string();
     let handle = tokio::spawn(async move {
-        nebula_grpc::serve_with_region(state, addr, Some(r)).await.unwrap();
+        nebula_grpc::serve_with_region(state, addr, Some(r))
+            .await
+            .unwrap();
     });
     sleep(Duration::from_millis(100)).await;
     (addr, handle)
@@ -530,9 +522,8 @@ async fn cross_region_consumer_mirrors_source_writes() {
         spawn_leader_with_region(source_idx.clone(), "us-east-1").await;
 
     // Consumer node (us-west-2) — empty index; owns nothing.
-    let consumer_idx = Arc::new(
-        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let consumer_idx =
+        Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
 
     // Trivial `StatusSink` that just counts applies so the test can
     // assert progress without standing up nebula-server's hub.
@@ -664,9 +655,7 @@ async fn follower_lazy_channel_survives_unreachable_leader() {
     let channel = Channel::from_shared(bogus.to_string())
         .unwrap()
         .connect_lazy();
-    let idx = Arc::new(
-        TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let idx = Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
     let fh = follower::spawn_with_store(channel, idx.clone(), WalCursor::BEGIN, None);
     // Give the follower task plenty of time to attempt several
     // reconnects (backoff starts at 100ms, caps at 5s). If the task
@@ -677,4 +666,98 @@ async fn follower_lazy_channel_survives_unreachable_leader() {
         "follower task exited despite unreachable leader; should retry forever"
     );
     fh.abort();
+}
+
+/// Fresh follower vs a leader whose WAL has been compacted past the
+/// follower's cursor (design 0010 follow-up: the WAL-gap fix). The
+/// leader must REFUSE the subscribe with FAILED_PRECONDITION instead
+/// of silently serving a partial history — before the fix, the
+/// follower would come up "healthy" while missing every record from
+/// the compacted segments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_follower_is_refused_after_leader_compaction() {
+    let leader_dir = tempdir().unwrap();
+    // Tiny segments so a handful of writes spans several files;
+    // explicit snapshot dir keeps the test hermetic.
+    let leader = Arc::new(
+        TextIndex::open_persistent_with_wal_config(
+            embedder(),
+            Metric::Cosine,
+            HnswConfig::default(),
+            leader_dir.path(),
+            Some(leader_dir.path().join("snapshots")),
+            nebula_wal::WalConfig {
+                segment_size_bytes: 512,
+                fsync_on_append: false,
+            },
+        )
+        .unwrap(),
+    );
+    for i in 0..30 {
+        leader
+            .upsert_text(
+                "b",
+                &format!("d{i}"),
+                &format!("document number {i}"),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+    }
+    // Snapshot + compact: drops all segments before the current one.
+    leader.snapshot().unwrap();
+    let removed = leader.compact_wal().unwrap();
+    assert!(removed > 0, "test setup: compaction must drop segments");
+
+    let (addr, _server) = spawn_leader(Arc::clone(&leader)).await;
+    let ch = channel(addr).await;
+
+    // Fresh follower at BEGIN: must get FAILED_PRECONDITION, not a
+    // silent partial stream.
+    let follower =
+        Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
+    let err = follower::run_once(ch.clone(), Arc::clone(&follower), WalCursor::BEGIN)
+        .await
+        .expect_err("subscribe at BEGIN must be refused after compaction");
+    match err {
+        follower::FollowerError::Rpc(status) => {
+            assert_eq!(status.code(), tonic::Code::FailedPrecondition, "{status:?}");
+            assert!(
+                status.message().contains("compacted"),
+                "operator-actionable message expected; got {}",
+                status.message()
+            );
+        }
+        other => panic!("expected Rpc(FailedPrecondition), got {other:?}"),
+    }
+    assert_eq!(
+        follower.len(),
+        0,
+        "refused follower must not have partial data"
+    );
+
+    // A follower that starts at the oldest SURVIVING segment (what a
+    // snapshot-seeded node derives) streams fine.
+    let oldest = leader.wal_stats().unwrap().oldest_seq;
+    let seeded =
+        Arc::new(TextIndex::new(embedder(), Metric::Cosine, HnswConfig::default()).unwrap());
+    let seeded2 = Arc::clone(&seeded);
+    let ch2 = ch.clone();
+    let task = tokio::spawn(async move {
+        let _ = follower::run_once(
+            ch2,
+            seeded2,
+            WalCursor {
+                segment_seq: oldest,
+                byte_offset: 0,
+            },
+        )
+        .await;
+    });
+    sleep(Duration::from_millis(400)).await;
+    task.abort();
+    assert!(
+        !seeded.is_empty(),
+        "cursor at oldest surviving segment must stream records"
+    );
 }
