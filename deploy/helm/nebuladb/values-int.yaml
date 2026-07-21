@@ -1,4 +1,4 @@
-# Integration environment — namespace `int`, host int.jobshout.com.
+# Integration environment — namespace `int`, host int.nebuladb.net.
 #
 # Layered on top of values.yaml by the deploy-k3s workflow:
 #   helm upgrade --install nebuladb ./deploy/helm/nebuladb \
@@ -8,7 +8,7 @@
 # Images are public Docker Hub (bwalia/*), so no imagePullSecret is
 # needed. TLS is issued by cert-manager (`main-issuer`) and the host is
 # published through the `wslproxy` ingress controller — point DNS for
-# int.jobshout.com at the wslproxy ingress.
+# int.nebuladb.net at the wslproxy ingress.
 
 server:
   image:
@@ -32,14 +32,14 @@ server:
     annotations:
       cert-manager.io/cluster-issuer: main-issuer
     hosts:
-      - host: int.jobshout.com
+      - host: int.nebuladb.net
         paths:
           # No `service`/`portName` → defaults to the showcase gateway.
           - path: /
             pathType: Prefix
     tls:
       - hosts:
-          - int.jobshout.com
+          - int.nebuladb.net
         secretName: nebuladb-int-tls
 
 showcase:
