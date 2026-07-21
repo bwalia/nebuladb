@@ -1,0 +1,234 @@
+# Build the NebulaDB images and deploy the stack to the k3s cluster
+# (k3s1) with Helm — mirrors the beaconpulse deploy pattern.
+#
+# Flow: build job pushes `nebula-server` + `nebula-showcase` to Docker
+# Hub (bwalia/*, public — no cluster pull secret needed), tagged with
+# the commit short-SHA and `latest`; the deploy job decodes the
+# cluster kubeconfig from a secret and runs `helm upgrade --install`
+# with the per-environment values file, pinning the freshly-built SHA.
+#
+# Environments map one namespace + one host each, fronted by the
+# `wslproxy` ingress controller with cert-manager (`main-issuer`) TLS:
+#   int  -> namespace int  -> int.jobshout.com
+#   test -> namespace test -> test.jobshout.com
+#   acc  -> namespace acc  -> acc.jobshout.com
+#   prod -> namespace prod -> www.jobshout.com
+# Point a DNS record for each host at the wslproxy ingress.
+#
+# Triggers:
+#   - push to main            -> build + deploy to `int`
+#   - workflow_dispatch       -> choose TARGET_ENV / DEPLOYMENT_TYPE /
+#                                IMAGE_TAG (blank IMAGE_TAG => short SHA)
+#
+# Secrets:
+#   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN  — docker login (build job)
+#   KUBE_CONFIG_DATA_K3S                 — base64 kubeconfig for k3s1
+
+name: deploy-k3s
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      TARGET_ENV:
+        description: Target environment
+        type: choice
+        default: int
+        options: [int, test, acc, prod]
+      DEPLOYMENT_TYPE:
+        description: What to run
+        type: choice
+        default: build-and-deploy
+        options: [build, deploy, build-and-deploy]
+      IMAGE_TAG:
+        description: Image tag to deploy (blank => commit short SHA)
+        required: false
+        default: ""
+
+# One deploy per environment at a time. A second push while a build is
+# mid-flight waits rather than racing `helm upgrade` on the same release.
+concurrency:
+  group: deploy-k3s-${{ github.event.inputs.TARGET_ENV || 'int' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DOCKERHUB_NAMESPACE: bwalia
+  TARGET_ENV: ${{ github.event.inputs.TARGET_ENV || 'int' }}
+  DEPLOYMENT_TYPE: ${{ github.event.inputs.DEPLOYMENT_TYPE || 'build-and-deploy' }}
+
+jobs:
+  build:
+    name: build + push images
+    # GitHub-hosted (not self-hosted): the self-hosted runner is
+    # macOS/arm64, but every k3s1 node is linux/amd64 — building on the
+    # Mac would yield arm64 images (or need slow QEMU emulation for the
+    # Rust server). ubuntu-latest is native amd64 and needs no cluster
+    # access to push to Docker Hub. This mirrors publish.yml.
+    runs-on: ubuntu-latest
+    # Cold Rust build (tonic + pgwire) is ~15 min; warm gha cache ~2.
+    timeout-minutes: 60
+    if: ${{ (github.event.inputs.DEPLOYMENT_TYPE || 'build-and-deploy') != 'deploy' }}
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.IMAGE_TAG }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_SHA::7}"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "Building tag: $TAG"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build + push nebula-server
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          # Cluster nodes are linux/amd64; pin it so a future arm64
+          # runner can't publish an unrunnable image.
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_NAMESPACE }}/nebula-server:${{ steps.tag.outputs.tag }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/nebula-server:latest
+          cache-from: type=gha,scope=nebula-server
+          cache-to: type=gha,mode=max,scope=nebula-server
+
+      - name: Build + push nebula-showcase
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/showcase
+          file: apps/showcase/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_NAMESPACE }}/nebula-showcase:${{ steps.tag.outputs.tag }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/nebula-showcase:latest
+          cache-from: type=gha,scope=nebula-showcase
+          cache-to: type=gha,mode=max,scope=nebula-showcase
+
+  deploy:
+    name: helm upgrade (${{ github.event.inputs.TARGET_ENV || 'int' }})
+    runs-on: self-hosted
+    needs: [build]
+    # `deploy`-only runs skip the build job; `always()` + explicit
+    # result checks let this run whether build ran, was skipped, or the
+    # user chose DEPLOYMENT_TYPE=deploy.
+    if: >-
+      ${{ always()
+      && (github.event.inputs.DEPLOYMENT_TYPE || 'build-and-deploy') != 'build'
+      && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          set -euo pipefail
+          # Prefer the tag the build job produced; fall back to the
+          # dispatch input or the commit short-SHA for deploy-only runs.
+          TAG="${{ needs.build.outputs.image_tag }}"
+          [ -z "$TAG" ] && TAG="${{ github.event.inputs.IMAGE_TAG }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_SHA::7}"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "Deploying tag: $TAG to env: $TARGET_ENV"
+
+      - name: Ensure kubectl + helm
+        # The self-hosted runner is macOS; the tools are normally
+        # already present. Install on demand (Homebrew, else static
+        # download) so a fresh runner still works. No-op when present.
+        run: |
+          set -euo pipefail
+          os=$(uname -s | tr '[:upper:]' '[:lower:]')
+          arch=$(uname -m); case "$arch" in aarch64|arm64) arch=arm64;; x86_64|amd64) arch=amd64;; esac
+          mkdir -p "$HOME/.local/bin"; echo "$HOME/.local/bin" >>"$GITHUB_PATH"; export PATH="$HOME/.local/bin:$PATH"
+          if ! command -v kubectl >/dev/null 2>&1; then
+            brew install kubernetes-cli 2>/dev/null || {
+              v=$(curl -fsSL https://dl.k8s.io/release/stable.txt)
+              curl -fsSLo "$HOME/.local/bin/kubectl" "https://dl.k8s.io/release/${v}/bin/${os}/${arch}/kubectl"
+              chmod +x "$HOME/.local/bin/kubectl"; }
+          fi
+          if ! command -v helm >/dev/null 2>&1; then
+            brew install helm 2>/dev/null || {
+              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | HELM_INSTALL_DIR="$HOME/.local/bin" USE_SUDO=false bash; }
+          fi
+          kubectl version --client=true --output=yaml | head -3 || kubectl version --client || true
+          helm version --short
+
+      - name: Write kubeconfig
+        run: |
+          set -euo pipefail
+          # `base64 -d` decodes on both GNU (Linux) and BSD (macOS) base64.
+          echo "${{ secrets.KUBE_CONFIG_DATA_K3S }}" | base64 -d > ./kubeconfig
+          chmod 600 ./kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >>"$GITHUB_ENV"
+
+      - name: Sanity — cluster reachable
+        run: |
+          set -euo pipefail
+          kubectl version --output=yaml | head -20 || true
+          kubectl get nodes -o wide
+
+      - name: Helm upgrade --install
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          helm dependency build ./deploy/helm/nebuladb || true
+          helm upgrade --install nebuladb ./deploy/helm/nebuladb \
+            -f ./deploy/helm/nebuladb/values-"${TARGET_ENV}".yaml \
+            --set server.image.tag="$TAG" \
+            --set showcase.image.tag="$TAG" \
+            --namespace "$TARGET_ENV" --create-namespace \
+            --wait --timeout 20m
+
+      - name: Rollout status
+        run: |
+          set -euo pipefail
+          kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb --timeout=10m
+          kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb-showcase --timeout=5m
+          kubectl -n "$TARGET_ENV" get ingress,svc,pods -o wide
+
+      - name: Summary
+        if: always()
+        run: |
+          host_for_env() {
+            case "$1" in
+              int)  echo "int.jobshout.com" ;;
+              test) echo "test.jobshout.com" ;;
+              acc)  echo "acc.jobshout.com" ;;
+              prod) echo "www.jobshout.com" ;;
+            esac
+          }
+          HOST="$(host_for_env "$TARGET_ENV")"
+          {
+            echo "## NebulaDB deployed to \`${TARGET_ENV}\` (k3s1)"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| release | nebuladb |"
+            echo "| namespace | ${TARGET_ENV} |"
+            echo "| image tag | ${{ steps.tag.outputs.tag }} |"
+            echo "| URL | https://${HOST} |"
+            echo "| ingress class | wslproxy |"
+            echo "| TLS issuer | main-issuer (cert-manager) |"
+          } >>"$GITHUB_STEP_SUMMARY"
