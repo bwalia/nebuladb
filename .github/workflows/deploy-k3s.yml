@@ -1,0 +1,217 @@
+# Build the NebulaDB images and deploy the stack to the k3s cluster
+# (k3s1) with Helm — mirrors the beaconpulse deploy pattern.
+#
+# Flow: build job pushes `nebula-server` + `nebula-showcase` to Docker
+# Hub (bwalia/*, public — no cluster pull secret needed), tagged with
+# the commit short-SHA and `latest`; the deploy job decodes the
+# cluster kubeconfig from a secret and runs `helm upgrade --install`
+# with the per-environment values file, pinning the freshly-built SHA.
+#
+# Environments map one namespace + one host each, fronted by the
+# `wslproxy` ingress controller with cert-manager (`main-issuer`) TLS:
+#   int  -> namespace int  -> int.jobshout.com
+#   test -> namespace test -> test.jobshout.com
+#   acc  -> namespace acc  -> acc.jobshout.com
+#   prod -> namespace prod -> www.jobshout.com
+# Point a DNS record for each host at the wslproxy ingress.
+#
+# Triggers:
+#   - push to main            -> build + deploy to `int`
+#   - workflow_dispatch       -> choose TARGET_ENV / DEPLOYMENT_TYPE /
+#                                IMAGE_TAG (blank IMAGE_TAG => short SHA)
+#
+# Secrets:
+#   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN  — docker login (build job)
+#   KUBE_CONFIG_DATA_K3S                 — base64 kubeconfig for k3s1
+
+name: deploy-k3s
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      TARGET_ENV:
+        description: Target environment
+        type: choice
+        default: int
+        options: [int, test, acc, prod]
+      DEPLOYMENT_TYPE:
+        description: What to run
+        type: choice
+        default: build-and-deploy
+        options: [build, deploy, build-and-deploy]
+      IMAGE_TAG:
+        description: Image tag to deploy (blank => commit short SHA)
+        required: false
+        default: ""
+
+# One deploy per environment at a time. A second push while a build is
+# mid-flight waits rather than racing `helm upgrade` on the same release.
+concurrency:
+  group: deploy-k3s-${{ github.event.inputs.TARGET_ENV || 'int' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DOCKERHUB_NAMESPACE: bwalia
+  TARGET_ENV: ${{ github.event.inputs.TARGET_ENV || 'int' }}
+  DEPLOYMENT_TYPE: ${{ github.event.inputs.DEPLOYMENT_TYPE || 'build-and-deploy' }}
+
+jobs:
+  build:
+    name: build + push images
+    runs-on: self-hosted
+    # Cold Rust build (tonic + pgwire) is ~15 min; warm cache is ~2.
+    timeout-minutes: 60
+    if: ${{ (github.event.inputs.DEPLOYMENT_TYPE || 'build-and-deploy') != 'deploy' }}
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.IMAGE_TAG }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_SHA::7}"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "Building tag: $TAG"
+
+      - name: Resolve proxy CA
+        # The showcase build's `npm ci` fails behind a TLS-inspecting
+        # proxy (Zscaler) with UNABLE_TO_GET_ISSUER_CERT_LOCALLY. Feed
+        # the host CA bundle to the build as the `proxy_ca` secret. The
+        # path varies by distro and may be absent on a clean host; fall
+        # back to /dev/null so the (required=false) secret is a no-op.
+        run: |
+          set -euo pipefail
+          ca=/dev/null
+          for cand in \
+            /etc/ssl/certs/ca-certificates.crt \
+            /etc/pki/tls/certs/ca-bundle.crt \
+            /etc/ssl/cert.pem; do
+            if [[ -f "$cand" ]]; then ca="$cand"; break; fi
+          done
+          echo "PROXY_CA_FILE=$ca" >>"$GITHUB_ENV"
+          echo "Using proxy CA: $ca"
+
+      - name: Log in to Docker Hub
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" \
+            | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build + push nebula-server
+        env:
+          NS: ${{ env.DOCKERHUB_NAMESPACE }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            -f Dockerfile \
+            -t "$NS/nebula-server:$TAG" \
+            -t "$NS/nebula-server:latest" \
+            --push .
+
+      - name: Build + push nebula-showcase
+        env:
+          NS: ${{ env.DOCKERHUB_NAMESPACE }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --secret id=proxy_ca,src="$PROXY_CA_FILE" \
+            -t "$NS/nebula-showcase:$TAG" \
+            -t "$NS/nebula-showcase:latest" \
+            --push apps/showcase
+
+  deploy:
+    name: helm upgrade (${{ github.event.inputs.TARGET_ENV || 'int' }})
+    runs-on: self-hosted
+    needs: [build]
+    # `deploy`-only runs skip the build job; `always()` + explicit
+    # result checks let this run whether build ran, was skipped, or the
+    # user chose DEPLOYMENT_TYPE=deploy.
+    if: >-
+      ${{ always()
+      && (github.event.inputs.DEPLOYMENT_TYPE || 'build-and-deploy') != 'build'
+      && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          set -euo pipefail
+          # Prefer the tag the build job produced; fall back to the
+          # dispatch input or the commit short-SHA for deploy-only runs.
+          TAG="${{ needs.build.outputs.image_tag }}"
+          [ -z "$TAG" ] && TAG="${{ github.event.inputs.IMAGE_TAG }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_SHA::7}"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "Deploying tag: $TAG to env: $TARGET_ENV"
+
+      - name: Write kubeconfig
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.KUBE_CONFIG_DATA_K3S }}" | base64 -d > ./kubeconfig
+          chmod 600 ./kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >>"$GITHUB_ENV"
+
+      - name: Sanity — cluster reachable
+        run: |
+          set -euo pipefail
+          kubectl version --output=yaml | head -20 || true
+          kubectl get nodes -o wide
+
+      - name: Helm upgrade --install
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          helm dependency build ./deploy/helm/nebuladb || true
+          helm upgrade --install nebuladb ./deploy/helm/nebuladb \
+            -f ./deploy/helm/nebuladb/values-"${TARGET_ENV}".yaml \
+            --set server.image.tag="$TAG" \
+            --set showcase.image.tag="$TAG" \
+            --namespace "$TARGET_ENV" --create-namespace \
+            --wait --timeout 20m
+
+      - name: Rollout status
+        run: |
+          set -euo pipefail
+          kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb --timeout=10m
+          kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb-showcase --timeout=5m
+          kubectl -n "$TARGET_ENV" get ingress,svc,pods -o wide
+
+      - name: Summary
+        if: always()
+        run: |
+          host_for_env() {
+            case "$1" in
+              int)  echo "int.jobshout.com" ;;
+              test) echo "test.jobshout.com" ;;
+              acc)  echo "acc.jobshout.com" ;;
+              prod) echo "www.jobshout.com" ;;
+            esac
+          }
+          HOST="$(host_for_env "$TARGET_ENV")"
+          {
+            echo "## NebulaDB deployed to \`${TARGET_ENV}\` (k3s1)"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| release | nebuladb |"
+            echo "| namespace | ${TARGET_ENV} |"
+            echo "| image tag | ${{ steps.tag.outputs.tag }} |"
+            echo "| URL | https://${HOST} |"
+            echo "| ingress class | wslproxy |"
+            echo "| TLS issuer | main-issuer (cert-manager) |"
+          } >>"$GITHUB_STEP_SUMMARY"

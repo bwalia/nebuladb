@@ -1,0 +1,50 @@
+# Integration environment — namespace `int`, host int.jobshout.com.
+#
+# Layered on top of values.yaml by the deploy-k3s workflow:
+#   helm upgrade --install nebuladb ./deploy/helm/nebuladb \
+#     -f values-int.yaml --set server.image.tag=<sha> \
+#     --set showcase.image.tag=<sha> -n int --create-namespace
+#
+# Images are public Docker Hub (bwalia/*), so no imagePullSecret is
+# needed. TLS is issued by cert-manager (`main-issuer`) and the host is
+# published through the `wslproxy` ingress controller — point DNS for
+# int.jobshout.com at the wslproxy ingress.
+
+server:
+  image:
+    repository: bwalia/nebula-server
+    # `tag` is overridden at deploy time with the commit short-SHA.
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  # Durable database: WAL + snapshots on a PVC (k3s local-path).
+  # Recreate strategy + single replica are already the chart defaults.
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+
+  ingress:
+    enabled: true
+    className: wslproxy
+    annotations:
+      cert-manager.io/cluster-issuer: main-issuer
+    hosts:
+      - host: int.jobshout.com
+        paths:
+          # No `service`/`portName` → defaults to the showcase gateway.
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - int.jobshout.com
+        secretName: nebuladb-int-tls
+
+showcase:
+  enabled: true
+  image:
+    repository: bwalia/nebula-showcase
+    tag: "latest"
+    pullPolicy: IfNotPresent

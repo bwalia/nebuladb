@@ -1,0 +1,38 @@
+# Acceptance environment — namespace `acc`, host acc.jobshout.com.
+# See values-int.yaml for the full rationale; only host/namespace/TLS
+# secret differ per environment.
+
+server:
+  image:
+    repository: bwalia/nebula-server
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+
+  ingress:
+    enabled: true
+    className: wslproxy
+    annotations:
+      cert-manager.io/cluster-issuer: main-issuer
+    hosts:
+      - host: acc.jobshout.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - acc.jobshout.com
+        secretName: nebuladb-acc-tls
+
+showcase:
+  enabled: true
+  image:
+    repository: bwalia/nebula-showcase
+    tag: "latest"
+    pullPolicy: IfNotPresent

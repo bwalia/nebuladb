@@ -1,0 +1,49 @@
+# Production environment — namespace `prod`, host www.jobshout.com.
+# See values-int.yaml for the full rationale. Prod sizes the data
+# volume larger and pins a richer resource request; host/namespace/TLS
+# secret differ per environment.
+
+server:
+  image:
+    repository: bwalia/nebula-server
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  # Prod gets a larger durable volume. NebulaDB's HNSW index is
+  # RAM-bound (~4 bytes/dim/doc) so bump memory here as the corpus grows.
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 50Gi
+    accessModes:
+      - ReadWriteOnce
+
+  ingress:
+    enabled: true
+    className: wslproxy
+    annotations:
+      cert-manager.io/cluster-issuer: main-issuer
+    hosts:
+      - host: www.jobshout.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - www.jobshout.com
+        secretName: nebuladb-prod-tls
+
+showcase:
+  enabled: true
+  image:
+    repository: bwalia/nebula-showcase
+    tag: "latest"
+    pullPolicy: IfNotPresent

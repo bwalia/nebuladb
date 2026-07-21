@@ -1,8 +1,10 @@
 {{- if .Values.server.ingress.enabled -}}
+{{- $fullName := include "nebuladb.fullname" . -}}
+{{- $showcaseSvc := printf "%s-showcase" $fullName -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "nebuladb.fullname" . }}
+  name: {{ $fullName }}
   labels:
     {{- include "nebuladb.server.selectorLabels" . | nindent 4 }}
     {{- include "nebuladb.labels" . | nindent 4 }}
@@ -26,9 +28,19 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "nebuladb.fullname" $ }}
+                # Default backend is the showcase gateway: its nginx
+                # serves the React UI at `/` and reverse-proxies
+                # `/api`, `/healthz`, `/metrics` to the server Service —
+                # so one host exposes both UI and API with no CORS.
+                # Override per-path with `service:` + `portName:`
+                # (e.g. `rest`) to route straight at the raw server.
+                name: {{ .service | default $showcaseSvc }}
                 port:
-                  name: rest
+                  {{- if .portName }}
+                  name: {{ .portName }}
+                  {{- else }}
+                  number: {{ .portNumber | default 80 }}
+                  {{- end }}
           {{- end }}
     {{- end }}
 {{- end -}}
