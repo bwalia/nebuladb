@@ -109,10 +109,9 @@ server:
 
     RUST_LOG: "info"
 
-  # Secret-sourced env vars. Populated from a Kubernetes Secret so
-  # JWT + bearer tokens don't land in plain-text values.
-  # Format: { key: secret-name } — the chart mounts `secret-name`
-  # with a `key=value` data entry and injects via envFrom.
+  # Legacy secret-sourced env vars, kept for backward compat. The
+  # preferred path is the ExternalSecret (wslvault) block below.
+  # Format: { key: secret-name } — envFrom mounts each named Secret.
   secretEnv:
     # NEBULA_API_KEYS: my-api-keys
     # NEBULA_JWT_SECRET: my-jwt-secret
@@ -201,3 +200,32 @@ serviceMonitor:
   # Additional labels merged onto the ServiceMonitor so
   # kube-prometheus-stack's `serviceMonitorSelector` picks it up.
   labels: {}
+
+# ---------------------------------------------------------------------------
+# App secrets via External Secrets Operator (wslvault) — mirrors beacon
+# ---------------------------------------------------------------------------
+# When enabled, an ExternalSecret pulls the tier's keys from Vault
+# (ClusterSecretStore `vault-backend`, a.k.a. wslvault) into a Secret
+# named `<release>-secrets`, which nebula-server consumes via envFrom.
+# Populate Vault at:
+#     {vaultKeyPrefix}/{environment}/{vaultKeySuffix}
+#   e.g. secret/nebuladb/int/config
+# with any of these keys (all optional — unset => that feature is off):
+#     NEBULA_JWT_SECRET, NEBULA_API_KEYS, NEBULA_OPENAI_API_KEY
+externalSecret:
+  enabled: false
+  refreshInterval: "1m"
+  storeName: vault-backend
+  storeKind: ClusterSecretStore
+  # Standalone nebuladb project path (not nested under diytaxreturn).
+  vaultKeyPrefix: secret/nebuladb
+  vaultKeySuffix: config
+
+# Deployment tier — selects the Vault path segment (int|test|acc|prod).
+# Set per-environment in values-<env>.yaml.
+environment: ""
+
+# Fallback plain Secret, used ONLY when externalSecret.enabled=false
+# (local/dev without Vault). Map of ENV_VAR: value. Never commit real
+# secrets here.
+secrets: {}

@@ -47,3 +47,8 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
+
+# App secrets from wslvault (ESO) — pulls secret/nebuladb/prod/config
+externalSecret:
+  enabled: true
+environment: prod
