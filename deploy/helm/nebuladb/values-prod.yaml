@@ -1,4 +1,4 @@
-# Production environment — namespace `prod`, host www.jobshout.com.
+# Production environment — namespace `prod`, host www.nebuladb.net.
 # See values-int.yaml for the full rationale. Prod sizes the data
 # volume larger and pins a richer resource request; host/namespace/TLS
 # secret differ per environment.
@@ -32,13 +32,13 @@ server:
     annotations:
       cert-manager.io/cluster-issuer: main-issuer
     hosts:
-      - host: www.jobshout.com
+      - host: www.nebuladb.net
         paths:
           - path: /
             pathType: Prefix
     tls:
       - hosts:
-          - www.jobshout.com
+          - www.nebuladb.net
         secretName: nebuladb-prod-tls
 
 showcase:

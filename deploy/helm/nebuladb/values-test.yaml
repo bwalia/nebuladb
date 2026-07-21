@@ -1,4 +1,4 @@
-# Test environment — namespace `test`, host test.jobshout.com.
+# Test environment — namespace `test`, host test.nebuladb.net.
 # See values-int.yaml for the full rationale; only host/namespace/TLS
 # secret differ per environment.
 
@@ -21,13 +21,13 @@ server:
     annotations:
       cert-manager.io/cluster-issuer: main-issuer
     hosts:
-      - host: test.jobshout.com
+      - host: test.nebuladb.net
         paths:
           - path: /
             pathType: Prefix
     tls:
       - hosts:
-          - test.jobshout.com
+          - test.nebuladb.net
         secretName: nebuladb-test-tls
 
 showcase:

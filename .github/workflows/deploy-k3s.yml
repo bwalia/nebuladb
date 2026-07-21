@@ -9,10 +9,10 @@
 #
 # Environments map one namespace + one host each, fronted by the
 # `wslproxy` ingress controller with cert-manager (`main-issuer`) TLS:
-#   int  -> namespace int  -> int.jobshout.com
-#   test -> namespace test -> test.jobshout.com
-#   acc  -> namespace acc  -> acc.jobshout.com
-#   prod -> namespace prod -> www.jobshout.com
+#   int  -> namespace int  -> int.nebuladb.net
+#   test -> namespace test -> test.nebuladb.net
+#   acc  -> namespace acc  -> acc.nebuladb.net
+#   prod -> namespace prod -> www.nebuladb.net
 # Point a DNS record for each host at the wslproxy ingress.
 #
 # Triggers:
@@ -213,10 +213,10 @@ jobs:
         run: |
           host_for_env() {
             case "$1" in
-              int)  echo "int.jobshout.com" ;;
-              test) echo "test.jobshout.com" ;;
-              acc)  echo "acc.jobshout.com" ;;
-              prod) echo "www.jobshout.com" ;;
+              int)  echo "int.nebuladb.net" ;;
+              test) echo "test.nebuladb.net" ;;
+              acc)  echo "acc.nebuladb.net" ;;
+              prod) echo "www.nebuladb.net" ;;
             esac
           }
           HOST="$(host_for_env "$TARGET_ENV")"
