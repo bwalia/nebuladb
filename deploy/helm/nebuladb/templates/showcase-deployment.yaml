@@ -31,6 +31,17 @@ spec:
             # has a working UI out of the box.
             - name: NEBULA_SERVER
               value: {{ include "nebuladb.showcase.serverUrl" . | quote }}
+            # nginx's upstream pools use bare host:port (no scheme), and
+            # they're resolved at config-load. In this single-node deploy
+            # both leader and follower point at the same server Service.
+            - name: NEBULA_LEADER_HOST
+              value: {{ include "nebuladb.fullname" . | quote }}
+            - name: NEBULA_FOLLOWER_HOST
+              value: {{ include "nebuladb.fullname" . | quote }}
+            # Cluster DNS for nginx's variable-based proxy_pass (the image
+            # default 127.0.0.11 is Docker-only and unreachable in k8s).
+            - name: NGINX_RESOLVER
+              value: {{ .Values.showcase.nginxResolver | quote }}
           {{- with .Values.showcase.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
