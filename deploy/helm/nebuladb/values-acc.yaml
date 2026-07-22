@@ -38,6 +38,11 @@ showcase:
     pullPolicy: IfNotPresent
 
 # App secrets from wslvault (ESO) — pulls secret/nebuladb/acc/config
+# Disabled until Vault is provisioned (policy granting read on
+# secret/nebuladb/* + seeded secret/nebuladb/acc/config). helm --wait
+# gates the rollout on this CR, so enabling it before Vault is ready
+# times out the deploy; nebula-server runs fine via optional envFrom.
+# Flip to true once the Vault policy + seed exist.
 externalSecret:
-  enabled: true
+  enabled: false
 environment: acc
