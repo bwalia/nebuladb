@@ -57,6 +57,15 @@ spec:
             # via `kubectl describe cm` without leaking secrets.
             - configMapRef:
                 name: {{ include "nebuladb.fullname" . }}
+            {{- if or .Values.externalSecret.enabled .Values.secrets }}
+            # App secrets from Vault (wslvault) via ExternalSecret, or the
+            # plain-Secret fallback. `optional: true` so an as-yet-unpopulated
+            # Vault path doesn't wedge startup — nebula-server runs cleanly
+            # with these unset (auth/embedder just fall back to defaults).
+            - secretRef:
+                name: {{ include "nebuladb.fullname" . }}-secrets
+                optional: true
+            {{- end }}
             {{- range $key, $secret := .Values.server.secretEnv }}
             # Each secret-backed var references its own Secret so
             # rotation doesn't need to touch every other env entry.
