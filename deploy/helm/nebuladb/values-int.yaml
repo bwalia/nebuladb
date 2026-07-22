@@ -49,7 +49,14 @@ showcase:
     tag: "latest"
     pullPolicy: IfNotPresent
 
-# App secrets from wslvault (ESO) — pulls secret/nebuladb/int/config
+# App secrets from wslvault (ESO) — pulls secret/nebuladb/int/config.
+# Disabled until Vault is provisioned: the ESO token needs a policy
+# granting read on secret/nebuladb/* AND the path must be seeded with
+# NEBULA_JWT_SECRET / NEBULA_API_KEYS / NEBULA_OPENAI_API_KEY. helm
+# --wait gates the whole rollout on this CR's readiness, so enabling it
+# before Vault is ready times out the deploy. nebula-server consumes the
+# secret via an optional envFrom, so it runs fine without it meanwhile.
+# Flip to true once the Vault policy + seed exist.
 externalSecret:
-  enabled: true
+  enabled: false
 environment: int
