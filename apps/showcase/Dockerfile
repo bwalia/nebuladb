@@ -80,9 +80,15 @@ FROM nginx:1.27-alpine AS runtime
 RUN apk add --no-cache gettext wget
 COPY --from=build /src/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/templates/default.conf.template
-# Default: talk to `nebula-server` (the compose service name). In
-# standalone mode, set NEBULA_SERVER=http://host.docker.internal:8080.
+# Defaults target the compose topology (leader `nebula-server` +
+# follower `nebula-follower`, Docker's embedded DNS at 127.0.0.11).
+# In standalone mode, set NEBULA_SERVER=http://host.docker.internal:8080.
+# The Helm chart overrides all four for Kubernetes (Service DNS +
+# cluster DNS); see apps/showcase/nginx.conf for how each is used.
 ENV NEBULA_SERVER=http://nebula-server:8080
+ENV NEBULA_LEADER_HOST=nebula-server
+ENV NEBULA_FOLLOWER_HOST=nebula-follower
+ENV NGINX_RESOLVER=127.0.0.11
 EXPOSE 80
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
   CMD wget -q -O /dev/null http://localhost/ || exit 1

@@ -172,6 +172,12 @@ showcase:
   # Set automatically to the cluster DNS of the server's Service.
   # Override only for split deployments.
   nebulaServerUrl: ""
+  # DNS server nginx uses to resolve variable-based proxy_pass targets
+  # at request time. The showcase image defaults to Docker's embedded
+  # DNS (127.0.0.11), which does not exist in Kubernetes — so we point
+  # it at the cluster DNS. 10.43.0.10 is the default kube-dns ClusterIP
+  # on k3s (service CIDR 10.43.0.0/16); override if your cluster differs.
+  nginxResolver: "10.43.0.10"
 
 # ---------------------------------------------------------------------------
 # Redis (bundled Bitnami subchart)
