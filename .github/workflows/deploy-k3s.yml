@@ -13,7 +13,10 @@
 #   test -> namespace test -> test-showcase.nebuladb.net
 #   acc  -> namespace acc  -> acc-showcase.nebuladb.net
 #   prod -> namespace prod -> showcase.nebuladb.net
-# Point a DNS record for each host at the wslproxy ingress.
+# After a successful deploy, the `cloudflare-dns` job upserts the host's
+# Cloudflare CNAME -> pop0.wslproxy.com (DNS-only) so the domain is wired
+# on every merge. The pop0 edge forwards to k3s1 Traefik per the rule in
+# the wslproxy repo (data/servers + data/rules).
 #
 # Triggers:
 #   - push to main            -> build + deploy to `int`
@@ -23,6 +26,8 @@
 # Secrets:
 #   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN  — docker login (build job)
 #   KUBE_CONFIG_DATA_K3S                 — base64 kubeconfig for k3s1
+#   CLOUDFLARE_API_TOKEN                 — Zone.DNS edit on nebuladb.net
+#                                          (optional; DNS job no-ops if unset)
 
 name: deploy-k3s
 
@@ -232,3 +237,58 @@ jobs:
             echo "| ingress class | wslproxy |"
             echo "| TLS issuer | main-issuer (cert-manager) |"
           } >>"$GITHUB_STEP_SUMMARY"
+
+  cloudflare-dns:
+    # After a successful deploy, ensure the env's public hostname has a
+    # Cloudflare CNAME → the wslproxy edge (pop0). Idempotent upsert, so
+    # it's safe to run on every merge/dispatch. The wslproxy pop0 edge
+    # then forwards the host to k3s1 Traefik (see the wslproxy repo's
+    # data/servers + data/rules for the 305 proxy rule).
+    #
+    # DNS-only (grey cloud, proxied=false): pop0 is the edge and
+    # terminates TLS, so Cloudflare must NOT double-proxy.
+    #
+    # No-op (not a failure) when CLOUDFLARE_API_TOKEN is unset, so forks
+    # and token-less runs still succeed.
+    name: cloudflare DNS (${{ github.event.inputs.TARGET_ENV || 'int' }})
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: ${{ always() && needs.deploy.result == 'success' }}
+    steps:
+      - name: Ensure CNAME -> pop0.wslproxy.com
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CF_TOKEN:-}" ]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN not set — skipping DNS provisioning for ${TARGET_ENV}."
+            exit 0
+          fi
+          case "$TARGET_ENV" in
+            int)  HOST="int-nebuladb.nebuladb.net" ;;
+            test) HOST="test-showcase.nebuladb.net" ;;
+            acc)  HOST="acc-showcase.nebuladb.net" ;;
+            prod) HOST="showcase.nebuladb.net" ;;
+            *)    echo "::error::unknown TARGET_ENV '$TARGET_ENV'"; exit 1 ;;
+          esac
+          ZONE="nebuladb.net"
+          TARGET="pop0.wslproxy.com"
+          API="https://api.cloudflare.com/client/v4"
+          AUTH=(-H "Authorization: Bearer ${CF_TOKEN}" -H "Content-Type: application/json")
+
+          ZONE_ID="$(curl -fsS "${AUTH[@]}" "${API}/zones?name=${ZONE}" | jq -r '.result[0].id // empty')"
+          [ -n "$ZONE_ID" ] || { echo "::error::zone ${ZONE} not visible to this token"; exit 1; }
+
+          REC_ID="$(curl -fsS "${AUTH[@]}" "${API}/zones/${ZONE_ID}/dns_records?type=CNAME&name=${HOST}" | jq -r '.result[0].id // empty')"
+          BODY="$(jq -n --arg name "$HOST" --arg content "$TARGET" \
+            '{type:"CNAME", name:$name, content:$content, ttl:1, proxied:false}')"
+
+          if [ -n "$REC_ID" ]; then
+            echo "Updating CNAME ${HOST} -> ${TARGET}"
+            OK="$(curl -fsS -X PUT "${AUTH[@]}" "${API}/zones/${ZONE_ID}/dns_records/${REC_ID}" -d "$BODY" | jq -r '.success')"
+          else
+            echo "Creating CNAME ${HOST} -> ${TARGET}"
+            OK="$(curl -fsS -X POST "${AUTH[@]}" "${API}/zones/${ZONE_ID}/dns_records" -d "$BODY" | jq -r '.success')"
+          fi
+          [ "$OK" = "true" ] || { echo "::error::Cloudflare API call failed"; exit 1; }
+          echo "::notice::CNAME ${HOST} -> ${TARGET} ensured (DNS-only)."
