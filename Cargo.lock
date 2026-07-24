@@ -2821,6 +2821,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-resource"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "parking_lot",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "nebula-server"
 version = "0.1.0"
 dependencies = [
@@ -2848,6 +2858,7 @@ dependencies = [
  "nebula-raft",
  "nebula-redis-cache",
  "nebula-rerank",
+ "nebula-resource",
  "nebula-sql",
  "nebula-vector",
  "nebula-wal",
