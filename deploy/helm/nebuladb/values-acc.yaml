@@ -1,4 +1,4 @@
-# Acceptance environment — namespace `acc`, host acc.nebuladb.net.
+# Acceptance environment — namespace `acc`, host acc-showcase.nebuladb.net.
 # See values-int.yaml for the full rationale; only host/namespace/TLS
 # secret differ per environment.
 
@@ -21,13 +21,13 @@ server:
     annotations:
       cert-manager.io/cluster-issuer: main-issuer
     hosts:
-      - host: acc.nebuladb.net
+      - host: acc-showcase.nebuladb.net
         paths:
           - path: /
             pathType: Prefix
     tls:
       - hosts:
-          - acc.nebuladb.net
+          - acc-showcase.nebuladb.net
         secretName: nebuladb-acc-tls
 
 showcase:
