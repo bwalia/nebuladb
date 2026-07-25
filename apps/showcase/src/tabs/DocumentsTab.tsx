@@ -162,7 +162,7 @@ function ModeTabs({
           title={it.hint}
           className={`px-3 py-1 text-xs font-medium rounded ${
             mode === it.id
-              ? "bg-brand-600 text-white"
+              ? "bg-accent text-white"
               : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
           }`}
         >

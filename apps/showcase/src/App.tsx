@@ -24,22 +24,18 @@ interface NavItem {
   id: TabId;
   label: string;
   hint: string;
-  // Inline SVG glyph — no icon-font dependency and dark-mode agnostic.
   icon: string;
   group: "home" | "data" | "ai" | "ops";
 }
 
-// Couchbase-style left nav: labelled groups rather than one flat list.
-// Grouping communicates scope at a glance ("AI vs data vs ops") and
-// gives us a natural place to add future admin-only sections.
 const NAV: NavItem[] = [
-  { id: "overview", label: "Overview", hint: "Cluster summary", icon: "🏠", group: "home" },
-  { id: "documents", label: "Documents", hint: "Ingest + chunk + embed", icon: "📄", group: "data" },
+  { id: "overview", label: "Overview", hint: "Cluster summary", icon: "◎", group: "home" },
+  { id: "documents", label: "Documents", hint: "Ingest + chunk + embed", icon: "❏", group: "data" },
   { id: "sql", label: "SQL", hint: "Query workbench", icon: "⌘", group: "data" },
-  { id: "search", label: "Semantic search", hint: "Vector retrieval", icon: "🔎", group: "ai" },
-  { id: "rag", label: "RAG chat", hint: "Streaming answers", icon: "💬", group: "ai" },
-  { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query", icon: "⚡", group: "ai" },
-  { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "📊", group: "ops" },
+  { id: "search", label: "Semantic search", hint: "Vector retrieval", icon: "✷", group: "ai" },
+  { id: "rag", label: "RAG chat", hint: "Streaming answers", icon: "❯", group: "ai" },
+  { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query", icon: "⟡", group: "ai" },
+  { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },
   { id: "admin", label: "Admin", hint: "Buckets, EXPLAIN, audit, slow queries", icon: "⚙", group: "ops" },
 ];
 
@@ -56,7 +52,6 @@ export function App() {
   const [tab, setTab] = useState<TabId>("overview");
   const [theme, setThemeState] = useState(getTheme());
   const [collapsed, setCollapsed] = useState<boolean>(() => {
-    // Persist the sidebar state across reloads. Defaults to expanded.
     try {
       return localStorage.getItem(SIDEBAR_KEY) === "collapsed";
     } catch {
@@ -74,7 +69,6 @@ export function App() {
     }
   }, [collapsed]);
 
-  // Poll /healthz; 5s gives the header a live feel without spamming.
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
@@ -101,6 +95,8 @@ export function App() {
     return acc;
   }, {});
 
+  const active = NAV.find((n) => n.id === tab);
+
   return (
     <div className="h-full flex flex-col">
       <TopBar
@@ -120,19 +116,32 @@ export function App() {
           onSelect={(id) => setTab(id)}
         />
 
-        <main className="flex-1 overflow-auto px-6 py-6">
+        <main className="flex-1 overflow-auto px-6 py-8">
           <div className="max-w-6xl mx-auto">
-            {tab === "overview" && <OverviewTab onNavigate={(t) => setTab(t as TabId)} />}
-            {tab === "documents" && <DocumentsTab />}
-            {tab === "sql" && <SqlTab />}
-            {tab === "search" && <SearchTab />}
-            {tab === "rag" && <RagTab />}
-            {tab === "hybrid" && <HybridTab />}
-            {tab === "metrics" && <MetricsTab />}
-            {tab === "admin" && <AdminTab />}
+            {active && (
+              <div key={tab} className="mb-6 animate-rise">
+                <div className="eyebrow">{GROUP_LABELS[active.group]}</div>
+                <h2 className="mt-1.5 text-2xl font-semibold text-black dark:text-ink">
+                  {active.label}
+                </h2>
+                <p className="mt-1 text-sm text-gray-500 dark:text-muted">{active.hint}</p>
+              </div>
+            )}
+            <div key={`${tab}-body`} className="animate-rise">
+              {tab === "overview" && <OverviewTab onNavigate={(t) => setTab(t as TabId)} />}
+              {tab === "documents" && <DocumentsTab />}
+              {tab === "sql" && <SqlTab />}
+              {tab === "search" && <SearchTab />}
+              {tab === "rag" && <RagTab />}
+              {tab === "hybrid" && <HybridTab />}
+              {tab === "metrics" && <MetricsTab />}
+              {tab === "admin" && <AdminTab />}
+            </div>
           </div>
         </main>
       </div>
+
+      <StatusBar health={health} err={healthErr} />
     </div>
   );
 }
@@ -153,8 +162,8 @@ function TopBar({
   sidebarCollapsed: boolean;
 }) {
   return (
-    <header className="border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-      <div className="px-4 py-2 flex items-center gap-4">
+    <header className="border-b border-gray-200 dark:border-edge bg-white/80 dark:bg-carbon-950/80 backdrop-blur">
+      <div className="px-4 py-2.5 flex items-center gap-4">
         <button
           onClick={onToggleSidebar}
           className="btn-secondary !py-1 !px-2 !text-xs"
@@ -163,33 +172,18 @@ function TopBar({
         >
           ☰
         </button>
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-base font-bold tracking-tight">NebulaDB</h1>
-          <span className="text-xs text-gray-500 dark:text-gray-400">
-            Control Plane
-          </span>
+        <div className="flex items-center gap-2.5">
+          <Mark />
+          <div className="flex items-baseline gap-2">
+            <span className="text-base font-semibold tracking-tight text-black dark:text-ink">
+              NebulaDB
+            </span>
+            <span className="eyebrow hidden sm:inline">Knowledge Ops</span>
+          </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-3 text-xs">
+        <div className="ml-auto flex items-center gap-2.5 text-xs">
           <HealthBadge health={health} err={healthErr} />
-          <a
-            className="btn-secondary !py-1 !px-2"
-            href="http://localhost:3000"
-            target="_blank"
-            rel="noreferrer"
-            title="Open Grafana"
-          >
-            Grafana
-          </a>
-          <a
-            className="btn-secondary !py-1 !px-2"
-            href="http://localhost:9090"
-            target="_blank"
-            rel="noreferrer"
-            title="Open Prometheus"
-          >
-            Prom
-          </a>
           <button
             onClick={onToggleTheme}
             className="btn-secondary !py-1 !px-2"
@@ -201,6 +195,25 @@ function TopBar({
         </div>
       </div>
     </header>
+  );
+}
+
+/** Wordmark glyph: a constellation node — the "nebula" in NebulaDB. */
+function Mark() {
+  return (
+    <span className="grid h-7 w-7 place-items-center rounded-lg border border-gray-300 bg-gray-100 dark:border-edge dark:bg-carbon-900">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+        <circle cx="8" cy="8" r="2" className="fill-black dark:fill-ink" />
+        <circle cx="3" cy="4" r="1" className="fill-ok" />
+        <circle cx="13" cy="5" r="1" className="fill-accent" />
+        <circle cx="12" cy="12" r="1" className="fill-black dark:fill-muted" />
+        <path
+          d="M8 8 L3 4 M8 8 L13 5 M8 8 L12 12"
+          className="stroke-gray-400 dark:stroke-faint"
+          strokeWidth="0.8"
+        />
+      </svg>
+    </span>
   );
 }
 
@@ -217,21 +230,17 @@ function Sidebar({
 }) {
   return (
     <aside
-      className={`border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900
+      className={`border-r border-gray-200 dark:border-edge bg-white/60 dark:bg-carbon-950
                   transition-all duration-200 overflow-y-auto shrink-0
                   ${collapsed ? "w-14" : "w-56"}`}
     >
-      <nav className="py-2">
+      <nav className="py-3">
         {(Object.keys(GROUP_LABELS) as Array<keyof typeof GROUP_LABELS>).map((g) => {
           const items = grouped[g] ?? [];
           if (items.length === 0) return null;
           return (
-            <div key={g} className="mb-2">
-              {!collapsed && (
-                <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                  {GROUP_LABELS[g]}
-                </div>
-              )}
+            <div key={g} className="mb-3">
+              {!collapsed && <div className="px-4 pt-2 pb-1.5 eyebrow">{GROUP_LABELS[g]}</div>}
               {items.map((n) => {
                 const isActive = active === n.id;
                 return (
@@ -239,14 +248,20 @@ function Sidebar({
                     key={n.id}
                     onClick={() => onSelect(n.id)}
                     title={n.hint}
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-sm
+                    aria-current={isActive ? "page" : undefined}
+                    className={`group w-full flex items-center gap-3 px-4 py-2 text-sm transition-colors
                                 ${
                                   isActive
-                                    ? "bg-brand-50 text-brand-700 dark:bg-brand-600/20 dark:text-brand-500 border-l-2 border-brand-500"
-                                    : "text-gray-700 dark:text-gray-300 border-l-2 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800"
+                                    ? "bg-gray-100 text-black dark:bg-carbon-800 dark:text-ink"
+                                    : "text-gray-600 dark:text-muted hover:bg-gray-50 dark:hover:bg-carbon-900 hover:text-black dark:hover:text-ink"
                                 }`}
                   >
-                    <span className="text-base leading-none w-5 text-center">{n.icon}</span>
+                    <span
+                      className={`w-5 text-center text-base leading-none
+                        ${isActive ? "text-black dark:text-ink" : "text-gray-400 dark:text-faint group-hover:text-black dark:group-hover:text-ink"}`}
+                    >
+                      {n.icon}
+                    </span>
                     {!collapsed && <span className="truncate">{n.label}</span>}
                   </button>
                 );
@@ -262,18 +277,60 @@ function Sidebar({
 function HealthBadge({ health, err }: { health: Health | null; err: string | null }) {
   if (err) {
     return (
-      <span className="rounded-full bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300 px-2 py-1">
+      <span className="inline-flex items-center gap-2 rounded-full border border-red-300/60 bg-red-50 px-2.5 py-1 font-mono text-bad dark:border-bad/30 dark:bg-bad/10">
+        <span className="dot dot-bad" />
         offline
       </span>
     );
   }
   if (!health) {
-    return <span className="text-gray-400">loading…</span>;
+    return <span className="font-mono text-gray-400 dark:text-faint">connecting…</span>;
   }
   return (
-    <span className="rounded-full bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 px-2 py-1 flex items-center gap-2">
-      <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
-      {health.model} · dim {health.dim} · {health.docs} docs
+    <span className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-2.5 py-1 font-mono text-gray-600 dark:border-edge dark:bg-carbon-900 dark:text-muted">
+      <span className="dot dot-ok animate-pulseok" />
+      <span className="text-gray-800 dark:text-ink">{health.model}</span>
+      <span className="text-gray-300 dark:text-edge">·</span>
+      dim {health.dim}
+      <span className="text-gray-300 dark:text-edge">·</span>
+      {health.docs} docs
     </span>
+  );
+}
+
+/**
+ * Bottom status bar — mirrors the Ring Promoter deploy footer: the app
+ * identity plus mono build/runtime metadata (version, commit, embedder).
+ */
+function StatusBar({ health, err }: { health: Health | null; err: string | null }) {
+  const commit = health?.git_commit && health.git_commit !== "unknown" ? health.git_commit.slice(0, 7) : null;
+  return (
+    <footer className="border-t border-gray-200 dark:border-edge bg-white/80 dark:bg-carbon-950/90 backdrop-blur">
+      <div className="px-4 py-2 flex items-center gap-5 overflow-x-auto">
+        <span className="text-xs font-semibold text-black dark:text-ink shrink-0">NebulaDB</span>
+        {err ? (
+          <span className="metachip text-bad">
+            <span className="dot dot-bad" /> server unreachable
+          </span>
+        ) : (
+          <>
+            <span className="metachip">
+              <span className={`dot ${health ? "dot-ok" : "dot-idle"}`} />
+              {health ? "live" : "connecting"}
+            </span>
+            {health?.version && (
+              <span className="metachip" title="server version">🏷 v{health.version}</span>
+            )}
+            {commit && <span className="metachip" title="git commit">⑂ {commit}</span>}
+            {health && (
+              <span className="metachip" title="embedder">✷ {health.model}</span>
+            )}
+            {health && (
+              <span className="metachip" title="documents indexed">❏ {health.docs} docs · dim {health.dim}</span>
+            )}
+          </>
+        )}
+      </div>
+    </footer>
   );
 }

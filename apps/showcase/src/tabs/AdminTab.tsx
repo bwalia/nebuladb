@@ -111,7 +111,7 @@ function BucketsPanel() {
                       {b.metadata_keys.map(([k, n]) => (
                         <span
                           key={k}
-                          className="rounded bg-brand-50 text-brand-700 dark:bg-brand-600/20 dark:text-brand-500 px-1.5 py-0.5"
+                          className="rounded bg-accent/10 text-accent dark:bg-accent/15 dark:text-accent px-1.5 py-0.5"
                         >
                           {k} · {n}
                         </span>
