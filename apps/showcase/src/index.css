@@ -3,10 +3,10 @@
 @tailwind utilities;
 
 /*
- * "Observatory" design system for the NebulaDB console.
- * Dark-first (the console's native mode); light is a serviceable
- * daylight variant. Data is monospace; boldness is spent only on the
- * plasma->signal similarity spectrum.
+ * "Ring Promoter" design system for the NebulaDB console — a near-black
+ * control plane. Almost monochrome; colour is reserved for status
+ * (ok/warn/bad). Rounded cards, hairline borders, generous space, data
+ * in mono. Dark is the native mode; light is a serviceable daylight variant.
  */
 @layer base {
   :root {
@@ -18,97 +18,109 @@
     height: 100%;
   }
   body {
-    @apply bg-[#F5F6FA] text-[#1B2130] antialiased font-sans;
-    font-feature-settings: "cv02", "cv03", "ss01";
+    @apply bg-[#FAFAFA] text-[#18181B] antialiased font-sans;
+    font-feature-settings: "cv05", "cv08", "ss01";
   }
   html.dark body {
-    @apply bg-void text-ink;
+    @apply bg-carbon-950 text-ink;
   }
   h1, h2, h3, h4 {
-    @apply font-display tracking-tight;
+    @apply tracking-tight;
   }
   pre, code, kbd, .mono {
     font-family: theme("fontFamily.mono");
   }
-  /* Visible, on-brand keyboard focus everywhere (quality floor). */
   :focus-visible {
-    @apply outline-none ring-2 ring-signal/70 ring-offset-2 ring-offset-white dark:ring-offset-void;
+    @apply outline-none ring-2 ring-accent/70 ring-offset-2 ring-offset-white dark:ring-offset-carbon-950;
   }
   ::selection {
-    @apply bg-plasma/30;
+    @apply bg-accent/30;
   }
 }
 
 @layer components {
-  /* ---- Buttons ------------------------------------------------------- */
+  /* ---- Buttons (Vercel-minimal) ------------------------------------- */
   .btn {
-    @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium
-           bg-plasma text-white shadow-[0_6px_20px_-8px_rgba(124,92,255,0.7)]
-           hover:bg-plasma-soft hover:text-void disabled:opacity-50
-           disabled:cursor-not-allowed transition-colors;
+    @apply inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm font-medium
+           bg-black text-white hover:bg-black/85
+           dark:bg-ink dark:text-black dark:hover:bg-white
+           disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
   }
   .btn-secondary {
-    @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium
-           border border-gray-300 bg-white text-gray-800 hover:border-plasma/50 hover:text-plasma
-           dark:border-hairline dark:bg-panel dark:text-ink dark:hover:border-plasma/60 dark:hover:text-plasma-soft
-           disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
+    @apply inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm font-medium
+           border border-gray-300 bg-white text-gray-700 hover:border-gray-400 hover:text-black
+           dark:border-edge dark:bg-carbon-900 dark:text-muted dark:hover:border-faint dark:hover:text-ink
+           disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
   }
 
   /* ---- Surfaces ------------------------------------------------------ */
   .card {
-    @apply rounded-xl border border-gray-200 bg-white p-4 shadow-sm
-           dark:border-hairline dark:bg-panel dark:shadow-instrument;
+    @apply rounded-2xl border border-gray-200 bg-white p-5
+           dark:border-edge dark:bg-carbon-900;
   }
-  /* An "instrument": a card that reacts to hover, used for KPI/readouts. */
   .instrument {
-    @apply card transition-shadow duration-200 hover:shadow-glow;
+    @apply card transition-colors duration-150 hover:border-gray-300 dark:hover:border-faint;
   }
 
   /* ---- Inputs -------------------------------------------------------- */
   .input {
-    @apply w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
-           placeholder:text-gray-400 focus:border-plasma focus:outline-none
-           dark:border-hairline dark:bg-void dark:text-ink dark:placeholder:text-muted;
+    @apply w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm
+           placeholder:text-gray-400 focus:border-accent focus:outline-none
+           dark:border-edge dark:bg-carbon-950 dark:text-ink dark:placeholder:text-faint;
   }
   .code-input {
     @apply input font-mono leading-relaxed;
   }
 
-  /* ---- Tabs / pills -------------------------------------------------- */
+  /* ---- Tabs ---------------------------------------------------------- */
   .tab-btn {
     @apply px-3 py-2 text-sm font-medium border-b-2 border-transparent
-           text-gray-500 hover:text-gray-900 hover:border-gray-300
+           text-gray-500 hover:text-black hover:border-gray-300
            dark:text-muted dark:hover:text-ink;
   }
   .tab-btn-active {
-    @apply border-plasma text-gray-900 dark:text-ink;
+    @apply border-black text-black dark:border-ink dark:text-ink;
   }
 
-  /* ---- Labels / chrome ---------------------------------------------- */
+  /* ---- Chrome / labels ---------------------------------------------- */
   .eyebrow {
-    @apply text-[10px] font-mono uppercase tracking-[0.18em] text-muted;
+    @apply text-[10px] font-mono uppercase tracking-[0.16em] text-faint;
   }
-  .chip {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white/60
-           px-2 py-0.5 text-xs font-mono text-gray-600
-           dark:border-hairline dark:bg-panel dark:text-muted;
+  /* Metadata chip for the bottom status bar (sha, commit, timings). */
+  .metachip {
+    @apply inline-flex items-center gap-1.5 font-mono text-xs text-faint;
   }
 
-  /* ---- The signature: similarity spectrum --------------------------- */
-  /* A score bar; width set inline via style. Reads violet->cyan so a
-     higher similarity literally lands further along the spectrum. */
+  /* ---- Ring-Promoter list row --------------------------------------- */
+  /* A tappable row: leading status dot(s), name, trailing status + chevron. */
+  .listrow {
+    @apply flex items-center gap-3 px-4 py-3.5 text-sm border-b border-gray-100 last:border-0
+           dark:border-edge/60 transition-colors hover:bg-gray-50 dark:hover:bg-carbon-800;
+  }
+
+  /* ---- Status dot ---------------------------------------------------- */
+  .dot {
+    @apply inline-block h-2 w-2 rounded-full shrink-0;
+  }
+  .dot-ok { @apply bg-ok; }
+  .dot-warn { @apply bg-warn; }
+  .dot-bad { @apply bg-bad; }
+  .dot-idle { @apply bg-idle; }
+
+  /* ---- Relevance bar (repurposed signature) ------------------------- */
+  /* Score legibility: a thin bar; higher relevance fills further. Kept
+     monochrome-with-accent to fit the Ring-Promoter restraint. */
   .spectrum-track {
-    @apply relative h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-hairline;
+    @apply relative h-1 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-carbon-800;
   }
   .spectrum-fill {
-    @apply absolute inset-y-0 left-0 rounded-full bg-spectrum;
+    @apply absolute inset-y-0 left-0 rounded-full bg-accent;
   }
 }
 
-/* Ambient starfield lives behind the shell; disabled for reduced motion. */
 @media (prefers-reduced-motion: reduce) {
   .animate-rise,
-  .animate-drift {
+  .animate-pulseok {
     animation: none !important;
   }
 }

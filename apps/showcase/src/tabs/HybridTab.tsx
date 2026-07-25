@@ -82,7 +82,7 @@ export function HybridTab() {
               onClick={() => setPreset(p)}
               className={`text-xs rounded-md px-3 py-1.5 border ${
                 preset.label === p.label
-                  ? "bg-brand-600 text-white border-brand-600"
+                  ? "bg-accent text-white border-accent"
                   : "border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
               }`}
             >

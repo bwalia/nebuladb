@@ -101,7 +101,7 @@ export function SearchTab() {
                   </div>
                   <p className="text-sm pt-1 whitespace-pre-wrap">{h.text}</p>
                 </div>
-                <div className="text-xs font-mono text-brand-600 dark:text-brand-500 whitespace-nowrap">
+                <div className="text-xs font-mono text-accent dark:text-accent whitespace-nowrap">
                   {h.score.toFixed(4)}
                 </div>
               </div>

@@ -147,7 +147,7 @@ function LeafNode({
 function NameLabel({ name }: { name: string }) {
   return (
     <>
-      <span className="text-brand-700 dark:text-brand-500">{JSON.stringify(name)}</span>
+      <span className="text-accent dark:text-accent">{JSON.stringify(name)}</span>
       <span className="text-gray-500">:</span>
     </>
   );

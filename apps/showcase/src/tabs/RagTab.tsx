@@ -227,7 +227,7 @@ function TurnView({ turn }: { turn: Turn }) {
                     <span className="font-mono text-gray-500">
                       [{i}] {h.bucket}/{h.id}
                     </span>
-                    <span className="font-mono text-brand-600 dark:text-brand-500">
+                    <span className="font-mono text-accent dark:text-accent">
                       {h.score.toFixed(4)}
                     </span>
                   </div>

@@ -19,9 +19,11 @@ export function Panel({
     <section className="card space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold">{title}</h2>
+          <h3 className="font-display text-base font-semibold text-gray-900 dark:text-ink">
+            {title}
+          </h3>
           {subtitle && (
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{subtitle}</p>
+            <p className="text-xs text-gray-500 dark:text-muted mt-0.5">{subtitle}</p>
           )}
         </div>
         {action}
@@ -34,7 +36,7 @@ export function Panel({
 export function ErrorBanner({ err }: { err: string | null }) {
   if (!err) return null;
   return (
-    <div className="rounded-md border border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300 px-3 py-2 text-sm">
+    <div className="rounded-md border border-red-300/60 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-sm font-mono">
       {err}
     </div>
   );
@@ -51,7 +53,7 @@ import { JsonTree } from "./tree";
 
 export function JsonView({ value }: { value: unknown }) {
   return (
-    <div className="bg-gray-100 dark:bg-gray-950 rounded-md p-2 overflow-x-auto max-h-[28rem]">
+    <div className="rounded-md border border-gray-200 bg-gray-50 p-2 overflow-x-auto max-h-[28rem] dark:border-edge dark:bg-carbon-950">
       <JsonTree value={value} />
     </div>
   );
@@ -59,7 +61,7 @@ export function JsonView({ value }: { value: unknown }) {
 
 export function JsonBlob({ value }: { value: unknown }) {
   return (
-    <pre className="text-xs bg-gray-100 dark:bg-gray-950 rounded-md p-2 overflow-x-auto max-h-80 whitespace-pre-wrap break-words">
+    <pre className="text-xs rounded-md border border-gray-200 bg-gray-50 p-2 overflow-x-auto max-h-80 whitespace-pre-wrap break-words dark:border-edge dark:bg-carbon-950">
       {JSON.stringify(value, null, 2)}
     </pre>
   );
@@ -67,8 +69,8 @@ export function JsonBlob({ value }: { value: unknown }) {
 
 export function Spinner({ label }: { label?: string }) {
   return (
-    <span className="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-      <span className="h-3 w-3 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
+    <span className="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-muted">
+      <span className="h-3 w-3 rounded-full border-2 border-accent border-t-transparent animate-spin" />
       {label ?? "working…"}
     </span>
   );
@@ -80,9 +82,30 @@ export function Spinner({ label }: { label?: string }) {
  */
 export function Stat({ label, value }: { label: string; value: string | number }) {
   return (
-    <span className="inline-flex items-baseline gap-1 text-xs text-gray-500 dark:text-gray-400">
-      <span>{label}</span>
-      <span className="font-semibold text-gray-900 dark:text-gray-100">{value}</span>
+    <span className="inline-flex items-baseline gap-1.5 text-xs text-gray-500 dark:text-muted">
+      <span className="font-mono uppercase tracking-wider text-[10px]">{label}</span>
+      <span className="font-mono font-semibold text-gray-900 dark:text-ink tabular-nums">{value}</span>
     </span>
+  );
+}
+
+/**
+ * The signature element: a semantic-similarity spectrum. `value` is a
+ * normalized 0..1 relevance (1 = most similar) — a higher score lands
+ * further along the violet->cyan spectrum, so relevance is legible at a
+ * glance rather than hidden in a raw float. `label` is the honest
+ * underlying number (a cosine score or a distance) shown in mono.
+ */
+export function Spectrum({ value, label }: { value: number; label: string }) {
+  const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  return (
+    <div className="flex items-center gap-2 w-32 shrink-0" title={`relevance ${pct}%`}>
+      <div className="spectrum-track flex-1">
+        <div className="spectrum-fill" style={{ width: `${Math.max(4, pct)}%` }} />
+      </div>
+      <span className="font-mono text-xs text-accent tabular-nums w-14 text-right">
+        {label}
+      </span>
+    </div>
   );
 }

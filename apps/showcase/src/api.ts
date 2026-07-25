@@ -14,6 +14,9 @@ export interface Health {
   docs: number;
   dim: number;
   model: string;
+  // Present on the deployed server; shown in the bottom status bar.
+  version?: string;
+  git_commit?: string;
 }
 
 export interface Hit {
