@@ -2,7 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Defaults tuned for readable dense UI (lots of tables + JSON). */
+/*
+ * "Observatory" design system for the NebulaDB console.
+ * Dark-first (the console's native mode); light is a serviceable
+ * daylight variant. Data is monospace; boldness is spent only on the
+ * plasma->signal similarity spectrum.
+ */
 @layer base {
   :root {
     color-scheme: light dark;
@@ -13,45 +18,97 @@
     height: 100%;
   }
   body {
-    @apply bg-gray-50 text-gray-900 antialiased;
+    @apply bg-[#F5F6FA] text-[#1B2130] antialiased font-sans;
+    font-feature-settings: "cv02", "cv03", "ss01";
   }
   html.dark body {
-    @apply bg-gray-950 text-gray-100;
+    @apply bg-void text-ink;
   }
-  pre,
-  code {
+  h1, h2, h3, h4 {
+    @apply font-display tracking-tight;
+  }
+  pre, code, kbd, .mono {
     font-family: theme("fontFamily.mono");
+  }
+  /* Visible, on-brand keyboard focus everywhere (quality floor). */
+  :focus-visible {
+    @apply outline-none ring-2 ring-signal/70 ring-offset-2 ring-offset-white dark:ring-offset-void;
+  }
+  ::selection {
+    @apply bg-plasma/30;
   }
 }
 
 @layer components {
+  /* ---- Buttons ------------------------------------------------------- */
   .btn {
     @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium
-           bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50
+           bg-plasma text-white shadow-[0_6px_20px_-8px_rgba(124,92,255,0.7)]
+           hover:bg-plasma-soft hover:text-void disabled:opacity-50
            disabled:cursor-not-allowed transition-colors;
   }
   .btn-secondary {
     @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium
-           bg-gray-200 text-gray-900 hover:bg-gray-300
-           dark:bg-gray-800 dark:text-gray-100 dark:hover:bg-gray-700
+           border border-gray-300 bg-white text-gray-800 hover:border-plasma/50 hover:text-plasma
+           dark:border-hairline dark:bg-panel dark:text-ink dark:hover:border-plasma/60 dark:hover:text-plasma-soft
            disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
   }
+
+  /* ---- Surfaces ------------------------------------------------------ */
   .card {
-    @apply rounded-lg border border-gray-200 bg-white p-4 shadow-sm
-           dark:border-gray-800 dark:bg-gray-900;
+    @apply rounded-xl border border-gray-200 bg-white p-4 shadow-sm
+           dark:border-hairline dark:bg-panel dark:shadow-instrument;
   }
+  /* An "instrument": a card that reacts to hover, used for KPI/readouts. */
+  .instrument {
+    @apply card transition-shadow duration-200 hover:shadow-glow;
+  }
+
+  /* ---- Inputs -------------------------------------------------------- */
   .input {
     @apply w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm
-           placeholder:text-gray-400 focus:border-brand-500 focus:outline-none
-           focus:ring-1 focus:ring-brand-500
-           dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100 dark:placeholder:text-gray-500;
+           placeholder:text-gray-400 focus:border-plasma focus:outline-none
+           dark:border-hairline dark:bg-void dark:text-ink dark:placeholder:text-muted;
   }
+  .code-input {
+    @apply input font-mono leading-relaxed;
+  }
+
+  /* ---- Tabs / pills -------------------------------------------------- */
   .tab-btn {
     @apply px-3 py-2 text-sm font-medium border-b-2 border-transparent
            text-gray-500 hover:text-gray-900 hover:border-gray-300
-           dark:text-gray-400 dark:hover:text-gray-100;
+           dark:text-muted dark:hover:text-ink;
   }
   .tab-btn-active {
-    @apply border-brand-500 text-gray-900 dark:text-gray-100;
+    @apply border-plasma text-gray-900 dark:text-ink;
+  }
+
+  /* ---- Labels / chrome ---------------------------------------------- */
+  .eyebrow {
+    @apply text-[10px] font-mono uppercase tracking-[0.18em] text-muted;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white/60
+           px-2 py-0.5 text-xs font-mono text-gray-600
+           dark:border-hairline dark:bg-panel dark:text-muted;
+  }
+
+  /* ---- The signature: similarity spectrum --------------------------- */
+  /* A score bar; width set inline via style. Reads violet->cyan so a
+     higher similarity literally lands further along the spectrum. */
+  .spectrum-track {
+    @apply relative h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-hairline;
+  }
+  .spectrum-fill {
+    @apply absolute inset-y-0 left-0 rounded-full bg-spectrum;
+  }
+}
+
+/* Ambient starfield lives behind the shell; disabled for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise,
+  .animate-drift {
+    animation: none !important;
   }
 }
