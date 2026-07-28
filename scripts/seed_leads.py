@@ -12,6 +12,7 @@ Usage:
     python3 scripts/seed_leads.py --url http://localhost:8080   # one-off target
 """
 import json
+import os
 import sys
 import urllib.request
 import urllib.error
@@ -70,9 +71,12 @@ def build_leads():
 
 def post_json(url, payload, timeout=60):
     data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
-    )
+    headers = {"Content-Type": "application/json"}
+    # When the server has auth enabled, export NEBULA_TOKEN=<an API key>.
+    token = os.environ.get("NEBULA_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.status, json.loads(resp.read().decode())
 

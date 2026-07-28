@@ -89,6 +89,10 @@ ENV NEBULA_SERVER=http://nebula-server:8080
 ENV NEBULA_LEADER_HOST=nebula-server
 ENV NEBULA_FOLLOWER_HOST=nebula-follower
 ENV NGINX_RESOLVER=127.0.0.11
+# Bearer nginx injects on proxied /api calls. Empty by default (auth off);
+# set from the app secret so the public UI works once the server requires
+# a token. Defined here so envsubst always substitutes it in the template.
+ENV NEBULA_API_KEYS=""
 EXPOSE 80
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
   CMD wget -q -O /dev/null http://localhost/ || exit 1
