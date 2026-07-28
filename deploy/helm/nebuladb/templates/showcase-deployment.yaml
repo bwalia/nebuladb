@@ -24,6 +24,13 @@ spec:
             - name: http
               containerPort: 80
               protocol: TCP
+          # App secret (optional): supplies NEBULA_API_KEYS so nginx can
+          # inject `Authorization: Bearer <key>` on proxied /api calls,
+          # keeping the public UI working once the server has auth enabled.
+          envFrom:
+            - secretRef:
+                name: {{ include "nebuladb.fullname" . }}-secrets
+                optional: true
           env:
             # The showcase's nginx layer runs envsubst on startup and
             # proxies /api, /healthz, /metrics to this URL. We inject
