@@ -14,7 +14,7 @@
 #   acc  -> namespace acc  -> acc-showcase.nebuladb.net
 #   prod -> namespace prod -> showcase.nebuladb.net
 # After a successful deploy, the `cloudflare-dns` job asks the wslproxy
-# admin API to (re)provision the host's Cloudflare CNAME -> pop0.wslproxy.com
+# admin API to (re)provision the host's Cloudflare CNAME -> lon1.pop0.uk
 # (DNS-only) so the domain is wired on every merge. The pop0 edge forwards
 # to k3s1 Traefik per the shared prod rule in the wslproxy repo
 # (data/servers + data/rules).
@@ -245,7 +245,7 @@ jobs:
     # After a successful deploy, (re)assert the env's public DNS through
     # the wslproxy admin API — the same control plane that owns the
     # nebuladb.net Cloudflare zone. `POST /api/dns/provision` converges
-    # Cloudflare to the server's desired record (CNAME -> pop0.wslproxy.com),
+    # Cloudflare to the server's desired record (CNAME -> lon1.pop0.uk),
     # so it's idempotent and safe on every merge/dispatch. The pop0 edge
     # then forwards the host to k3s1 Traefik per the shared prod rule in
     # the wslproxy repo (data/servers + data/rules).
@@ -293,4 +293,4 @@ jobs:
             -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
             -d "$(jq -n --arg s "host:${HOST}" '{server_id:$s, profile_id:"prod", dry_run:false}')")"
           echo "$RESP" | jq -c '(.data // .) | {domain, record_type, actions:[.actions[]?.action]}'
-          echo "::notice::DNS provisioned for ${HOST} via wslproxy (CNAME -> pop0.wslproxy.com)."
+          echo "::notice::DNS provisioned for ${HOST} via wslproxy (CNAME -> lon1.pop0.uk)."
