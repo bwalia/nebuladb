@@ -9,14 +9,24 @@ import { RagTab } from "./tabs/RagTab";
 import { HybridTab } from "./tabs/HybridTab";
 import { AdminTab } from "./tabs/AdminTab";
 import { MetricsTab } from "./tabs/MetricsTab";
+import { ExecutiveTab } from "./tabs/ExecutiveTab";
+import { McpTab } from "./tabs/McpTab";
+import { AgentsTab } from "./tabs/AgentsTab";
+import { ClusterTab } from "./tabs/ClusterTab";
+import { RebalanceTab } from "./tabs/RebalanceTab";
 
 type TabId =
+  | "executive"
   | "overview"
   | "documents"
   | "sql"
   | "search"
   | "rag"
   | "hybrid"
+  | "agents"
+  | "mcp"
+  | "cluster"
+  | "rebalance"
   | "metrics"
   | "admin";
 
@@ -25,16 +35,21 @@ interface NavItem {
   label: string;
   hint: string;
   icon: string;
-  group: "home" | "data" | "ai" | "ops";
+  group: "home" | "data" | "ai" | "cluster" | "ops";
 }
 
 const NAV: NavItem[] = [
+  { id: "executive", label: "Executive demo", hint: "The 5-minute story", icon: "★", group: "home" },
   { id: "overview", label: "Overview", hint: "Cluster summary", icon: "◎", group: "home" },
   { id: "documents", label: "Documents", hint: "Ingest + chunk + embed", icon: "❏", group: "data" },
   { id: "sql", label: "SQL", hint: "Query workbench", icon: "⌘", group: "data" },
   { id: "search", label: "Semantic search", hint: "Vector retrieval", icon: "✷", group: "ai" },
   { id: "rag", label: "RAG chat", hint: "Streaming answers", icon: "❯", group: "ai" },
   { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query", icon: "⟡", group: "ai" },
+  { id: "agents", label: "AI agents", hint: "Tool-calling agents over MCP", icon: "⬡", group: "ai" },
+  { id: "mcp", label: "MCP", hint: "Tool catalogue + playground", icon: "⚯", group: "ai" },
+  { id: "cluster", label: "Cluster", hint: "Topology, regions, failover", icon: "⬢", group: "cluster" },
+  { id: "rebalance", label: "Rebalance", hint: "Zero-downtime node swap", icon: "⇄", group: "cluster" },
   { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },
   { id: "admin", label: "Admin", hint: "Buckets, EXPLAIN, audit, slow queries", icon: "⚙", group: "ops" },
 ];
@@ -43,13 +58,14 @@ const GROUP_LABELS: Record<NavItem["group"], string> = {
   home: "Home",
   data: "Data",
   ai: "AI",
+  cluster: "Cluster",
   ops: "Operations",
 };
 
 const SIDEBAR_KEY = "nebula-sidebar";
 
 export function App() {
-  const [tab, setTab] = useState<TabId>("overview");
+  const [tab, setTab] = useState<TabId>("executive");
   const [theme, setThemeState] = useState(getTheme());
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
@@ -128,12 +144,17 @@ export function App() {
               </div>
             )}
             <div key={`${tab}-body`} className="animate-rise">
+              {tab === "executive" && <ExecutiveTab onNavigate={(t) => setTab(t as TabId)} />}
               {tab === "overview" && <OverviewTab onNavigate={(t) => setTab(t as TabId)} />}
               {tab === "documents" && <DocumentsTab />}
               {tab === "sql" && <SqlTab />}
               {tab === "search" && <SearchTab />}
               {tab === "rag" && <RagTab />}
               {tab === "hybrid" && <HybridTab />}
+              {tab === "agents" && <AgentsTab />}
+              {tab === "mcp" && <McpTab />}
+              {tab === "cluster" && <ClusterTab />}
+              {tab === "rebalance" && <RebalanceTab />}
               {tab === "metrics" && <MetricsTab />}
               {tab === "admin" && <AdminTab />}
             </div>

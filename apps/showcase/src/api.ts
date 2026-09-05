@@ -9,6 +9,8 @@
  * changes, TypeScript breaks here first.
  */
 
+import { record } from "./demo/tracer";
+
 export interface Health {
   status: "ok";
   docs: number;
@@ -125,6 +127,45 @@ export interface SnapshotOutcome {
  * can show the server's stable `code` string (e.g. `sql_parse`)
  * rather than a generic "something went wrong".
  */
+
+// ---- cluster / replication / backup ------------------------------------
+// These mirror the server's admin surface (crates/nebula-server routes:
+// /admin/cluster/nodes, /admin/replication, /admin/backups, ...). Fields
+// are optional where the server only populates them in some roles, so a
+// standalone node renders without exploding.
+
+export interface ClusterNode {
+  id?: string;
+  address?: string;
+  role?: string;
+  state?: string;
+  region?: string;
+  [k: string]: unknown;
+}
+
+export interface ReplicationInfo {
+  role?: string;
+  region?: string;
+  peers?: unknown[];
+  applied_seq?: number;
+  [k: string]: unknown;
+}
+
+export interface BackupEntry {
+  id?: string;
+  path?: string;
+  created_ms?: number;
+  bytes?: number;
+  wal_seq?: number;
+  [k: string]: unknown;
+}
+
+export interface VersionInfo {
+  version?: string;
+  git_commit?: string;
+  [k: string]: unknown;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -139,14 +180,41 @@ async function request<T>(
   path: string,
   init?: RequestInit
 ): Promise<T> {
-  const resp = await fetch(path, {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers || {}),
-    },
-  });
+  const method = (init?.method ?? "GET").toUpperCase();
+  // Parsed back out so the trace panel can pretty-print the body we
+  // actually sent rather than a re-stringified guess.
+  let requestBody: unknown;
+  if (typeof init?.body === "string") {
+    try {
+      requestBody = JSON.parse(init.body);
+    } catch {
+      requestBody = init.body;
+    }
+  }
+  const started = performance.now();
+  let resp: Response;
+  try {
+    resp = await fetch(path, {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        ...(init?.headers || {}),
+      },
+    });
+  } catch (e) {
+    record({
+      method,
+      path,
+      status: 0,
+      tookMs: Math.round(performance.now() - started),
+      requestBody,
+      error: (e as Error).message,
+    });
+    throw e;
+  }
   const text = await resp.text();
+  const tookMs = Math.round(performance.now() - started);
+
   if (!resp.ok) {
     let code = "unknown";
     try {
@@ -155,11 +223,15 @@ async function request<T>(
     } catch {
       /* non-JSON error body (e.g. pgwire path) — fall back to status */
     }
+    record({ method, path, status: resp.status, tookMs, requestBody, error: `${code}: ${text.slice(0, 400)}` });
     throw new ApiError(resp.status, code, text);
   }
+
   // Endpoints returning 204 No Content (document delete) produce an
   // empty body; callers just discard the result.
-  return text ? (JSON.parse(text) as T) : (undefined as T);
+  const parsed = text ? (JSON.parse(text) as T) : (undefined as T);
+  record({ method, path, status: resp.status, tookMs, requestBody, responseBody: parsed });
+  return parsed;
 }
 
 export const api = {
@@ -248,5 +320,53 @@ export const api = {
     request<{ bucket: string; removed: number }>(
       `/api/v1/admin/bucket/${encodeURIComponent(bucket)}/empty`,
       { method: "POST" }
+    ),
+
+  // ---- real endpoints beyond the original 8 tabs -----------------------
+
+  /**
+   * Raw neighbour lookup against the HNSW index.
+   *
+   * Takes an already-computed embedding — the server's
+   * `VectorSearchRequest` requires `vector: Vec<f32>` and will reject a
+   * bare query string with 422. Use `search()` for text.
+   * `ef` tunes HNSW search breadth (recall vs latency).
+   */
+  vectorSearch: (vector: number[], top_k = 5, bucket?: string, ef?: number) =>
+    request<SearchResponse>("/api/v1/vector/search", {
+      method: "POST",
+      body: JSON.stringify({ vector, top_k, bucket, ef }),
+    }),
+
+  /** Non-streaming RAG answer with citations. */
+  ragAnswer: (query: string, top_k = 5, bucket?: string) =>
+    request<RagJsonResponse>("/api/v1/rag/answer", {
+      method: "POST",
+      body: JSON.stringify({ query, top_k, bucket }),
+    }),
+
+  version: () => request<VersionInfo>("/api/v1/admin/version"),
+
+  clusterNodes: () => request<ClusterNode[]>("/api/v1/admin/cluster/nodes"),
+
+  replication: () => request<ReplicationInfo>("/api/v1/admin/replication"),
+
+  backups: () => request<BackupEntry[]>("/api/v1/admin/backups"),
+
+  createBackup: () =>
+    request<BackupEntry>("/api/v1/admin/backup", { method: "POST" }),
+
+  restore: (id: string) =>
+    request<{ ok: boolean }>(`/api/v1/admin/restore/${encodeURIComponent(id)}`, {
+      method: "POST",
+    }),
+
+  exportBucket: (bucket: string) =>
+    request<unknown>(`/api/v1/admin/bucket/${encodeURIComponent(bucket)}/export`),
+
+  bulkDocs: (bucket: string, docs: Array<{ id: string; text: string; metadata?: unknown }>) =>
+    request<{ inserted: number }>(
+      `/api/v1/bucket/${encodeURIComponent(bucket)}/docs/bulk`,
+      { method: "POST", body: JSON.stringify({ docs }) }
     ),
 };
