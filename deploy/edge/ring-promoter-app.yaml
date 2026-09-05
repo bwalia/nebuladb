@@ -1,0 +1,48 @@
+# Ring Promoter app definition for NebulaDB's edge registration.
+#
+# Append this block to the `apps:` list in the workstation Ring Promoter
+# config — live at:
+#   kubectl -n workstation-ring-promoter get cm ring-promoter-config
+# and versioned at:
+#   bwalia/ring-promoter deploy/k8s/configmap.yaml
+#
+# ⚠️ Those two have drifted. The repo file lists only `jobshout`; the live
+# ConfigMap also carries `jobshout-com` and `wslvault`. Applying the repo
+# file as-is would delete both. Reconcile the repo against live BEFORE
+# adding this, or patch the live ConfigMap and backport.
+#
+# Deployer is `github`, matching diytaxreturn-dns: edge registration is a
+# DNS + control-plane operation, not a Helm release, so there is nothing
+# for the k8sjob deployer to install. The promoter dispatches the workflow
+# with the standard ENV / DEPLOY_BRANCH / DEPLOY_MODE trio; only ENV is read.
+#
+# Ordering: place this ABOVE the `nebuladb` app entry. Ring Promoter has no
+# cross-app dependency field, so list order is the ordering contract — DNS
+# and the edge vhost are the prerequisite for any public health check on
+# nebuladb to resolve at all (same rationale as diytaxreturn-dns sitting
+# first in the ring-system config).
+#
+# Health probes the PUBLIC host, deliberately. The workflow can exit 0
+# having written config that the edge then serves wrongly — which is
+# exactly what happened when the shared rule pointed at a retired AWS ELB
+# and every host returned an infinite 301. Probing the outcome rather than
+# the run status is the whole point of a belt-and-braces reconciler.
+
+  - name: nebuladb-edge
+    display_name: "NebulaDB edge (DNS + vhost)"
+    location: { lat: 51.5074, lng: -0.1278, city: London, region: GB }
+    deployer: github
+    github:
+      owner: bwalia
+      repo: nebuladb
+      workflow: register-edge-vhost.yml
+      ref: main
+      deploy_mode: full
+      token_env: RP_GITHUB_TOKEN
+      poll_interval: 15s
+      run_lookup_timeout: 90s
+    rings:
+      int:  { target_env: int,  health_url: "https://int-nebuladb.nebuladb.net/" }
+      test: { target_env: test, health_url: "https://test-showcase.nebuladb.net/" }
+      acc:  { target_env: acc,  health_url: "https://acc-showcase.nebuladb.net/" }
+      prod: { target_env: prod, health_url: "https://showcase.nebuladb.net/" }

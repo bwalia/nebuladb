@@ -1,0 +1,30 @@
+{
+  "server_name": "int-nebuladb.nebuladb.net",
+  "proxy_server_name": null,
+  "proxy_pass": null,
+  "profile_id": "prod",
+  "pop_ids": [
+    "pop0"
+  ],
+  "dns_record_type": "CNAME",
+  "dns_cname_target": "lon1.pop0.uk",
+  "rules": "04152bcb-b3ae-e831-2a07-9d38cca77688",
+  "listens": [
+    {
+      "listen": "80"
+    }
+  ],
+  "match_cases": {},
+  "root": "/var/www/html",
+  "index": "index.html",
+  "access_log": "logs/access.log",
+  "error_log": "logs/error.log",
+  "cache_enabled": false,
+  "config_status": true,
+  "ssl_enabled": true,
+  "ssl_force_https": true,
+  "ssl_auto_renew": true,
+  "ssl_staging": false,
+  "ssl_email": "balinder.walia@gmail.com",
+  "_ring": "int"
+}
