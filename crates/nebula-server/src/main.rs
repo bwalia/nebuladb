@@ -445,6 +445,47 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Resource manager + operating-mode sampler (design 0010 §4).
+    // Probes cgroup memory, data-volume free space, and process CPU
+    // every 5s from the blocking pool (statvfs/cgroup reads are file
+    // I/O), feeding the hysteresis/debounce state machine that the
+    // disk-critical write gate and /admin/reliability read lock-free.
+    // The disk probe is only armed when a data dir exists — an
+    // in-memory node has no WAL volume to protect.
+    let resource_manager = Arc::new(nebula_resource::ResourceManager::new(
+        nebula_resource::Thresholds::default(),
+    ));
+    {
+        let mgr = Arc::clone(&resource_manager);
+        let data_dir = std::env::var("NEBULA_DATA_DIR")
+            .ok()
+            .filter(|d| !d.is_empty())
+            .map(std::path::PathBuf::from);
+        tokio::spawn(async move {
+            let mut prober = nebula_resource::Prober::new(data_dir);
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tick.tick().await;
+                // The prober owns CPU-delta state, so it round-trips
+                // through the blocking task each iteration.
+                let mgr2 = Arc::clone(&mgr);
+                match tokio::task::spawn_blocking(move || {
+                    let s = prober.sample();
+                    mgr2.observe(s);
+                    prober
+                })
+                .await
+                {
+                    Ok(p) => prober = p,
+                    Err(e) => {
+                        tracing::warn!("resource sampler task panicked: {e}");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     let api_keys: AHashSet<String> = std::env::var("NEBULA_API_KEYS")
         .unwrap_or_default()
         .split(',')
@@ -677,7 +718,8 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     .with_cluster(Arc::clone(&cluster))
     .with_log_bus(Arc::clone(&log_bus))
     .with_snapshot_scheduler_enabled(snapshot_scheduler_enabled)
-    .with_durability_cache(Arc::clone(&durability_cache));
+    .with_durability_cache(Arc::clone(&durability_cache))
+    .with_resource_manager(Arc::clone(&resource_manager));
     if let Some(fc) = follower_cursor.as_ref() {
         state = state.with_follower_cursor(Arc::clone(fc));
     }

@@ -21,6 +21,7 @@ pub struct Metrics {
     pub rag_requests: AtomicU64,
     pub rate_limited: AtomicU64,
     pub jwt_failures: AtomicU64,
+    pub writes_rejected: AtomicU64,
 }
 
 impl Metrics {
@@ -54,6 +55,9 @@ impl Metrics {
     pub fn inc_jwt_failure(&self) {
         self.jwt_failures.fetch_add(1, Ordering::Relaxed);
     }
+    pub fn inc_write_rejected(&self) {
+        self.writes_rejected.fetch_add(1, Ordering::Relaxed);
+    }
 
     /// Render Prometheus text format. One line per counter, no labels.
     pub fn render(&self) -> String {
@@ -72,16 +76,72 @@ impl Metrics {
             s.push_str(&v.load(Ordering::Relaxed).to_string());
             s.push('\n');
         };
-        write(&mut s, "nebula_requests_total", "Total API requests", &self.requests_total);
-        write(&mut s, "nebula_requests_errors", "API requests returning 5xx", &self.requests_errors);
-        write(&mut s, "nebula_auth_failures", "Requests rejected by auth", &self.auth_failures);
-        write(&mut s, "nebula_docs_inserted", "Document upserts", &self.docs_inserted);
-        write(&mut s, "nebula_docs_deleted", "Document deletes", &self.docs_deleted);
-        write(&mut s, "nebula_searches_vector", "Raw-vector searches", &self.searches_vector);
-        write(&mut s, "nebula_searches_semantic", "Text/semantic searches", &self.searches_semantic);
-        write(&mut s, "nebula_rag_requests", "RAG requests", &self.rag_requests);
-        write(&mut s, "nebula_rate_limited", "Requests rejected by the rate limiter", &self.rate_limited);
-        write(&mut s, "nebula_jwt_failures", "Requests rejected by JWT verification", &self.jwt_failures);
+        write(
+            &mut s,
+            "nebula_requests_total",
+            "Total API requests",
+            &self.requests_total,
+        );
+        write(
+            &mut s,
+            "nebula_requests_errors",
+            "API requests returning 5xx",
+            &self.requests_errors,
+        );
+        write(
+            &mut s,
+            "nebula_auth_failures",
+            "Requests rejected by auth",
+            &self.auth_failures,
+        );
+        write(
+            &mut s,
+            "nebula_docs_inserted",
+            "Document upserts",
+            &self.docs_inserted,
+        );
+        write(
+            &mut s,
+            "nebula_docs_deleted",
+            "Document deletes",
+            &self.docs_deleted,
+        );
+        write(
+            &mut s,
+            "nebula_searches_vector",
+            "Raw-vector searches",
+            &self.searches_vector,
+        );
+        write(
+            &mut s,
+            "nebula_searches_semantic",
+            "Text/semantic searches",
+            &self.searches_semantic,
+        );
+        write(
+            &mut s,
+            "nebula_rag_requests",
+            "RAG requests",
+            &self.rag_requests,
+        );
+        write(
+            &mut s,
+            "nebula_rate_limited",
+            "Requests rejected by the rate limiter",
+            &self.rate_limited,
+        );
+        write(
+            &mut s,
+            "nebula_jwt_failures",
+            "Requests rejected by JWT verification",
+            &self.jwt_failures,
+        );
+        write(
+            &mut s,
+            "nebula_writes_rejected_total",
+            "Mutations refused by the disk-critical write gate",
+            &self.writes_rejected,
+        );
         s
     }
 }

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/nebula-core",
+    "crates/nebula-resource",
     "crates/nebula-vector",
     "crates/nebula-embed",
     "crates/nebula-cache",
