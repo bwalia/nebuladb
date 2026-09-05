@@ -1,0 +1,227 @@
+name: Register edge vhost (Cloudflare + wslproxy)
+
+# Makes a NebulaDB ring publicly reachable through the wslproxy edge, and
+# keeps that config asserted. Modelled on bwalia/jobshout's workflow of the
+# same name, with two deliberate differences noted below.
+#
+# Per ring:
+#   int  -> int-nebuladb.nebuladb.net
+#   test -> test-showcase.nebuladb.net
+#   acc  -> acc-showcase.nebuladb.net
+#   prod -> showcase.nebuladb.net
+#
+# Steps:
+#   1. Cloudflare CNAME  -> lon1.pop0.uk (DNS-only; pop0 terminates TLS)
+#   2. wslproxy server + rule registration
+#   3. Verify the host actually answers through the edge
+#
+# DIFFERENCE 1 — upsert, not create-if-absent. jobshout uses
+# POST /api/servers, which no-ops when the vhost already exists. Every
+# nebuladb vhost already exists; what was broken was the shared *rule*
+# (it pointed at a retired AWS ELB, so all four hosts served an infinite
+# redirect). Create-if-absent cannot repair that, so this workflow uses
+# POST /api/projects/import, which upserts by id and preserves the
+# server->rule link.
+#
+# DIFFERENCE 2 — Cloudflare direct, with a fallback. jobshout writes the
+# CNAME with a Cloudflare token. nebuladb's deploy-k3s.yml instead asks
+# wslproxy's /api/dns/provision to do it, which has returned 502. This
+# workflow prefers the direct token when CLOUDFLARE_API_TOKEN is set and
+# falls back to the wslproxy path when it is not, so neither route is a
+# hard dependency.
+#
+# Inputs are the standard Ring Promoter trio (ENV / DEPLOY_BRANCH /
+# DEPLOY_MODE) so the promoter dispatches this identically to every other
+# registered app; only ENV is used.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ENV:
+        description: "Ring to register"
+        required: true
+        default: int
+        type: choice
+        options: [int, test, acc, prod]
+      DEPLOY_BRANCH:
+        description: "Unused — accepted for Ring Promoter dispatch parity"
+        required: false
+        default: main
+        type: string
+      DEPLOY_MODE:
+        description: "Unused — accepted for Ring Promoter dispatch parity"
+        required: false
+        default: full
+        type: string
+  workflow_call:
+    inputs:
+      ENV:
+        required: true
+        type: string
+
+  # Drift guard. The stale ELB backend survived the AWS migration because
+  # edge config is hand-edited and nothing re-asserted the committed state.
+  # The import is an idempotent upsert, so quiet runs are no-ops.
+  schedule:
+    - cron: "*/30 * * * *"
+
+concurrency:
+  group: edge-register-${{ github.event.inputs.ENV || 'all' }}
+  cancel-in-progress: false
+
+jobs:
+  register:
+    name: "Register ${{ github.event.inputs.ENV || 'all rings' }} on the edge"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve ring -> host
+        id: ring
+        env:
+          RING: ${{ github.event.inputs.ENV || inputs.ENV }}
+        run: |
+          set -euo pipefail
+          # A scheduled run carries no inputs: re-assert every ring.
+          if [ -z "${RING:-}" ]; then
+            echo "rings=int test acc prod" >>"$GITHUB_OUTPUT"
+            echo "Scheduled drift run — asserting all rings."
+            exit 0
+          fi
+          case "$RING" in
+            int|test|acc|prod) echo "rings=$RING" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::unknown ring '$RING'"; exit 1 ;;
+          esac
+
+      - name: Ensure Cloudflare CNAME
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WSL_API: ${{ secrets.WSLPROXY_API_BASE }}
+          WSL_EMAIL: ${{ secrets.WSLPROXY_ADMIN_EMAIL }}
+          WSL_PASS: ${{ secrets.WSLPROXY_ADMIN_PASSWORD }}
+          RINGS: ${{ steps.ring.outputs.rings }}
+          ZONE: nebuladb.net
+          CNAME_TARGET: lon1.pop0.uk
+        run: |
+          set -euo pipefail
+          for ring in $RINGS; do
+            HOST=$(jq -r '.server_name' "deploy/edge/wslproxy-server-${ring}.json")
+
+            if [ -n "${CF_API_TOKEN:-}" ]; then
+              api="https://api.cloudflare.com/client/v4"
+              auth=(-H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json")
+              zone_id=$(curl -fsS "${auth[@]}" "$api/zones?name=${ZONE}" | jq -r '.result[0].id // empty')
+              if [ -z "$zone_id" ]; then
+                echo "::notice::zone ${ZONE} not visible to this token — leaving ${HOST} DNS as-is."
+                continue
+              fi
+              rec_id=$(curl -fsS "${auth[@]}" \
+                "$api/zones/$zone_id/dns_records?type=CNAME&name=${HOST}" \
+                | jq -r '.result[0].id // empty')
+              # proxied:false — pop0 terminates TLS itself; an orange-cloud
+              # record would put Cloudflare in front of that and break the
+              # edge's own cert handling. ttl:1 = automatic.
+              body=$(jq -nc --arg name "$HOST" --arg content "$CNAME_TARGET" \
+                '{type:"CNAME",name:$name,content:$content,ttl:1,proxied:false}')
+              if [ -n "$rec_id" ]; then
+                curl -fsS "${auth[@]}" -X PUT "$api/zones/$zone_id/dns_records/$rec_id" --data "$body" >/dev/null
+                echo "updated CNAME ${HOST} -> ${CNAME_TARGET}"
+              else
+                curl -fsS "${auth[@]}" -X POST "$api/zones/$zone_id/dns_records" --data "$body" >/dev/null
+                echo "created CNAME ${HOST} -> ${CNAME_TARGET}"
+              fi
+            elif [ -n "${WSL_API:-}" ] && [ -n "${WSL_EMAIL:-}" ] && [ -n "${WSL_PASS:-}" ]; then
+              echo "::notice::no CLOUDFLARE_API_TOKEN — falling back to wslproxy /api/dns/provision for ${HOST}."
+              TOKEN=$(curl -fsS -X POST "${WSL_API%/}/api/user/login" \
+                -H 'Content-Type: application/json' \
+                -d "$(jq -nc --arg e "$WSL_EMAIL" --arg p "$WSL_PASS" '{email:$e,password:$p}')" \
+                | jq -r '.data.accessToken // empty')
+              [ -n "$TOKEN" ] || { echo "::error::wslproxy login failed"; exit 1; }
+              curl -fsS -X POST "${WSL_API%/}/api/dns/provision" \
+                -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+                -d "$(jq -nc --arg s "host:${HOST}" '{server_id:$s, profile_id:"prod", dry_run:false}')" \
+                | jq -c '(.data // .) | {domain, record_type}' || \
+                echo "::warning::wslproxy DNS provision failed for ${HOST} — continuing to vhost registration."
+            else
+              echo "::notice::no DNS credentials — relying on existing DNS for ${HOST}."
+            fi
+          done
+
+      - name: Register wslproxy server + rule
+        env:
+          WSL_API: ${{ secrets.WSLPROXY_API_BASE }}
+          WSL_EMAIL: ${{ secrets.WSLPROXY_ADMIN_EMAIL }}
+          WSL_PASS: ${{ secrets.WSLPROXY_ADMIN_PASSWORD }}
+          RINGS: ${{ steps.ring.outputs.rings }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WSL_API:-}" ] || [ -z "${WSL_EMAIL:-}" ] || [ -z "${WSL_PASS:-}" ]; then
+            echo "::error::WSLPROXY_API_BASE / WSLPROXY_ADMIN_EMAIL / WSLPROXY_ADMIN_PASSWORD must be set."
+            exit 1
+          fi
+          TOKEN=$(curl -fsS --max-time 30 --connect-timeout 10 -X POST "${WSL_API%/}/api/user/login" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg e "$WSL_EMAIL" --arg p "$WSL_PASS" '{email:$e,password:$p}')" \
+            | jq -r '.data.accessToken // empty')
+          [ -n "$TOKEN" ] || { echo "::error::wslproxy login failed at ${WSL_API}"; exit 1; }
+          echo "authenticated to ${WSL_API}"
+
+          import() {
+            local dtype="$1" arr="$2" body resp code
+            body=$(jq -cn --argjson data "$arr" --arg dt "$dtype" '{data:$data, dataType:$dt}')
+            resp=$(curl -sS --max-time 60 --connect-timeout 10 -w "\n%{http_code}" \
+              -X POST "${WSL_API%/}/api/projects/import?_format=json" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "x-platform: react-admin" \
+              -H "Content-Type: application/json" \
+              --data-raw "$body")
+            code=$(echo "$resp" | tail -n1)
+            echo "  dataType=$dtype -> HTTP $code"
+            [ "$code" = "200" ] || [ "$code" = "201" ] || {
+              echo "$resp" | sed '$d'
+              echo "::error::import of $dtype failed (HTTP $code)"; return 1; }
+          }
+
+          # Rules first so each server's `rules` reference resolves on write.
+          RULES_ARR=$(jq -s '.' .github/wslproxy/data/rules/prod/*.json)
+          import rules "$RULES_ARR"
+
+          # Strip the local-only _ring marker before sending.
+          SERVERS_ARR='[]'
+          for ring in $RINGS; do
+            SERVERS_ARR=$(jq -c --argjson acc "$SERVERS_ARR" \
+              'del(._ring) | $acc + [.]' "deploy/edge/wslproxy-server-${ring}.json")
+          done
+          import servers "$SERVERS_ARR"
+          echo "registered $(echo "$SERVERS_ARR" | jq 'length') vhost(s)"
+
+      - name: Verify public health
+        env:
+          RINGS: ${{ steps.ring.outputs.rings }}
+        run: |
+          set -euo pipefail
+          fail=0
+          for ring in $RINGS; do
+            HOST=$(jq -r '.server_name' "deploy/edge/wslproxy-server-${ring}.json")
+            ok=0
+            for i in $(seq 1 12); do
+              # -o /dev/null with --max-redirs 0: a vhost stuck in a redirect
+              # loop returns 301 forever, which must read as a failure rather
+              # than a pass. Only a terminal status counts.
+              code=$(curl -sS -o /tmp/body -m 10 --max-redirs 0 -w '%{http_code}' "https://${HOST}/" || echo 000)
+              echo "[$i] https://${HOST}/ -> $code"
+              if grep -qi 'Host not configured' /tmp/body 2>/dev/null; then
+                sleep 10; continue
+              fi
+              # 200 = serving; 401/403 = vhost exists and the app is gating.
+              if [ "$code" = "200" ] || [ "$code" = "401" ] || [ "$code" = "403" ]; then
+                echo "✅ ${HOST} live through the edge (HTTP ${code})"; ok=1; break
+              fi
+              if [ "$code" = "301" ] || [ "$code" = "302" ]; then
+                echo "   redirect — edge rule may still point at a stale backend"
+              fi
+              sleep 10
+            done
+            [ "$ok" = "1" ] || { echo "::error::${HOST} did not become healthy through the edge."; fail=1; }
+          done
+          exit $fail
