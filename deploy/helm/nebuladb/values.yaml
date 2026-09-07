@@ -59,6 +59,20 @@ server:
   # Liveness uses /healthz; readiness gates on the same endpoint with
   # a stricter cadence so a temporarily-slow server doesn't get
   # culled mid-request.
+  # Recovery replays the WAL and rebuilds the HNSW index before the
+  # server reports healthy; until then /healthz answers 503 by design.
+  # With a large corpus that takes minutes — prod (417k docs) needed ~10.
+  # Liveness alone (initialDelay 15 + 3x30 = ~105s) killed the container
+  # mid-recovery and restarted it from scratch, an unbreakable crash loop
+  # on ANY restart. A startupProbe holds liveness off until the first
+  # success, so recovery gets 90 x 10s = 15 minutes before liveness applies.
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: 8080
+    periodSeconds: 10
+    failureThreshold: 90
+    timeoutSeconds: 5
   livenessProbe:
     httpGet:
       path: /healthz
@@ -84,8 +98,14 @@ server:
   # fall back to the binary's own defaults (see main README).
   env:
     # LLM provider (RAG). Defaults to MockLlm when unset.
-    NEBULA_LLM_OLLAMA_URL: ""
-    NEBULA_LLM_MODEL: ""
+    # LLM provider for /ai/rag and /rag/answer. Leave BOTH blank and the
+    # server falls back to MockLlm, which echoes the prompt back as the
+    # answer — prod shipped that echo to users because these were empty.
+    # Ollama on the LAN; reachable from every ring's pods (verified).
+    NEBULA_LLM_OLLAMA_URL: "http://192.168.1.177:11434"
+    # Present on that host alongside llama3:latest. The server's own
+    # default is "llama3"; pinned here so a model change is a chart change.
+    NEBULA_LLM_MODEL: "llama3.1:8b"
 
     # Embedder provider. Defaults to MockEmbedder when unset.
     NEBULA_OPENAI_API_KEY: ""

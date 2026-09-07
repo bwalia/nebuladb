@@ -493,6 +493,18 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         };
         Arc::new(OllamaLlm::new(cfg)?)
     } else {
+        // No provider configured. MockLlm echoes the assembled prompt back
+        // as the "answer", which is fine in tests but indistinguishable
+        // from a real reply to anyone calling /ai/rag — prod served that
+        // echo to users unnoticed. Warn loudly at startup so an
+        // unconfigured deployment is visible in the logs rather than
+        // silently degraded.
+        tracing::warn!(
+            "no LLM provider configured (set NEBULA_LLM_OLLAMA_URL or \
+             NEBULA_LLM_OPENAI_KEY) - falling back to MockLlm, which ECHOES \
+             the prompt instead of generating an answer. /ai/rag and \
+             /rag/answer will return unusable results."
+        );
         Arc::new(MockLlm::default())
     };
 
