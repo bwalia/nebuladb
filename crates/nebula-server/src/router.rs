@@ -168,7 +168,8 @@ struct Health {
 async fn healthz(State(s): State<AppState>) -> Json<Health> {
     Json(Health {
         status: "ok",
-        docs: s.index.len(),
+        // len_relaxed: never block health behind a bulk writer.
+        docs: s.index.len_relaxed(),
         dim: s.index.dim(),
         model: s.index.embedder_model().to_string(),
         version: crate::build_info::VERSION,

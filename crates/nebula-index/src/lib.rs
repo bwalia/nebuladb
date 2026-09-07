@@ -224,6 +224,9 @@ pub struct TextIndex {
     embedder: Arc<dyn Embedder>,
     hnsw: Hnsw,
     inner: RwLock<Inner>,
+    /// Last observed `docs.len()`, readable without taking the lock.
+    /// Backs `len_relaxed` so health checks never block behind a writer.
+    len_cache: std::sync::atomic::AtomicUsize,
     /// `Some` = durable. Every mutation writes to the WAL before
     /// applying. `None` = in-memory, legacy behaviour.
     wal: Option<Arc<Wal>>,
@@ -245,6 +248,7 @@ impl TextIndex {
         Ok(Self {
             embedder,
             hnsw,
+            len_cache: std::sync::atomic::AtomicUsize::new(0),
             inner: RwLock::new(Inner {
                 by_key: AHashMap::new(),
                 docs: AHashMap::new(),
@@ -368,6 +372,7 @@ impl TextIndex {
         let index = Self {
             embedder,
             hnsw,
+            len_cache: std::sync::atomic::AtomicUsize::new(0),
             inner: RwLock::new(inner),
             wal: Some(Arc::clone(&wal)),
             data_dir: Some(data_dir),
@@ -517,7 +522,28 @@ impl TextIndex {
     }
 
     pub fn len(&self) -> usize {
-        self.inner.read().docs.len()
+        let n = self.inner.read().docs.len();
+        self.len_cache
+            .store(n, std::sync::atomic::Ordering::Relaxed);
+        n
+    }
+
+    /// Document count that never blocks.
+    ///
+    /// `/healthz` must answer while a long write (bucket empty, snapshot
+    /// restore) holds the lock — blocking there is what let a bucket
+    /// empty trip the liveness probe and kill the process. Falls back to
+    /// the last observed count, which is fine for a health signal.
+    pub fn len_relaxed(&self) -> usize {
+        match self.inner.try_read() {
+            Some(g) => {
+                let n = g.docs.len();
+                self.len_cache
+                    .store(n, std::sync::atomic::Ordering::Relaxed);
+                n
+            }
+            None => self.len_cache.load(std::sync::atomic::Ordering::Relaxed),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -984,24 +1010,54 @@ impl TextIndex {
         self.empty_bucket_internal(bucket)
     }
 
+    /// Batch size for `empty_bucket_internal`. Small enough that the
+    /// write lock is held for milliseconds per batch, large enough that
+    /// re-acquisition overhead stays negligible.
+    const EMPTY_BUCKET_BATCH: usize = 2_000;
+
     fn empty_bucket_internal(&self, bucket: &str) -> usize {
-        let mut g = self.inner.write();
-        let victims: Vec<Id> = g
-            .docs
-            .iter()
-            .filter(|(_, d)| d.bucket == bucket)
-            .map(|(id, _)| *id)
-            .collect();
+        // Previously this held `inner.write()` across the whole scan AND
+        // every per-doc `hnsw.delete`. On a large bucket that is minutes
+        // of exclusive lock, during which every reader blocks — including
+        // `/healthz`, whose `len()` needs a read guard. The kubelet's
+        // liveness probe then timed out and killed the process mid-delete,
+        // which on a 400k-doc corpus meant a 10-20 minute cold recovery.
+        // Emptying one bucket must not be able to take the node down.
+        //
+        // So: snapshot the victim ids under a *read* lock, then delete in
+        // batches, releasing the write lock between each so readers
+        // interleave. HNSW deletes happen outside the inner lock entirely
+        // (Hnsw has its own synchronisation), which is where the bulk of
+        // the time went.
+        let victims: Vec<Id> = {
+            let g = self.inner.read();
+            g.docs
+                .iter()
+                .filter(|(_, d)| d.bucket == bucket)
+                .map(|(id, _)| *id)
+                .collect()
+        };
         let n = victims.len();
-        for id in &victims {
-            if let Some(doc) = g.remove_doc(*id) {
-                let key = (doc.bucket.clone(), doc.external_id.clone());
-                g.by_key.remove(&key);
-                if let Some(parent) = doc.parent_doc_id {
-                    g.parents.remove(&(doc.bucket, parent));
+
+        for chunk in victims.chunks(Self::EMPTY_BUCKET_BATCH) {
+            {
+                let mut g = self.inner.write();
+                for id in chunk {
+                    if let Some(doc) = g.remove_doc(*id) {
+                        let key = (doc.bucket.clone(), doc.external_id.clone());
+                        g.by_key.remove(&key);
+                        if let Some(parent) = doc.parent_doc_id {
+                            g.parents.remove(&(doc.bucket, parent));
+                        }
+                    }
                 }
+                self.len_cache
+                    .store(g.docs.len(), std::sync::atomic::Ordering::Relaxed);
+            } // write guard dropped here — readers get a turn
+
+            for id in chunk {
+                let _ = self.hnsw.delete(*id);
             }
-            let _ = self.hnsw.delete(*id);
         }
         n
     }
@@ -1865,6 +1921,52 @@ mod tests {
         assert!(idx.get("a", "2").is_none());
         assert!(idx.get("b", "1").is_some(), "b must be untouched");
         assert_eq!(idx.empty_bucket("nonexistent"), 0);
+    }
+
+    /// Emptying a bucket larger than one batch must still remove every
+    /// doc, leave other buckets alone, and keep the index consistent.
+    ///
+    /// Regression: `empty_bucket_internal` used to hold `inner.write()`
+    /// across the whole scan plus every HNSW delete. On a 400k-doc
+    /// bucket that starved readers for minutes — `/healthz` blocked on
+    /// `len()`, the liveness probe timed out, and the kubelet killed the
+    /// process mid-delete. It now deletes in batches, releasing the lock
+    /// between each. This exercises the multi-batch path (every previous
+    /// test fitted inside a single batch, so the chunking was untested).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn empty_bucket_spanning_multiple_batches() {
+        let idx = make_index();
+        let n = TextIndex::EMPTY_BUCKET_BATCH * 2 + 37; // deliberately not a multiple
+        for i in 0..n {
+            idx.upsert_text("big", &i.to_string(), "x", serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        idx.upsert_text("keep", "1", "x", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(idx.empty_bucket("big"), n, "must report every removed doc");
+        assert!(idx.get("big", "0").is_none());
+        assert!(idx.get("big", &(n - 1).to_string()).is_none());
+        assert!(idx.get("keep", "1").is_some(), "other buckets untouched");
+        assert_eq!(idx.len(), 1, "only the keep doc survives");
+        // The relaxed counter backs /healthz; it must agree once idle.
+        assert_eq!(idx.len_relaxed(), 1);
+    }
+
+    /// `len_relaxed` must return promptly even while a writer holds the
+    /// lock — that is the property preventing a bulk delete from tripping
+    /// the liveness probe.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn len_relaxed_does_not_block_behind_a_writer() {
+        let idx = make_index();
+        idx.upsert_text("a", "1", "x", serde_json::json!({})).await.unwrap();
+        assert_eq!(idx.len_relaxed(), 1); // primes the cache
+        let guard = idx.inner.write(); // hold the exclusive lock
+        // Must fall back to the cached value rather than deadlock.
+        assert_eq!(idx.len_relaxed(), 1);
+        drop(guard);
     }
 
     fn persistent_index(data_dir: &Path, snapshot_dir: Option<PathBuf>) -> TextIndex {
