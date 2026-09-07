@@ -24,3 +24,8 @@ deploy/helm/**/*.tgz
 
 # Claude Code harness state — per-user, machine-specific.
 .claude/
+
+# Full conversation exports (/export) — transcripts of live infra work.
+# Contain LAN topology and admin identifiers; this repo is public.
+nebualdb-remote.md
+*-transcript.md
