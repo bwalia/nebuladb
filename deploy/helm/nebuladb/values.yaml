@@ -59,22 +59,48 @@ server:
   # Liveness uses /healthz; readiness gates on the same endpoint with
   # a stricter cadence so a temporarily-slow server doesn't get
   # culled mid-request.
+  # Recovery replays the WAL and rebuilds the HNSW index before the
+  # server reports healthy; until then /healthz answers 503 by design.
+  # With a large corpus that takes minutes — prod (417k docs) needed ~10.
+  # Liveness alone (initialDelay 15 + 3x30 = ~105s) killed the container
+  # mid-recovery and restarted it from scratch, an unbreakable crash loop
+  # on ANY restart. A startupProbe holds liveness off until the first
+  # success, so recovery gets 90 x 10s = 15 minutes before liveness applies.
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: 8080
+    periodSeconds: 10
+    # 360 x 10s = 60 min. 90 (15 min) was tried first and proved too
+    # small: prod's cold recovery ran past 19 minutes, so the startup
+    # probe expired and restarted recovery from scratch — the same
+    # crash loop it was added to prevent. Recovery time scales with
+    # corpus size, so this needs headroom, not a tight fit.
+    failureThreshold: 360
+    timeoutSeconds: 10
+  # Killing this process is expensive — recovery replays the WAL and
+  # rebuilds HNSW, ~20 min on a large corpus. So liveness is deliberately
+  # slack: a node that is slow for 4 minutes is far better than one
+  # restarted into a 20-minute outage. Prod was killed by the old
+  # 3 x 30s @ 3s settings while /healthz was merely slow, not dead.
   livenessProbe:
     httpGet:
       path: /healthz
       port: 8080
     initialDelaySeconds: 15
     periodSeconds: 30
-    timeoutSeconds: 3
-    failureThreshold: 3
+    timeoutSeconds: 15
+    failureThreshold: 8
+  # Readiness is the fast signal — pull a slow node out of the Service
+  # quickly, since that is cheap and reversible.
   readinessProbe:
     httpGet:
       path: /healthz
       port: 8080
     initialDelaySeconds: 5
-    periodSeconds: 5
-    timeoutSeconds: 2
-    failureThreshold: 2
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 4
 
   nodeSelector: {}
   tolerations: []
@@ -84,8 +110,14 @@ server:
   # fall back to the binary's own defaults (see main README).
   env:
     # LLM provider (RAG). Defaults to MockLlm when unset.
-    NEBULA_LLM_OLLAMA_URL: ""
-    NEBULA_LLM_MODEL: ""
+    # LLM provider for /ai/rag and /rag/answer. Leave BOTH blank and the
+    # server falls back to MockLlm, which echoes the prompt back as the
+    # answer — prod shipped that echo to users because these were empty.
+    # Ollama on the LAN; reachable from every ring's pods (verified).
+    NEBULA_LLM_OLLAMA_URL: "http://192.168.1.177:11434"
+    # Present on that host alongside llama3:latest. The server's own
+    # default is "llama3"; pinned here so a model change is a chart change.
+    NEBULA_LLM_MODEL: "llama3.1:8b"
 
     # Embedder provider. Defaults to MockEmbedder when unset.
     NEBULA_OPENAI_API_KEY: ""
