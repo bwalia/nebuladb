@@ -71,24 +71,36 @@ server:
       path: /healthz
       port: 8080
     periodSeconds: 10
-    failureThreshold: 90
-    timeoutSeconds: 5
+    # 360 x 10s = 60 min. 90 (15 min) was tried first and proved too
+    # small: prod's cold recovery ran past 19 minutes, so the startup
+    # probe expired and restarted recovery from scratch — the same
+    # crash loop it was added to prevent. Recovery time scales with
+    # corpus size, so this needs headroom, not a tight fit.
+    failureThreshold: 360
+    timeoutSeconds: 10
+  # Killing this process is expensive — recovery replays the WAL and
+  # rebuilds HNSW, ~20 min on a large corpus. So liveness is deliberately
+  # slack: a node that is slow for 4 minutes is far better than one
+  # restarted into a 20-minute outage. Prod was killed by the old
+  # 3 x 30s @ 3s settings while /healthz was merely slow, not dead.
   livenessProbe:
     httpGet:
       path: /healthz
       port: 8080
     initialDelaySeconds: 15
     periodSeconds: 30
-    timeoutSeconds: 3
-    failureThreshold: 3
+    timeoutSeconds: 15
+    failureThreshold: 8
+  # Readiness is the fast signal — pull a slow node out of the Service
+  # quickly, since that is cheap and reversible.
   readinessProbe:
     httpGet:
       path: /healthz
       port: 8080
     initialDelaySeconds: 5
-    periodSeconds: 5
-    timeoutSeconds: 2
-    failureThreshold: 2
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 4
 
   nodeSelector: {}
   tolerations: []
