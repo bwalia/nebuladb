@@ -11,13 +11,30 @@ server:
 
   # Prod gets a larger durable volume. NebulaDB's HNSW index is
   # RAM-bound (~4 bytes/dim/doc) so bump memory here as the corpus grows.
+  #
+  # 8Gi was not enough. HNSW deletes are soft (nebula-vector/src/hnsw.rs
+  # "Deletions are soft (tombstones)") and nothing ever reclaims the
+  # arena, so the resident set only ever grows: the Sep 7 admin-empty of
+  # the 417k-doc leads bucket left every one of those vectors in memory,
+  # and a client re-ingesting leads at ~850 docs/min piled new nodes on
+  # top. Prod hit the 8Gi cap roughly every 60 minutes, and each OOMKill
+  # cost ~45 minutes of cold recovery replaying a 2.3G snapshot, during
+  # which showcase.nebuladb.net served 504. Limit raised to 24Gi on a
+  # node with ~97Gi free.
+  #
+  # Requests were 1Gi against a real working set of 3-8Gi, which let the
+  # scheduler treat this as a small pod and over-pack the node. Requests
+  # now reflect what the process actually holds after recovery.
+  #
+  # This is headroom, not a fix: without tombstone reclamation the arena
+  # still grows without bound and 24Gi only buys time.
   resources:
     limits:
       cpu: "4"
-      memory: "8Gi"
+      memory: "24Gi"
     requests:
       cpu: "500m"
-      memory: "1Gi"
+      memory: "8Gi"
 
   persistence:
     enabled: true

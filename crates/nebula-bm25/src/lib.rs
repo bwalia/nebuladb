@@ -152,6 +152,10 @@ impl Bm25Index {
     /// Remove a document. No-op if the id is unknown. Empty posting
     /// lists are dropped so `n(t)` (the IDF document frequency) stays
     /// exact and memory doesn't grow with churn.
+    ///
+    /// This scans *every* posting list — O(total postings). Prefer
+    /// [`Self::remove_text`] whenever the caller still has the text
+    /// the doc was indexed with.
     pub fn remove(&mut self, id: u64) {
         let Some(len) = self.doc_len.remove(&id) else {
             return;
@@ -159,13 +163,42 @@ impl Bm25Index {
         self.total_len -= len as u64;
 
         // We don't track which terms a doc held, so we scan posting
-        // lists. Acceptable: removals are far rarer than searches, and
-        // this keeps the per-doc memory footprint to a single length
-        // entry rather than a full term set.
+        // lists. Keeps the per-doc footprint to a single length entry.
         self.postings.retain(|_term, list| {
             list.retain(|p| p.id != id);
             !list.is_empty()
         });
+    }
+
+    /// Remove a document given the exact `text` it was [`Self::add`]ed
+    /// with. Re-tokenizing tells us which posting lists hold `id`, so
+    /// only those are touched — O(terms in the doc × their list
+    /// lengths) instead of [`Self::remove`]'s full-corpus scan.
+    ///
+    /// Upserting an existing key removes the old doc, so this is the
+    /// write hot path, not a rare admin operation: on prod (~2.3M docs)
+    /// the full scan cost ~200ms per upsert under the index write lock,
+    /// which capped writes — and WAL replay on boot — at ~5/s. Replay
+    /// of one 64MB segment then outlasted the 60-minute startup probe
+    /// and the pod restart-looped.
+    ///
+    /// Passing text other than what was indexed leaves stale postings
+    /// behind for any term only the original text contained.
+    pub fn remove_text(&mut self, id: u64, text: &str) {
+        let Some(len) = self.doc_len.remove(&id) else {
+            return;
+        };
+        self.total_len -= len as u64;
+
+        let terms: AHashSet<String> = tokenize(text).into_iter().collect();
+        for term in terms {
+            if let Some(list) = self.postings.get_mut(&term) {
+                list.retain(|p| p.id != id);
+                if list.is_empty() {
+                    self.postings.remove(&term);
+                }
+            }
+        }
     }
 
     /// Score the corpus against `query` and return the top `k` by
@@ -304,6 +337,30 @@ mod tests {
         // Removing again is a no-op.
         idx.remove(1);
         assert_eq!(idx.len(), 1);
+    }
+
+    #[test]
+    fn remove_text_matches_full_scan_remove() {
+        let docs = [(1, "Cat dog, cat!"), (2, "cat fish"), (3, "dog bird")];
+        let mut scanned = build(&docs);
+        let mut targeted = build(&docs);
+        scanned.remove(1);
+        targeted.remove_text(1, docs[0].1);
+
+        assert_eq!(targeted.len(), scanned.len());
+        assert_eq!(targeted.total_len, scanned.total_len);
+        let mut a: Vec<_> = targeted.postings.keys().cloned().collect();
+        let mut b: Vec<_> = scanned.postings.keys().cloned().collect();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "same posting lists survive, empty ones dropped");
+        for q in ["cat", "dog", "fish", "bird"] {
+            let ids = |i: &Bm25Index| i.search(q, 10).iter().map(|h| h.id).collect::<Vec<_>>();
+            assert_eq!(ids(&targeted), ids(&scanned), "query {q}");
+        }
+        // Removing again is a no-op.
+        targeted.remove_text(1, docs[0].1);
+        assert_eq!(targeted.len(), 2);
     }
 
     #[test]
