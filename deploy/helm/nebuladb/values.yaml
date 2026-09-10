@@ -56,38 +56,40 @@ server:
       cpu: "200m"
       memory: "256Mi"
 
-  # Liveness uses /healthz; readiness gates on the same endpoint with
-  # a stricter cadence so a temporarily-slow server doesn't get
-  # culled mid-request.
-  # Recovery replays the WAL and rebuilds the HNSW index before the
-  # server reports healthy; until then /healthz answers 503 by design.
-  # With a large corpus that takes minutes — prod (417k docs) needed ~10.
-  # Liveness alone (initialDelay 15 + 3x30 = ~105s) killed the container
-  # mid-recovery and restarted it from scratch, an unbreakable crash loop
-  # on ANY restart. A startupProbe holds liveness off until the first
-  # success, so recovery gets 90 x 10s = 15 minutes before liveness applies.
+  # Two questions, two endpoints:
+  #   /healthz/live — "is the process alive?" 200 from the moment the
+  #                   boot listener binds, through recovery, and from the
+  #                   real router after. Touches no index state.
+  #   /healthz      — "can it serve?" 503 {"status":"recovering"} until
+  #                   WAL/snapshot recovery completes, then 200.
+  #
+  # Startup and liveness MUST use /healthz/live. They used /healthz, so
+  # any recovery longer than the startup budget was killed and restarted
+  # from scratch — forever. The budget was raised 15 → 60 min as prod
+  # grew, and on Sep 10 recovery outgrew 60 min: prod restart-looped for
+  # ~4h. Liveness on /healthz also killed the pod whenever /healthz was
+  # slow (e.g. behind the index lock during a snapshot) rather than dead.
+  # Recovery time scales with corpus size, so no fixed budget is safe;
+  # only a liveness signal that is independent of recovery is.
+  #
+  # Readiness stays on /healthz: it keeps a recovering or not-yet-able
+  # pod out of the Service, which is cheap and reversible.
   startupProbe:
     httpGet:
-      path: /healthz
+      path: /healthz/live
       port: 8080
     periodSeconds: 10
-    # 360 x 10s = 60 min. 90 (15 min) was tried first and proved too
-    # small: prod's cold recovery ran past 19 minutes, so the startup
-    # probe expired and restarted recovery from scratch — the same
-    # crash loop it was added to prevent. Recovery time scales with
-    # corpus size, so this needs headroom, not a tight fit.
-    failureThreshold: 360
-    timeoutSeconds: 10
-  # Killing this process is expensive — recovery replays the WAL and
-  # rebuilds HNSW, ~20 min on a large corpus. So liveness is deliberately
-  # slack: a node that is slow for 4 minutes is far better than one
-  # restarted into a 20-minute outage. Prod was killed by the old
-  # 3 x 30s @ 3s settings while /healthz was merely slow, not dead.
+    # Only has to cover process start → boot listener bind (ms). Once
+    # live, recovery may take as long as it needs.
+    failureThreshold: 30
+    timeoutSeconds: 5
+  # Restarting is expensive (recovery reloads a multi-GB snapshot), so
+  # only kill when the HTTP runtime itself has stopped answering for
+  # ~4 minutes — a genuine hang, not a slow request.
   livenessProbe:
     httpGet:
-      path: /healthz
+      path: /healthz/live
       port: 8080
-    initialDelaySeconds: 15
     periodSeconds: 30
     timeoutSeconds: 15
     failureThreshold: 8
