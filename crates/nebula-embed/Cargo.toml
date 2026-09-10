@@ -9,6 +9,7 @@ license.workspace = true
 nebula-core = { path = "../nebula-core" }
 
 thiserror.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true

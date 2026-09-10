@@ -131,6 +131,20 @@ pub enum WalRecord {
     EmptyBucket {
         bucket: String,
     },
+    /// `TextIndex::upsert_text_deferred` — a text upsert accepted
+    /// WITHOUT a vector (design 0010 §5). Written when the caller asks
+    /// for deferred embedding or the embedding provider is degraded:
+    /// the document is durable and BM25/metadata-visible immediately;
+    /// a background worker embeds it later and follows up with a
+    /// normal `UpsertText` record carrying the vector. Replay
+    /// restores it to the same vector-pending state. Appended last
+    /// per the bincode append-only rule above.
+    UpsertTextPending {
+        bucket: String,
+        external_id: String,
+        text: String,
+        metadata_json: String,
+    },
 }
 
 impl WalRecord {
@@ -143,7 +157,8 @@ impl WalRecord {
             | WalRecord::UpsertDocument { bucket, .. }
             | WalRecord::Delete { bucket, .. }
             | WalRecord::DeleteDocument { bucket, .. }
-            | WalRecord::EmptyBucket { bucket } => bucket,
+            | WalRecord::EmptyBucket { bucket }
+            | WalRecord::UpsertTextPending { bucket, .. } => bucket,
         }
     }
 }
@@ -229,7 +244,12 @@ impl Wal {
                 .open(segment_path(&dir, current_seq))?;
             f.write_all(MAGIC)?;
             f.sync_data()?;
-            (OpenOptions::new().append(true).open(segment_path(&dir, current_seq))?, MAGIC.len() as u64)
+            (
+                OpenOptions::new()
+                    .append(true)
+                    .open(segment_path(&dir, current_seq))?,
+                MAGIC.len() as u64,
+            )
         };
 
         Ok(Self {
@@ -282,8 +302,11 @@ impl Wal {
             f.write_all(MAGIC)?;
             f.sync_data()?;
             s.current_seq = next_seq;
-            s.current_file =
-                BufWriter::new(OpenOptions::new().append(true).open(segment_path(&self.dir, next_seq))?);
+            s.current_file = BufWriter::new(
+                OpenOptions::new()
+                    .append(true)
+                    .open(segment_path(&self.dir, next_seq))?,
+            );
             s.current_bytes = MAGIC.len() as u64;
         }
 
@@ -644,8 +667,8 @@ where
             if crc32fast::hash(&body) != crc {
                 break;
             }
-            let rec: WalRecord = bincode::deserialize(&body)
-                .map_err(|e| WalError::Codec(e.to_string()))?;
+            let rec: WalRecord =
+                bincode::deserialize(&body).map_err(|e| WalError::Codec(e.to_string()))?;
             apply(rec)?;
         }
     }
@@ -745,7 +768,11 @@ mod tests {
         wal.flush().unwrap();
 
         let all = wal.segments_since(0).unwrap();
-        assert!(all.len() >= 2, "expected multiple segments, got {}", all.len());
+        assert!(
+            all.len() >= 2,
+            "expected multiple segments, got {}",
+            all.len()
+        );
         // Sorted ascending.
         for w in all.windows(2) {
             assert!(w[0].0 < w[1].0, "segments_since must be sorted");
@@ -838,7 +865,11 @@ mod tests {
         }
         wal.flush().unwrap();
         let segs = list_segments(dir.path()).unwrap();
-        assert!(segs.len() > 1, "expected rotation, got {} segments", segs.len());
+        assert!(
+            segs.len() > 1,
+            "expected rotation, got {} segments",
+            segs.len()
+        );
         let back = wal.replay().unwrap();
         assert_eq!(back.len(), 10, "rotation lost records");
     }

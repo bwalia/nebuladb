@@ -13,7 +13,10 @@ use std::time::Duration;
 use ahash::AHashSet;
 use nebula_cache::{CacheStats, CachingEmbedder};
 use nebula_chunk::{Chunker, FixedSizeChunker};
-use nebula_embed::{Embedder, MockEmbedder, OpenAiEmbedder, OpenAiEmbedderConfig};
+use nebula_embed::{
+    BreakerConfig, CircuitBreakerEmbedder, Embedder, MockEmbedder, OpenAiEmbedder,
+    OpenAiEmbedderConfig, RetryConfig, RetryingEmbedder,
+};
 use nebula_grpc::GrpcState;
 use nebula_index::TextIndex;
 use nebula_llm::{LlmClient, MockLlm, OllamaConfig, OllamaLlm, OpenAiChatConfig, OpenAiChatLlm};
@@ -192,6 +195,23 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Resilience wrappers (design 0010 §5), innermost-first:
+    //   provider → retry → circuit breaker → redis cache → LRU cache
+    // Retries sit closest to the provider so a transient 5xx is
+    // absorbed before it counts toward the breaker. The caches sit
+    // OUTSIDE the breaker deliberately: a cache hit must keep
+    // succeeding while the circuit is open — repeated queries stay
+    // servable through an outage. The AiHealth handle is the node's
+    // `ai_degraded` signal on /healthz, /metrics, /admin/reliability.
+    let raw_embedder: Arc<dyn Embedder> =
+        Arc::new(RetryingEmbedder::new(raw_embedder, RetryConfig::default()));
+    let breaker = Arc::new(CircuitBreakerEmbedder::new(
+        raw_embedder,
+        BreakerConfig::default(),
+    ));
+    let ai_health = breaker.health();
+    let raw_embedder: Arc<dyn Embedder> = breaker;
+
     // Optional Redis layer goes *below* the in-process LRU. Why:
     //   - in-proc hits are nanoseconds; Redis hits are ~ms.
     //   - a miss on the in-proc layer is still cheap to check in
@@ -240,6 +260,26 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         (redis_layer, None)
     };
+
+    // Embedding-space identity guard (design 0010 §5). A persistent
+    // corpus is tied to the (model, dim) that produced its vectors —
+    // booting the same data dir with a different embedder would
+    // silently mix incompatible vector spaces and quietly ruin every
+    // similarity score. Stamp the identity on first boot; refuse to
+    // start on mismatch (the operator either restores the old config
+    // or re-ingests; NEBULA_EMBEDDER_IDENTITY_OVERRIDE=1 accepts the
+    // new identity for an intentional migration wipe).
+    if let Some(dir) = std::env::var("NEBULA_DATA_DIR")
+        .ok()
+        .filter(|d| !d.is_empty())
+    {
+        nebula_server::embedder_identity::check_or_stamp(
+            std::path::Path::new(&dir),
+            embedder.model(),
+            embedder.dim(),
+            std::env::var("NEBULA_EMBEDDER_IDENTITY_OVERRIDE").as_deref() == Ok("1"),
+        )?;
+    }
 
     // Durability: NEBULA_DATA_DIR turns on WAL + snapshots. When
     // unset the server stays in-memory (legacy/demo default).
@@ -486,6 +526,47 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Embedding worker (design 0010 §5): drains vector-pending
+    // documents (deferred writes + circuit-open fallbacks) in batches.
+    // Polls; embed_pending_batch is a no-op when nothing is pending.
+    // Provider failures leave the batch pending for the next tick —
+    // the embedder stack retries transients and fails fast when the
+    // circuit is open, so a dead provider costs one cheap error per
+    // tick, not a hung worker.
+    {
+        let idx = Arc::clone(&index);
+        let batch: usize = std::env::var("NEBULA_EMBED_WORKER_BATCH")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64);
+        let interval_secs: u64 = std::env::var("NEBULA_EMBED_WORKER_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
+            loop {
+                tick.tick().await;
+                if idx.pending_embedding_count() == 0 {
+                    continue;
+                }
+                match idx.embed_pending_batch(batch).await {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        tracing::info!(
+                            completed = n,
+                            remaining = idx.pending_embedding_count(),
+                            "embedding worker drained batch"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, pending = idx.pending_embedding_count(), "embedding worker batch failed; will retry");
+                    }
+                }
+            }
+        });
+    }
+
     let api_keys: AHashSet<String> = std::env::var("NEBULA_API_KEYS")
         .unwrap_or_default()
         .split(',')
@@ -719,7 +800,8 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     .with_log_bus(Arc::clone(&log_bus))
     .with_snapshot_scheduler_enabled(snapshot_scheduler_enabled)
     .with_durability_cache(Arc::clone(&durability_cache))
-    .with_resource_manager(Arc::clone(&resource_manager));
+    .with_resource_manager(Arc::clone(&resource_manager))
+    .with_ai_health(Arc::clone(&ai_health));
     if let Some(fc) = follower_cursor.as_ref() {
         state = state.with_follower_cursor(Arc::clone(fc));
     }

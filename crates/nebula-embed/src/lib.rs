@@ -12,13 +12,17 @@
 //! to a vendor SDK, and swapping providers is a one-line change at
 //! construction time.
 
+mod breaker;
 mod mock;
 mod openai;
+mod retry;
 
 use async_trait::async_trait;
 
+pub use breaker::{AiHealth, BreakerConfig, CircuitBreakerEmbedder};
 pub use mock::MockEmbedder;
 pub use openai::{OpenAiEmbedder, OpenAiEmbedderConfig};
+pub use retry::{is_transient, RetryConfig, RetryingEmbedder};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EmbedError {
@@ -32,6 +36,13 @@ pub enum EmbedError {
     EmptyBatch,
     #[error("dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
+    /// The circuit breaker is open: the provider has failed
+    /// consecutively and calls fail fast instead of burning a full
+    /// timeout each (design 0010 §5). Maps to a distinct API error so
+    /// clients can tell "provider degraded, back off" from a one-off
+    /// upstream error.
+    #[error("embedding provider unavailable (circuit open)")]
+    CircuitOpen,
 }
 
 pub type Result<T> = std::result::Result<T, EmbedError>;

@@ -332,6 +332,12 @@ pub struct AppState {
     /// to an even 0.5/0.5 split for every bucket; override globally or
     /// per-bucket via [`Self::with_hybrid_weights`].
     pub hybrid_weights: Arc<HybridWeights>,
+    /// Circuit-breaker health for the embedding provider (design 0010
+    /// §5): the node's `ai_degraded` flag plus open/reject counters.
+    /// `None` when no breaker is wired (tests, or a bare MockEmbedder
+    /// state) — the observability endpoints then omit the AI-health
+    /// lines rather than reporting a misleading healthy-forever zero.
+    pub ai_health: Option<Arc<nebula_embed::AiHealth>>,
     /// Resource manager + operating-mode state machine (design 0010).
     /// A background sampler in `main.rs` feeds it every ~5s; the
     /// disk-critical write gate and the reliability endpoints read it
@@ -399,6 +405,7 @@ impl AppState {
             reranker: Arc::new(NoopReranker),
             query_expander: Arc::new(NoopQueryExpander),
             hybrid_weights: Arc::new(HybridWeights::default()),
+            ai_health: None,
             resource: Arc::new(nebula_resource::ResourceManager::new(
                 nebula_resource::Thresholds::default(),
             )),
@@ -511,6 +518,14 @@ impl AppState {
 
     pub fn with_rate_limiter(mut self, limiter: RateLimiter) -> Self {
         self.rate_limiter = Some(limiter);
+        self
+    }
+
+    /// Wire in the embedder circuit-breaker health handle so
+    /// `/healthz`, `/metrics`, and `/admin/reliability` report AI
+    /// degradation (design 0010 §5).
+    pub fn with_ai_health(mut self, health: Arc<nebula_embed::AiHealth>) -> Self {
+        self.ai_health = Some(health);
         self
     }
 
