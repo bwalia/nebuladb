@@ -65,11 +65,7 @@ pub struct GrpcState {
 }
 
 impl GrpcState {
-    pub fn new(
-        index: Arc<TextIndex>,
-        llm: Arc<dyn LlmClient>,
-        chunker: Arc<dyn Chunker>,
-    ) -> Self {
+    pub fn new(index: Arc<TextIndex>, llm: Arc<dyn LlmClient>, chunker: Arc<dyn Chunker>) -> Self {
         Self::with_role(index, llm, chunker, NodeRole::default())
     }
 
@@ -166,9 +162,7 @@ fn raft_submit_error(e: nebula_raft::SubmitError) -> Status {
                 .map(|i| i.to_string())
                 .unwrap_or_else(|| "unknown".into());
             let addr = leader_addr.unwrap_or_else(|| "unknown".into());
-            Status::failed_precondition(format!(
-                "{NOT_LEADER}: leader_addr={addr} leader_id={id}"
-            ))
+            Status::failed_precondition(format!("{NOT_LEADER}: leader_addr={addr} leader_id={id}"))
         }
         nebula_raft::SubmitError::Other(msg) => Status::internal(msg),
     }
@@ -335,10 +329,11 @@ impl pb::document_service_server::DocumentService for DocumentSvc {
             // that under-counts is a monitoring concern, not correctness.
             // Mirrors the REST `delete_document` handler from 2.5d.
             let local_count = self.state.index.count_chunks(&r.bucket, &r.doc_id);
-            let payload = nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::DeleteDocument {
-                bucket: r.bucket.clone(),
-                doc_id: r.doc_id.clone(),
-            });
+            let payload =
+                nebula_raft::LogPayload::Mutation(nebula_wal::WalRecord::DeleteDocument {
+                    bucket: r.bucket.clone(),
+                    doc_id: r.doc_id.clone(),
+                });
             raft.submit_mutation(payload)
                 .await
                 .map_err(raft_submit_error)?;
@@ -457,10 +452,7 @@ impl AiSvc {
 impl pb::ai_service_server::AiService for AiSvc {
     type RagStream = ReceiverStream<Result<pb::RagChunk, Status>>;
 
-    async fn rag(
-        &self,
-        req: Request<pb::RagRequest>,
-    ) -> Result<Response<Self::RagStream>, Status> {
+    async fn rag(&self, req: Request<pb::RagRequest>) -> Result<Response<Self::RagStream>, Status> {
         let r = req.into_inner();
         if r.query.trim().is_empty() {
             return Err(Status::invalid_argument("query required"));
@@ -593,9 +585,16 @@ impl pb::replication_service_server::ReplicationService for ReplicationSvc {
             None => nebula_wal::WalCursor::BEGIN,
         };
 
-        let mut sub = wal
-            .subscribe(start)
-            .map_err(|e| Status::internal(format!("wal subscribe: {e}")))?;
+        let mut sub = wal.subscribe(start).map_err(|e| match e {
+            // Cursor predates the oldest surviving segment — serving
+            // it would silently skip the compacted records. Distinct
+            // status so the consumer knows to bootstrap from a
+            // snapshot rather than retry.
+            nebula_wal::WalError::CompactedGap { .. } => {
+                Status::failed_precondition(format!("wal subscribe: {e}"))
+            }
+            other => Status::internal(format!("wal subscribe: {other}")),
+        })?;
 
         // Same buffer size as the RAG stream — handful of entries to
         // smooth over client-side hiccups, small enough that a
@@ -612,9 +611,7 @@ impl pb::replication_service_server::ReplicationService for ReplicationSvc {
                                 // Encoding our own record should never
                                 // fail; surface it loudly if it does.
                                 let _ = tx
-                                    .send(Err(Status::internal(format!(
-                                        "bincode encode: {e}"
-                                    ))))
+                                    .send(Err(Status::internal(format!("bincode encode: {e}"))))
                                     .await;
                                 break;
                             }
@@ -636,7 +633,8 @@ impl pb::replication_service_server::ReplicationService for ReplicationSvc {
                         // Lagged / format error. Close the stream
                         // with FAILED_PRECONDITION so the follower
                         // knows to resubscribe (or bootstrap).
-                        tx.send(Err(Status::failed_precondition(e.to_string()))).await
+                        tx.send(Err(Status::failed_precondition(e.to_string())))
+                            .await
                     }
                 };
                 if send_result.is_err() {
@@ -742,9 +740,16 @@ impl pb::cross_region_replication_service_server::CrossRegionReplicationService
         let owned_by_caller: std::collections::HashSet<String> =
             r.buckets_owned_by_caller.into_iter().collect();
 
-        let mut sub = wal
-            .subscribe(start)
-            .map_err(|e| Status::internal(format!("wal subscribe: {e}")))?;
+        let mut sub = wal.subscribe(start).map_err(|e| match e {
+            // Cursor predates the oldest surviving segment — serving
+            // it would silently skip the compacted records. Distinct
+            // status so the consumer knows to bootstrap from a
+            // snapshot rather than retry.
+            nebula_wal::WalError::CompactedGap { .. } => {
+                Status::failed_precondition(format!("wal subscribe: {e}"))
+            }
+            other => Status::internal(format!("wal subscribe: {other}")),
+        })?;
 
         let (tx, rx) = mpsc::channel::<Result<pb::CrossRegionEntry, Status>>(64);
         let this = self.clone();
@@ -763,9 +768,7 @@ impl pb::cross_region_replication_service_server::CrossRegionReplicationService
                             Ok(b) => b,
                             Err(e) => {
                                 let _ = tx
-                                    .send(Err(Status::internal(format!(
-                                        "bincode encode: {e}"
-                                    ))))
+                                    .send(Err(Status::internal(format!("bincode encode: {e}"))))
                                     .await;
                                 break;
                             }
@@ -786,9 +789,10 @@ impl pb::cross_region_replication_service_server::CrossRegionReplicationService
                         }))
                         .await
                     }
-                    Err(e) => tx
-                        .send(Err(Status::failed_precondition(e.to_string())))
-                        .await,
+                    Err(e) => {
+                        tx.send(Err(Status::failed_precondition(e.to_string())))
+                            .await
+                    }
                 };
                 if send_result.is_err() {
                     break;
@@ -881,13 +885,17 @@ pub async fn serve_with_region(
         .add_service(pb::search_service_server::SearchServiceServer::new(
             SearchSvc::new(state.clone()),
         ))
-        .add_service(pb::ai_service_server::AiServiceServer::new(AiSvc::new(state)))
+        .add_service(pb::ai_service_server::AiServiceServer::new(AiSvc::new(
+            state,
+        )))
         // ReplicationService is always mounted. In-memory leaders
         // respond with FAILED_PRECONDITION, which is the right
         // signal for a follower ("this node can't serve me").
-        .add_service(pb::replication_service_server::ReplicationServiceServer::new(
-            ReplicationSvc::new(wal.clone()),
-        ))
+        .add_service(
+            pb::replication_service_server::ReplicationServiceServer::new(ReplicationSvc::new(
+                wal.clone(),
+            )),
+        )
         // CrossRegionReplicationService is always mounted too; when
         // this node isn't multi-region it refuses politely.
         .add_service(
@@ -912,7 +920,10 @@ mod raft_error_tests {
         let status = raft_submit_error(err);
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
         let msg = status.message();
-        assert!(msg.starts_with(NOT_LEADER), "expected NOT_LEADER prefix, got: {msg}");
+        assert!(
+            msg.starts_with(NOT_LEADER),
+            "expected NOT_LEADER prefix, got: {msg}"
+        );
         assert!(msg.contains("leader_addr=10.0.0.7:50052"));
         assert!(msg.contains("leader_id=7"));
     }

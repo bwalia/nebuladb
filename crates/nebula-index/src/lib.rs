@@ -312,6 +312,29 @@ impl TextIndex {
         data_dir: impl AsRef<Path>,
         snapshot_dir: Option<PathBuf>,
     ) -> Result<Self> {
+        Self::open_persistent_with_wal_config(
+            embedder,
+            metric,
+            config,
+            data_dir,
+            snapshot_dir,
+            WalConfig::default(),
+        )
+    }
+
+    /// Like [`Self::open_persistent_in`] but with an explicit
+    /// [`WalConfig`]. Production keeps the default 64 MiB segments;
+    /// tests use tiny segments to exercise rotation/compaction paths
+    /// (e.g. the compacted-gap subscribe refusal) without writing
+    /// gigabytes.
+    pub fn open_persistent_with_wal_config(
+        embedder: Arc<dyn Embedder>,
+        metric: Metric,
+        config: HnswConfig,
+        data_dir: impl AsRef<Path>,
+        snapshot_dir: Option<PathBuf>,
+        wal_config: WalConfig,
+    ) -> Result<Self> {
         let dim = embedder.dim();
         let data_dir = data_dir.as_ref().to_path_buf();
         let wal_dir = data_dir.join("wal");
@@ -377,7 +400,7 @@ impl TextIndex {
             }
         };
 
-        let wal = Arc::new(Wal::open(&wal_dir, WalConfig::default()).map_err(durability::wal_err)?);
+        let wal = Arc::new(Wal::open(&wal_dir, wal_config).map_err(durability::wal_err)?);
 
         let index = Self {
             embedder,

@@ -1084,10 +1084,37 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                         (Some(durable), None) => Some(durable),
                         (None, None) => None,
                     };
+                // Fresh-follower bootstrap cursor (design 0010
+                // follow-up: the WAL-gap fix). A follower that
+                // restored from a shared snapshot dir already holds
+                // the leader's state up to the snapshot's stamped
+                // leader-WAL seq — start tailing at that segment
+                // instead of BEGIN, so it works even after the leader
+                // compacted its history (and skips replaying data it
+                // already has). Segment-granular: records inside the
+                // stamped segment re-apply idempotently. A persisted
+                // cursor, when present, still takes precedence inside
+                // spawn_with_store. Without a snapshot this stays
+                // BEGIN, and a compacted leader now refuses that
+                // cursor loudly (FAILED_PRECONDITION) instead of
+                // letting the follower silently build a partial copy.
+                let initial_cursor = grpc_index
+                    .latest_snapshot_header()
+                    .map(|h| nebula_wal::WalCursor {
+                        segment_seq: h.wal_seq_at_snapshot,
+                        byte_offset: 0,
+                    })
+                    .unwrap_or(nebula_wal::WalCursor::BEGIN);
+                if initial_cursor.segment_seq > 0 {
+                    tracing::info!(
+                        seg = initial_cursor.segment_seq,
+                        "follower bootstrap cursor derived from snapshot"
+                    );
+                }
                 let handle = nebula_grpc::follower::spawn_with_store(
                     channel,
                     Arc::clone(&grpc_index),
-                    nebula_wal::WalCursor::BEGIN,
+                    initial_cursor,
                     store,
                 );
                 // Publish the abort handle so `POST /admin/promote` can
