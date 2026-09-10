@@ -51,6 +51,11 @@ ahash.workspace = true
 dashmap.workspace = true
 jsonwebtoken.workspace = true
 
+# jemalloc instead of glibc malloc for the server binary. See the
+# `#[global_allocator]` in src/main.rs for why.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
 [dev-dependencies]
 nebula-resource = { path = "../nebula-resource" }
 tokio = { workspace = true, features = ["test-util"] }
