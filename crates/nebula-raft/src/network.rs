@@ -50,7 +50,10 @@ use tonic::transport::{Channel, Endpoint};
 use crate::types::{NebulaNode, NebulaTypeConfig, NodeId};
 
 // Generated tonic stubs. The build script compiles `proto/raft.proto`
-// into this module path.
+// into this module path. `result_large_err` fires on the generated
+// client methods (tonic::Status is large) — code we don't control, and
+// the lint failing here stopped CI before `cargo test` ran on every PR.
+#[allow(clippy::result_large_err)]
 pub mod proto {
     tonic::include_proto!("nebula.raft.v1");
 }

@@ -1472,26 +1472,27 @@ impl TextIndex {
     }
 
     pub fn bucket_stats(&self, top_metadata_keys: usize) -> Vec<BucketStats> {
-        let g = self.inner.read();
+        // Take the doc handles under the lock (an Arc bump each, ~0.1s
+        // at 2.3M docs) and tally with no lock held. Scanning under the
+        // guard held the read lock for the whole walk — 3.2s on prod —
+        // and with a writer queued behind us parking_lot then blocks
+        // every NEW reader (SQL, search) for the duration.
+        let docs: Vec<Arc<Document>> = self.inner.read().docs.values().cloned().collect();
         // Per-bucket accumulator. A struct is clearer than a 3-tuple
         // and silences clippy::type_complexity.
         //
-        // Everything borrows from the guard: at multi-million-doc
-        // scale the previous owned version cloned the bucket name
-        // and every metadata key PER DOC (~10 String allocations ×
-        // corpus size), stretching the scan — and therefore the
-        // read-lock hold — to >10s. With a writer queued behind us,
-        // parking_lot's writer priority then blocks every NEW reader
-        // (SQL, search) for the whole scan. Borrowing keeps the
-        // walk allocation-free; we clone only the unique bucket
-        // names / keys once, at output assembly.
+        // Everything borrows from `docs`: the previous owned version
+        // cloned the bucket name and every metadata key PER DOC (~10
+        // String allocations × corpus size). Borrowing keeps the walk
+        // allocation-free; we clone only the unique bucket names /
+        // keys once, at output assembly.
         struct Acc<'a> {
             docs: usize,
             parents: AHashSet<&'a str>,
             keys: AHashMap<&'a str, usize>,
         }
         let mut per_bucket: AHashMap<&str, Acc<'_>> = AHashMap::new();
-        for doc in g.docs.values() {
+        for doc in &docs {
             let entry = per_bucket.entry(doc.bucket.as_str()).or_insert_with(|| Acc {
                 docs: 0,
                 parents: AHashSet::new(),
