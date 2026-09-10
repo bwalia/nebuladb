@@ -112,13 +112,20 @@ func buildPodTemplate(cluster *nebulav1alpha1.NebulaCluster, region nebulav1alph
 			PeriodSeconds:       5,
 			FailureThreshold:    6,
 		},
+		// Liveness must not depend on recovery: /healthz is 503 until
+		// WAL/snapshot recovery finishes, which takes as long as the
+		// corpus is big. Probing it here killed any recovery longer than
+		// ~2 minutes and restarted it from scratch, forever.
+		// /healthz/live answers 200 from boot and never touches the
+		// index, so only a genuinely hung process gets restarted.
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intOrStr("rest")},
+				HTTPGet: &corev1.HTTPGetAction{Path: "/healthz/live", Port: intOrStr("rest")},
 			},
-			InitialDelaySeconds: 30,
-			PeriodSeconds:       20,
-			FailureThreshold:    5,
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       30,
+			TimeoutSeconds:      15,
+			FailureThreshold:    8,
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "data", MountPath: "/var/lib/nebuladb"},

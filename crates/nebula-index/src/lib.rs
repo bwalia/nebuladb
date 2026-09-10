@@ -24,7 +24,7 @@ use nebula_chunk::Chunker;
 use nebula_bm25::{Bm25Index, Bm25Params};
 use nebula_core::{Id, NebulaError};
 use nebula_embed::{EmbedError, Embedder};
-use nebula_vector::{Hnsw, HnswConfig, Metric};
+use nebula_vector::{FrozenHnsw, Hnsw, HnswConfig, Metric};
 use nebula_wal::{Wal, WalChunk, WalConfig, WalRecord, WalStats};
 
 #[derive(Debug, Error)]
@@ -154,14 +154,14 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
         // for the vector arena — `Document` no longer carries a copy.
         docs.insert(
             id,
-            Document {
+            Arc::new(Document {
                 bucket: d.bucket,
                 external_id: d.external_id,
                 text: d.text,
                 metadata,
                 parent_doc_id: d.parent_doc_id,
                 chunk_index: d.chunk_index,
-            },
+            }),
         );
     }
     let mut parents: AHashMap<(String, String), AHashSet<String>> = AHashMap::new();
@@ -186,7 +186,12 @@ struct Inner {
     /// Internal id → document. Tombstoned docs are removed from this
     /// map and from `by_key`, but the HNSW tombstone stays — so a
     /// search returning a dead id is skipped at result-assembly time.
-    docs: AHashMap<Id, Document>,
+    ///
+    /// `Arc` so a snapshot can capture a point-in-time view of the
+    /// whole corpus by bumping refcounts under the lock (~100ms for
+    /// millions of docs) and serialize it after releasing — instead of
+    /// holding the lock for the multi-minute serialize.
+    docs: AHashMap<Id, Arc<Document>>,
     /// `(bucket, parent_doc_id)` → set of chunk external ids. Lets
     /// `delete_document` find every chunk to tombstone without
     /// scanning the whole `docs` map.
@@ -208,13 +213,13 @@ impl Inner {
     /// silently fall behind the doc map.
     fn insert_doc(&mut self, id: Id, doc: Document) {
         self.bm25.add(id.0, &doc.text);
-        self.docs.insert(id, doc);
+        self.docs.insert(id, Arc::new(doc));
     }
 
     /// Remove a document by internal id from both `docs` and the BM25
     /// index. Returns the removed `Document`, mirroring
     /// `HashMap::remove`, so callers keep their existing control flow.
-    fn remove_doc(&mut self, id: Id) -> Option<Document> {
+    fn remove_doc(&mut self, id: Id) -> Option<Arc<Document>> {
         let doc = self.docs.remove(&id);
         match &doc {
             // `insert_doc` indexed exactly `doc.text`, so the targeted
@@ -224,6 +229,15 @@ impl Inner {
         }
         doc
     }
+}
+
+/// Detached copy of the index state a snapshot persists. Built by
+/// `TextIndex::freeze_for_snapshot`.
+struct FrozenState {
+    next_id: u64,
+    docs: Vec<(Id, Arc<Document>)>,
+    parents: AHashMap<(String, String), AHashSet<String>>,
+    hnsw: FrozenHnsw,
 }
 
 pub struct TextIndex {
@@ -604,6 +618,39 @@ impl TextIndex {
         })
     }
 
+    /// True if the live doc `old_id` already holds exactly this content,
+    /// making an upsert a no-op. Skipping it matters twice over:
+    ///
+    /// * Replace = tombstone the old HNSW node + insert a new one, and
+    ///   tombstones are never reclaimed. A feeder that periodically
+    ///   re-syncs unchanged records (prod's 4D lead sweep) grew the graph,
+    ///   RAM and snapshot by a full copy per sweep.
+    /// * WAL replay on boot re-applies records the snapshot already
+    ///   holds (every record in the snapshot's own segment). Each was a
+    ///   full replace; now it is a lookup and a compare, so recovery time
+    ///   tracks what actually changed since the snapshot.
+    ///
+    /// The vector is compared as stored (int8 codes + scale), so a
+    /// re-embed with a different model still counts as a change.
+    #[allow(clippy::too_many_arguments)]
+    fn is_unchanged(
+        &self,
+        g: &Inner,
+        old_id: Id,
+        text: &str,
+        vector: &[f32],
+        metadata: &serde_json::Value,
+        parent_doc_id: &Option<String>,
+        chunk_index: Option<usize>,
+    ) -> bool {
+        g.docs.get(&old_id).is_some_and(|d| {
+            d.text == text
+                && d.metadata == *metadata
+                && d.parent_doc_id == *parent_doc_id
+                && d.chunk_index == chunk_index
+        }) && self.hnsw.stores_same_vector(old_id, vector)
+    }
+
     /// Pure in-memory apply shared by `upsert_text` and WAL replay.
     /// Holds the inner write lock across the HNSW mutation so a
     /// concurrent reader never observes a half-committed write —
@@ -626,6 +673,9 @@ impl TextIndex {
         let mut g = self.inner.write();
 
         if let Some(&old_id) = g.by_key.get(&key) {
+            if self.is_unchanged(&g, old_id, text, &vector, &metadata, &parent_doc_id, chunk_index) {
+                return Ok(());
+            }
             let _ = self.hnsw.delete(old_id);
             g.remove_doc(old_id);
             g.by_key.remove(&key);
@@ -744,6 +794,10 @@ impl TextIndex {
             for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
                 let key = (bucket.to_string(), id.clone());
                 if let Some(&old_id) = g.by_key.get(&key) {
+                    if self.is_unchanged(&g, old_id, text, vec, meta, &None, None) {
+                        inserted += 1;
+                        continue;
+                    }
                     let _ = self.hnsw.delete(old_id);
                     g.remove_doc(old_id);
                     g.by_key.remove(&key);
@@ -778,7 +832,7 @@ impl TextIndex {
     pub fn get(&self, bucket: &str, external_id: &str) -> Option<Document> {
         let g = self.inner.read();
         let key = (bucket.to_string(), external_id.to_string());
-        g.by_key.get(&key).and_then(|id| g.docs.get(id)).cloned()
+        g.by_key.get(&key).and_then(|id| g.docs.get(id)).map(|d| Document::clone(d))
     }
 
     pub fn delete(&self, bucket: &str, external_id: &str) -> Result<()> {
@@ -798,7 +852,7 @@ impl TextIndex {
             id: external_id.to_string(),
         })?;
         if let Some(doc) = g.remove_doc(id) {
-            if let Some(parent) = doc.parent_doc_id {
+            if let Some(parent) = doc.parent_doc_id.clone() {
                 if let Some(set) = g.parents.get_mut(&(bucket.to_string(), parent.clone())) {
                     set.remove(&doc.external_id);
                     if set.is_empty() {
@@ -1052,8 +1106,8 @@ impl TextIndex {
                     if let Some(doc) = g.remove_doc(*id) {
                         let key = (doc.bucket.clone(), doc.external_id.clone());
                         g.by_key.remove(&key);
-                        if let Some(parent) = doc.parent_doc_id {
-                            g.parents.remove(&(doc.bucket, parent));
+                        if let Some(parent) = &doc.parent_doc_id {
+                            g.parents.remove(&(doc.bucket.clone(), parent.clone()));
                         }
                     }
                 }
@@ -1159,24 +1213,40 @@ impl TextIndex {
     /// counters incrementally on the write path. Fine trade-off for
     /// the admin UI today — rebuilds happen on demand, not per
     /// request.
-    /// Take a consistent snapshot and write it to `<data_dir>/snapshots`.
-    /// Returns the path + the WAL seq at the time of the snapshot. A
-    /// no-op and error if the index is in-memory (no `data_dir`).
+    /// Point-in-time copy of everything a snapshot persists, taken under
+    /// the read lock and then detached from it.
     ///
-    /// Streams directly from the live state into a zstd-compressed
-    /// file — no intermediate `SerializedDocState` / `HnswSnapshot`
-    /// clone. The earlier two-phase path (clone under read lock, then
-    /// `bincode::serialize` each into a `Vec<u8>`, then write the
-    /// vecs) tripled peak memory for the duration of every fire and
-    /// took the 1 GiB-capped container OOM on each 15-minute tick
-    /// — see RFC followups in commit history.
+    /// Snapshots used to stream straight from the live state with the
+    /// read lock held for the entire write. On prod (2.3M docs, 4GB
+    /// snapshot) that was ~3.5 minutes every 15, and because
+    /// parking_lot's RwLock parks new readers behind a queued writer, a
+    /// single pending upsert turned it into a full stall: searches,
+    /// admin calls and — before `len_relaxed` — `/healthz` all hung
+    /// until liveness killed the pod mid-snapshot.
     ///
-    /// Trade-off: the read lock is held for the *entire* write, not
-    /// just the clone phase. Writers block for the duration. Readers
-    /// continue (parking_lot RwLock allows concurrent readers). For
-    /// a 200 MB compressed snapshot at zstd-3 + NVMe that's roughly
-    /// 1–2 s of writer queueing per fire — well below the cost of
-    /// the OOM kill loop we're replacing.
+    /// Now the lock covers only the copy: an `Arc` bump per doc, a
+    /// clone of `parents`, and [`Hnsw::freeze`] (memcpy of the int8
+    /// arena + adjacency lists) — about a second at prod scale. Docs
+    /// are shared, not duplicated; the graph copy costs roughly one
+    /// extra arena of memory until the write finishes. The old
+    /// clone-into-`Vec<u8>` path this replaced tripled memory because
+    /// it materialized f32 vectors and whole serialized buffers; the
+    /// frozen graph stays int8 and serialization still streams.
+    ///
+    /// The HNSW copy is taken while holding `inner.read()`, so it is
+    /// consistent with `docs` for every path that mutates the graph
+    /// under `inner.write()` — the same guarantee the old locked
+    /// write gave.
+    fn freeze_for_snapshot(&self) -> FrozenState {
+        let g = self.inner.read();
+        FrozenState {
+            next_id: g.next_id,
+            docs: g.docs.iter().map(|(id, d)| (*id, Arc::clone(d))).collect(),
+            parents: g.parents.clone(),
+            hnsw: self.hnsw.freeze(),
+        }
+    }
+
     /// Write a snapshot to an explicit directory with a caller-supplied
     /// `mark_seq`. Unlike [`Self::snapshot`], this variant does not
     /// require a WAL — Raft mode (`nebula-raft`) drives its own log
@@ -1195,22 +1265,26 @@ impl TextIndex {
         mark_seq: u64,
     ) -> Result<SnapshotOutcome> {
         let snapshots_dir = snapshots_dir.as_ref();
-        let g = self.inner.read();
+        let f = self.freeze_for_snapshot();
         let path = durability::write_snapshot_streaming(
             snapshots_dir,
             mark_seq,
-            g.next_id,
-            &g.docs,
-            &g.parents,
-            &self.hnsw,
+            f.next_id,
+            &f.docs,
+            &f.parents,
+            &f.hnsw,
         )?;
-        drop(g);
         Ok(SnapshotOutcome {
             path,
             wal_seq_captured: mark_seq,
         })
     }
 
+    /// Take a consistent snapshot and write it to `<data_dir>/snapshots`.
+    /// Returns the path + the WAL seq at the time of the snapshot. A
+    /// no-op and error if the index is in-memory (no `data_dir`).
+    /// The index lock is held only while freezing; see
+    /// [`Self::freeze_for_snapshot`].
     pub fn snapshot(&self) -> Result<SnapshotOutcome> {
         let snapshots_dir = self
             .snapshot_dir
@@ -1241,17 +1315,15 @@ impl TextIndex {
         let wal_seq =
             nebula_wal::current_seq(wal.dir()).map_err(durability::wal_err)?.unwrap_or(0);
 
-        let g = self.inner.read();
+        let f = self.freeze_for_snapshot();
         let path = durability::write_snapshot_streaming(
             snapshots_dir,
             wal_seq,
-            g.next_id,
-            &g.docs,
-            &g.parents,
-            &self.hnsw,
+            f.next_id,
+            &f.docs,
+            &f.parents,
+            &f.hnsw,
         )?;
-        // Lock dropped here on `g` going out of scope.
-        drop(g);
 
         Ok(SnapshotOutcome {
             path,
@@ -2008,6 +2080,104 @@ mod tests {
             .unwrap()
             .expect("snapshot header present");
         assert_eq!(header.wal_seq_at_snapshot, mark);
+    }
+
+    /// Re-upserting identical content is a no-op: no tombstone, no new
+    /// node. A changed text or metadata still replaces.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identical_reupsert_does_not_grow_the_graph() {
+        let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(64));
+        let idx = TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap();
+        let meta = serde_json::json!({"acc_no": "2354940"});
+        for _ in 0..3 {
+            idx.upsert_text("leads", "a", "County: Kent", meta.clone()).await.unwrap();
+        }
+        let batch = vec![("a".to_string(), "County: Kent".to_string(), meta.clone())];
+        assert_eq!(idx.upsert_text_bulk("leads", &batch).await.unwrap(), 1);
+        assert_eq!(idx.hnsw.len(), 1, "identical upserts must not add nodes");
+
+        idx.upsert_text("leads", "a", "County: Kent", serde_json::json!({"acc_no": "x"}))
+            .await
+            .unwrap();
+        idx.upsert_text("leads", "a", "County: Essex", serde_json::json!({"acc_no": "x"}))
+            .await
+            .unwrap();
+        assert_eq!(idx.hnsw.len(), 3, "metadata and text changes must replace");
+        assert_eq!(idx.hnsw.len_live(), 1);
+        assert_eq!(idx.get("leads", "a").unwrap().text, "County: Essex");
+    }
+
+    /// Recovery replays every record in the snapshot's own WAL segment,
+    /// including ones the snapshot already holds. Those must be no-ops,
+    /// not replaces — otherwise each boot re-inserts them (slow, and
+    /// grows the graph) and recovery time tracks segment size instead of
+    /// what changed since the snapshot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replaying_snapshotted_records_is_a_noop() {
+        let data = tempfile::tempdir().unwrap();
+        {
+            let idx = persistent_index(data.path(), None);
+            for i in 0..20 {
+                idx.upsert_text("leads", &format!("k{i}"), &format!("lead {i}"), serde_json::json!({}))
+                    .await
+                    .unwrap();
+            }
+            idx.snapshot().unwrap();
+            // One genuine post-snapshot change.
+            idx.upsert_text("leads", "k0", "lead 0 updated", serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        let idx = persistent_index(data.path(), None);
+        assert_eq!(idx.len(), 20);
+        assert_eq!(idx.get("leads", "k0").unwrap().text, "lead 0 updated");
+        // 20 snapshotted nodes + 1 replacement for the real change. The
+        // 20 replayed pre-snapshot records must not have added any.
+        assert_eq!(idx.hnsw.len(), 21);
+    }
+
+    /// A snapshot persists the index as of the freeze, holds no lock
+    /// while it writes, and is not disturbed by writes that land during
+    /// the write. Holding the lock for the whole write stalled prod for
+    /// ~3.5 minutes every snapshot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn snapshot_is_point_in_time_and_lock_free_while_writing() {
+        let data = tempfile::tempdir().unwrap();
+        let snaps = data.path().join("snapshots");
+        let idx = persistent_index(data.path(), Some(snaps.clone()));
+        for (k, t) in [("a", "alpha text"), ("b", "beta text")] {
+            idx.upsert_text("docs", k, t, serde_json::json!({})).await.unwrap();
+        }
+
+        let f = idx.freeze_for_snapshot();
+        assert!(
+            idx.inner.try_write().is_some(),
+            "frozen state must not keep the index lock"
+        );
+
+        // Writes between freeze and write: replace, delete, insert.
+        idx.upsert_text("docs", "a", "rewritten", serde_json::json!({})).await.unwrap();
+        idx.delete("docs", "b").unwrap();
+        idx.upsert_text("docs", "c", "gamma", serde_json::json!({})).await.unwrap();
+
+        durability::write_snapshot_streaming(&snaps, 7, f.next_id, &f.docs, &f.parents, &f.hnsw)
+            .unwrap();
+        let (header, hnsw) = durability::load_latest_snapshot(&snaps).unwrap().unwrap();
+        let mut texts: Vec<_> = header
+            .docs
+            .docs
+            .iter()
+            .map(|d| (d.external_id.as_str(), d.text.as_str()))
+            .collect();
+        texts.sort();
+        assert_eq!(texts, vec![("a", "alpha text"), ("b", "beta text")]);
+        assert_eq!(hnsw.external.len(), 2, "graph copy must predate the later inserts");
+        assert!(hnsw.tombstones.is_empty(), "graph copy must predate the later deletes");
+
+        // The live index still has every post-freeze write.
+        assert_eq!(idx.get("docs", "a").unwrap().text, "rewritten");
+        assert!(idx.get("docs", "b").is_none());
+        assert!(idx.get("docs", "c").is_some());
     }
 
     /// An explicit snapshot_dir override writes/reads snapshots there
