@@ -45,6 +45,10 @@ mod subtle_eq {
 /// Auth middleware. Runs on every route under `/api/v1`; `/healthz`
 /// and `/metrics` are mounted outside the auth layer deliberately so
 /// ops tooling can scrape without a credential.
+// `Result<Response, Response>` is axum's middleware idiom; both arms are
+// the same type, so boxing the Err (clippy 1.98's suggestion) would add
+// an allocation without shrinking the Result.
+#[allow(clippy::result_large_err)]
 pub async fn require_auth(
     State(state): State<AppState>,
     req: Request<axum::body::Body>,
