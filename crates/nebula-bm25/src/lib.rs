@@ -70,10 +70,43 @@ pub struct Bm25Hit {
 }
 
 /// A postings entry: a document and the raw term frequency within it.
+///
+/// `generation` identifies the [`Bm25Index::add`] call that created the
+/// posting. A posting is live only while its doc is indexed under that
+/// same generation, so a removed-then-re-added id never resurrects the
+/// old doc's postings. It fits in what was padding, so a `Posting` is
+/// still 16 bytes.
 #[derive(Debug, Clone, Copy)]
 struct Posting {
     id: u64,
     tf: u32,
+    generation: u32,
+}
+
+/// Postings for one term. Removal is lazy: [`Bm25Index::remove_text`]
+/// only decrements `live`, leaving the dead entry in `list` for search
+/// to skip, and the list is compacted once dead entries pass half the
+/// live count — amortized O(1) per removal.
+///
+/// Eager removal scanned the whole list, and a term in every doc has a
+/// list as long as the corpus. Prod leads are templated text ("County:
+/// …", "Region: …", "Contact 1 Title: …"), so ~16 terms sit in all 2.3M
+/// docs and every replace scanned ~37M postings: ~130ms per upsert under
+/// the index write lock, capping writes and WAL replay at ~7/s.
+#[derive(Debug, Default)]
+struct PostingList {
+    list: Vec<Posting>,
+    /// Live postings in `list` — exactly `n(t)`, the IDF doc frequency.
+    live: u32,
+}
+
+/// A live document's BM25 bookkeeping.
+#[derive(Debug, Clone, Copy)]
+struct DocEntry {
+    /// Token count, `|D|`.
+    len: u32,
+    /// The generation its postings carry.
+    generation: u32,
 }
 
 /// In-memory BM25 index. Not thread-safe by itself — the embedding
@@ -84,13 +117,19 @@ struct Posting {
 #[derive(Debug, Default)]
 pub struct Bm25Index {
     params: Bm25Params,
-    /// term → postings list. Postings are unsorted; search scans them.
-    postings: AHashMap<String, Vec<Posting>>,
-    /// doc id → token count (its `|D|`). Also the authoritative set of
-    /// live doc ids — a removed doc is gone from here.
-    doc_len: AHashMap<u64, u32>,
-    /// Σ of all `doc_len` values, kept incrementally so `avgdl` is O(1).
+    /// term → postings. Postings are unsorted; search scans them and
+    /// skips entries that are no longer live.
+    postings: AHashMap<String, PostingList>,
+    /// doc id → length + generation. The authoritative set of live doc
+    /// ids — a removed doc is gone from here even while its postings
+    /// await compaction.
+    docs: AHashMap<u64, DocEntry>,
+    /// Σ of all live doc lengths, kept incrementally so `avgdl` is O(1).
     total_len: u64,
+    /// Generation stamped on the next [`Self::add`]. Wraps; a stale
+    /// posting could only be mistaken for live if its id were re-added
+    /// exactly 2^32 adds later without its list being compacted once.
+    next_generation: u32,
 }
 
 impl Bm25Index {
@@ -103,21 +142,21 @@ impl Bm25Index {
 
     /// Number of live documents (`N`).
     pub fn len(&self) -> usize {
-        self.doc_len.len()
+        self.docs.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.doc_len.is_empty()
+        self.docs.is_empty()
     }
 
     /// Mean document length in tokens. `0.0` when empty — search
     /// short-circuits before this is used, so the value is never a
     /// divisor in that state.
     fn avgdl(&self) -> f32 {
-        if self.doc_len.is_empty() {
+        if self.docs.is_empty() {
             0.0
         } else {
-            self.total_len as f32 / self.doc_len.len() as f32
+            self.total_len as f32 / self.docs.len() as f32
         }
     }
 
@@ -125,12 +164,19 @@ impl Bm25Index {
     /// (remove-then-add), so re-indexing a changed chunk is correct and
     /// idempotent — the same contract as the vector index's upsert.
     pub fn add(&mut self, id: u64, text: &str) {
-        if self.doc_len.contains_key(&id) {
+        if self.docs.contains_key(&id) {
+            // Replacing a live id without its old text: we can't tell
+            // which `live` counts to decrement, so take the exact slow
+            // path. `nebula_index` never does this — it gives every
+            // upsert a fresh id and removes the old one via
+            // `remove_text`.
             self.remove(id);
         }
 
         let tokens = tokenize(text);
         let len = tokens.len() as u32;
+        let generation = self.next_generation;
+        self.next_generation = self.next_generation.wrapping_add(1);
 
         // Collapse to per-term frequencies so each posting list gets at
         // most one entry per document.
@@ -139,13 +185,16 @@ impl Bm25Index {
             *tf.entry(tok).or_insert(0) += 1;
         }
         for (term, freq) in tf {
-            self.postings
-                .entry(term)
-                .or_default()
-                .push(Posting { id, tf: freq });
+            let pl = self.postings.entry(term).or_default();
+            pl.list.push(Posting {
+                id,
+                tf: freq,
+                generation,
+            });
+            pl.live += 1;
         }
 
-        self.doc_len.insert(id, len);
+        self.docs.insert(id, DocEntry { len, generation });
         self.total_len += len as u64;
     }
 
@@ -157,46 +206,61 @@ impl Bm25Index {
     /// [`Self::remove_text`] whenever the caller still has the text
     /// the doc was indexed with.
     pub fn remove(&mut self, id: u64) {
-        let Some(len) = self.doc_len.remove(&id) else {
+        let Some(doc) = self.docs.remove(&id) else {
             return;
         };
-        self.total_len -= len as u64;
+        self.total_len -= doc.len as u64;
 
         // We don't track which terms a doc held, so we scan posting
         // lists. Keeps the per-doc footprint to a single length entry.
-        self.postings.retain(|_term, list| {
-            list.retain(|p| p.id != id);
-            !list.is_empty()
+        self.postings.retain(|_term, pl| {
+            let before = pl.list.len();
+            pl.list
+                .retain(|p| !(p.id == id && p.generation == doc.generation));
+            if pl.list.len() < before {
+                pl.live -= 1;
+            }
+            pl.live > 0
         });
     }
 
     /// Remove a document given the exact `text` it was [`Self::add`]ed
-    /// with. Re-tokenizing tells us which posting lists hold `id`, so
-    /// only those are touched — O(terms in the doc × their list
-    /// lengths) instead of [`Self::remove`]'s full-corpus scan.
+    /// with. Re-tokenizing tells us which terms' live counts to
+    /// decrement; the postings themselves are dropped lazily (see
+    /// [`PostingList`]). O(terms in the doc), amortized — independent
+    /// of corpus size.
     ///
     /// Upserting an existing key removes the old doc, so this is the
-    /// write hot path, not a rare admin operation: on prod (~2.3M docs)
-    /// the full scan cost ~200ms per upsert under the index write lock,
-    /// which capped writes — and WAL replay on boot — at ~5/s. Replay
-    /// of one 64MB segment then outlasted the 60-minute startup probe
-    /// and the pod restart-looped.
+    /// write hot path, not a rare admin operation. An O(corpus) removal
+    /// here capped prod writes — and WAL replay on boot — at a few per
+    /// second; replay of one 64MB segment then outlasted the 60-minute
+    /// startup probe and the pod restart-looped for ~4h.
     ///
-    /// Passing text other than what was indexed leaves stale postings
-    /// behind for any term only the original text contained.
+    /// `text` must be what the doc was indexed with; anything else
+    /// skews `n(t)` for the terms that differ.
     pub fn remove_text(&mut self, id: u64, text: &str) {
-        let Some(len) = self.doc_len.remove(&id) else {
+        let Some(doc) = self.docs.remove(&id) else {
             return;
         };
-        self.total_len -= len as u64;
+        self.total_len -= doc.len as u64;
 
         let terms: AHashSet<String> = tokenize(text).into_iter().collect();
         for term in terms {
-            if let Some(list) = self.postings.get_mut(&term) {
-                list.retain(|p| p.id != id);
-                if list.is_empty() {
-                    self.postings.remove(&term);
-                }
+            let Some(pl) = self.postings.get_mut(&term) else {
+                continue;
+            };
+            pl.live = pl.live.saturating_sub(1);
+            if pl.live == 0 {
+                self.postings.remove(&term);
+                continue;
+            }
+            let dead = pl.list.len() - pl.live as usize;
+            if dead > pl.live as usize / 2 {
+                let docs = &self.docs;
+                pl.list.retain(|p| {
+                    docs.get(&p.id).is_some_and(|d| d.generation == p.generation)
+                });
+                pl.live = pl.list.len() as u32;
             }
         }
     }
@@ -206,7 +270,7 @@ impl Bm25Index {
     /// determinism. Returns fewer than `k` when the corpus is smaller
     /// or no document matches any query term.
     pub fn search(&self, query: &str, k: usize) -> Vec<Bm25Hit> {
-        if k == 0 || self.doc_len.is_empty() {
+        if k == 0 || self.docs.is_empty() {
             return Vec::new();
         }
 
@@ -215,24 +279,30 @@ impl Bm25Index {
             return Vec::new();
         }
 
-        let n = self.doc_len.len() as f32;
+        let n = self.docs.len() as f32;
         let avgdl = self.avgdl();
         let k1 = self.params.k1;
         let b = self.params.b;
 
         let mut acc: AHashMap<u64, f32> = AHashMap::new();
         for term in &q_terms {
-            let Some(list) = self.postings.get(term) else {
+            let Some(pl) = self.postings.get(term) else {
                 continue;
             };
-            let df = list.len() as f32;
+            let df = pl.live as f32;
             // Lucene-style IDF: the inner `1 +` floors it at 0 so a
             // term present in every doc adds nothing instead of pulling
             // scores negative.
             let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
 
-            for p in list {
-                let dl = self.doc_len[&p.id] as f32;
+            for p in &pl.list {
+                let Some(doc) = self.docs.get(&p.id) else {
+                    continue;
+                };
+                if doc.generation != p.generation {
+                    continue;
+                }
+                let dl = doc.len as f32;
                 let tf = p.tf as f32;
                 let denom = tf + k1 * (1.0 - b + b * dl / avgdl);
                 let weight = idf * (tf * (k1 + 1.0)) / denom;
@@ -361,6 +431,78 @@ mod tests {
         // Removing again is a no-op.
         targeted.remove_text(1, docs[0].1);
         assert_eq!(targeted.len(), 2);
+    }
+
+    /// Lazily removed docs must be invisible to scoring: every score
+    /// (which depends on N, avgdl and n(t)) must equal that of an index
+    /// that never contained them.
+    #[test]
+    fn lazy_removal_scores_like_never_indexed() {
+        let all: Vec<(u64, String)> = (0..200u64)
+            .map(|i| (i, format!("county region contact title lead{i} town{}", i % 7)))
+            .collect();
+        let mut lazy = Bm25Index::new(Bm25Params::default());
+        for (id, t) in &all {
+            lazy.add(*id, t);
+        }
+        for (id, t) in all.iter().filter(|(id, _)| id % 3 == 0) {
+            lazy.remove_text(*id, t);
+        }
+        let fresh = build(
+            &all.iter()
+                .filter(|(id, _)| id % 3 != 0)
+                .map(|(id, t)| (*id, t.as_str()))
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(lazy.len(), fresh.len());
+        for q in ["county", "town3", "lead5 county", "lead6", "title town0"] {
+            let (a, b) = (lazy.search(q, 500), fresh.search(q, 500));
+            assert_eq!(a.len(), b.len(), "query {q}");
+            for (x, y) in a.iter().zip(&b) {
+                assert_eq!(x.id, y.id, "query {q}");
+                assert!((x.score - y.score).abs() < 1e-5, "query {q}");
+            }
+        }
+    }
+
+    #[test]
+    fn readding_a_removed_id_does_not_resurrect_old_postings() {
+        let mut idx = build(&[(1, "old words"), (2, "other")]);
+        idx.remove_text(1, "old words");
+        idx.add(1, "new words");
+        assert!(idx.search("old", 10).is_empty(), "stale posting came back");
+        assert_eq!(idx.search("new", 10)[0].id, 1);
+        let words = idx.search("words", 10);
+        assert_eq!(words.len(), 1);
+        assert_eq!(idx.postings["words"].live, 1);
+    }
+
+    /// Removal must not scan lists as long as the corpus: dead postings
+    /// are dropped in amortized batches, so a list never holds more
+    /// than ~1.5x its live entries.
+    #[test]
+    fn universal_term_list_stays_bounded_under_churn() {
+        let mut idx = Bm25Index::new(Bm25Params::default());
+        let text = |i: u64| format!("county region lead{i}");
+        for i in 0..1_000u64 {
+            idx.add(i, &text(i));
+        }
+        // Replace every doc 5 times over (fresh id each time, like
+        // nebula_index's upsert).
+        let mut live: Vec<u64> = (0..1_000).collect();
+        let mut next = 1_000u64;
+        for _ in 0..5 {
+            for slot in live.iter_mut() {
+                idx.remove_text(*slot, &text(*slot));
+                idx.add(next, &text(next));
+                *slot = next;
+                next += 1;
+            }
+        }
+        let pl = &idx.postings["county"];
+        assert_eq!(pl.live, 1_000);
+        assert!(pl.list.len() <= 1_501, "list grew to {}", pl.list.len());
+        assert_eq!(idx.search("county", 5_000).len(), 1_000);
     }
 
     #[test]
