@@ -25,10 +25,7 @@ impl LlmClient for MockLlm {
         &self.model
     }
 
-    async fn generate(
-        &self,
-        prompt: Prompt,
-    ) -> Result<BoxStream<'static, Result<LlmChunk>>> {
+    async fn generate(&self, prompt: Prompt) -> Result<BoxStream<'static, Result<LlmChunk>>> {
         if prompt.user.trim().is_empty() {
             return Err(LlmError::Empty);
         }

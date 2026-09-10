@@ -256,6 +256,18 @@ struct ManagerInner {
     transitions: Vec<ModeTransition>,
 }
 
+/// A component that adapts to operating-mode changes (design 0010
+/// §6): shrink a cache, pause a background job, reduce concurrency.
+/// Fired synchronously from the sampler thread on every COMMITTED
+/// transition (post debounce), so implementations must be quick and
+/// non-blocking — flip an atomic, resize under a short lock; heavy
+/// work belongs on the component's own schedule.
+pub trait Actuator: Send + Sync {
+    /// Short name for the transition log.
+    fn name(&self) -> &str;
+    fn on_mode_change(&self, from: OperatingMode, to: OperatingMode);
+}
+
 /// Shared resource manager. Cheap to clone via `Arc`; readers use the
 /// lock-free accessors, only [`ResourceManager::observe`] (the 5s
 /// sampler) takes the mutex.
@@ -264,6 +276,10 @@ pub struct ResourceManager {
     mode: AtomicU8,
     transitions_total: AtomicU64,
     inner: Mutex<ManagerInner>,
+    /// Registered actuators, notified on committed transitions.
+    /// Registration happens once at boot before the sampler starts;
+    /// the mutex is uncontended after that.
+    actuators: Mutex<Vec<std::sync::Arc<dyn Actuator>>>,
 }
 
 impl ResourceManager {
@@ -279,7 +295,20 @@ impl ResourceManager {
                 candidate_streak: 0,
                 transitions: Vec::new(),
             }),
+            actuators: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Register an adaptive component. If the manager is already in a
+    /// degraded mode the actuator is immediately synced to it, so
+    /// boot-order races can't leave a component tuned for `Normal`
+    /// while the node is under pressure.
+    pub fn register_actuator(&self, actuator: std::sync::Arc<dyn Actuator>) {
+        let mode = self.mode();
+        if mode != OperatingMode::Normal {
+            actuator.on_mode_change(OperatingMode::Normal, mode);
+        }
+        self.actuators.lock().push(actuator);
     }
 
     /// Current mode. One relaxed atomic load — safe on every hot path.
@@ -341,6 +370,19 @@ impl ResourceManager {
             cause,
         });
         inner.candidate_streak = 0;
+        // Notify actuators outside the state mutex (they may log or
+        // take their own locks) but still on the sampler's thread —
+        // transitions are rare and actuators are required to be quick.
+        drop(inner);
+        for a in self.actuators.lock().iter() {
+            tracing::debug!(
+                actuator = a.name(),
+                from = current.as_str(),
+                to = target.as_str(),
+                "actuating"
+            );
+            a.on_mode_change(current, target);
+        }
         target
     }
 
@@ -542,6 +584,71 @@ mod tests {
         assert_eq!(snap.recent_transitions.len(), 2);
         assert_eq!(snap.recent_transitions[1].to, OperatingMode::Normal);
         assert!(snap.recent_transitions[0].cause.contains("disk free"));
+    }
+
+    #[test]
+    fn actuators_fire_on_committed_transitions_only() {
+        use std::sync::atomic::{AtomicU32, Ordering as O};
+        struct Counting {
+            fired: AtomicU32,
+            last_to: Mutex<Option<OperatingMode>>,
+        }
+        impl Actuator for Counting {
+            fn name(&self) -> &str {
+                "counting"
+            }
+            fn on_mode_change(&self, _from: OperatingMode, to: OperatingMode) {
+                self.fired.fetch_add(1, O::SeqCst);
+                *self.last_to.lock() = Some(to);
+            }
+        }
+        let m = mgr();
+        let a = std::sync::Arc::new(Counting {
+            fired: AtomicU32::new(0),
+            last_to: Mutex::new(None),
+        });
+        m.register_actuator(a.clone());
+
+        // One critical sample: debounced, no transition, no actuation.
+        m.observe(sample(None, Some(0.01), None));
+        assert_eq!(a.fired.load(O::SeqCst), 0);
+        // Second commits: exactly one actuation.
+        m.observe(sample(None, Some(0.01), None));
+        assert_eq!(a.fired.load(O::SeqCst), 1);
+        assert_eq!(*a.last_to.lock(), Some(OperatingMode::DiskCritical));
+        // Steady state: no repeat firing.
+        m.observe(sample(None, Some(0.01), None));
+        assert_eq!(a.fired.load(O::SeqCst), 1);
+        // Recovery commits a second actuation back to Normal.
+        m.observe(sample(None, Some(0.50), None));
+        m.observe(sample(None, Some(0.50), None));
+        assert_eq!(a.fired.load(O::SeqCst), 2);
+        assert_eq!(*a.last_to.lock(), Some(OperatingMode::Normal));
+    }
+
+    #[test]
+    fn late_registration_syncs_to_current_mode() {
+        use std::sync::atomic::{AtomicU32, Ordering as O};
+        struct Counting(AtomicU32);
+        impl Actuator for Counting {
+            fn name(&self) -> &str {
+                "late"
+            }
+            fn on_mode_change(&self, _from: OperatingMode, _to: OperatingMode) {
+                self.0.fetch_add(1, O::SeqCst);
+            }
+        }
+        let m = mgr();
+        m.observe(sample(None, Some(0.01), None));
+        m.observe(sample(None, Some(0.01), None));
+        assert!(m.writes_gated());
+        let a = std::sync::Arc::new(Counting(AtomicU32::new(0)));
+        m.register_actuator(a.clone());
+        assert_eq!(
+            a.0.load(O::SeqCst),
+            1,
+            "must sync to the live degraded mode"
+        );
     }
 
     #[test]

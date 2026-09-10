@@ -253,9 +253,14 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10_000);
+    // Keep a concrete handle to the LRU wrapper so the resource
+    // manager's actuator can resize it under memory pressure
+    // (design 0010 §6).
+    let mut embed_cache_handle: Option<Arc<CachingEmbedder>> = None;
     let (embedder, cache_stats): (Arc<dyn Embedder>, Option<Arc<CacheStats>>) = if cache_size > 0 {
         let cache = Arc::new(CachingEmbedder::new(redis_layer, cache_size));
         let stats = cache.stats();
+        embed_cache_handle = Some(Arc::clone(&cache));
         (cache, Some(stats))
     } else {
         (redis_layer, None)
@@ -434,13 +439,28 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         _ => snapshot_scheduler::SnapshotMode::Standalone,
     };
 
+    // Resource manager created BEFORE the snapshot scheduler so the
+    // scheduler can defer triggers under memory pressure (design 0010
+    // §6). The sampler task itself is spawned further down.
+    let resource_manager = Arc::new(nebula_resource::ResourceManager::new(
+        nebula_resource::Thresholds::default(),
+    ));
+    // Adaptive components: the embed cache shrinks 4x under
+    // memory/disk pressure and restores on recovery.
+    if let Some(cache) = embed_cache_handle {
+        resource_manager.register_actuator(Arc::new(
+            nebula_server::actuators::EmbedCacheActuator::new(cache),
+        ));
+    }
+
     let snapshot_handle = if raft_handle.is_some() {
         None
     } else {
-        Some(snapshot_scheduler::spawn(
+        Some(snapshot_scheduler::spawn_with_resource(
             Arc::clone(&index),
             snapshot_cfg,
             snapshot_mode,
+            Arc::clone(&resource_manager),
         ))
     };
 
@@ -492,9 +512,6 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     // disk-critical write gate and /admin/reliability read lock-free.
     // The disk probe is only armed when a data dir exists — an
     // in-memory node has no WAL volume to protect.
-    let resource_manager = Arc::new(nebula_resource::ResourceManager::new(
-        nebula_resource::Thresholds::default(),
-    ));
     {
         let mgr = Arc::clone(&resource_manager);
         let data_dir = std::env::var("NEBULA_DATA_DIR")
@@ -535,6 +552,7 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     // tick, not a hung worker.
     {
         let idx = Arc::clone(&index);
+        let mgr = Arc::clone(&resource_manager);
         let batch: usize = std::env::var("NEBULA_EMBED_WORKER_BATCH")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -550,6 +568,18 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                 if idx.pending_embedding_count() == 0 {
                     continue;
                 }
+                // Mode-aware pacing (design 0010 §6): completing a
+                // pending doc APPENDS to the WAL, so DiskCritical
+                // pauses the worker entirely (the write gate already
+                // refuses client mutations; background work must not
+                // sneak past it). Under other pressure modes the
+                // batch shrinks 4x — embedding is background work and
+                // yields to interactive traffic first.
+                let batch = match mgr.mode() {
+                    nebula_resource::OperatingMode::DiskCritical => continue,
+                    nebula_resource::OperatingMode::Normal => batch,
+                    _ => (batch / 4).max(1),
+                };
                 match idx.embed_pending_batch(batch).await {
                     Ok(0) => {}
                     Ok(n) => {
@@ -593,7 +623,30 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     let connect_timeout = Duration::from_secs(llm_connect_secs);
     let read_timeout = llm_read_secs.map(Duration::from_secs);
 
-    let llm: Arc<dyn LlmClient> = if let Ok(key) = std::env::var("NEBULA_LLM_OPENAI_KEY") {
+    let llm: Arc<dyn LlmClient> = if let Ok(key) = std::env::var("NEBULA_LLM_ANTHROPIC_KEY") {
+        // Anthropic Claude (design 0010-adjacent: native client, not
+        // the OpenAI shim — Anthropic's SSE framing and required
+        // headers differ). Default model is Claude Fable 5 (most
+        // capable tier); override with NEBULA_LLM_MODEL.
+        // Fable 5's safety classifiers can decline a request; the
+        // client opts into server-side fallbacks (to
+        // NEBULA_LLM_ANTHROPIC_FALLBACK, default claude-opus-4-8) so
+        // a decline is transparently re-served instead of failing the
+        // RAG call. Set the fallback env to "off" to disable.
+        let model = std::env::var("NEBULA_LLM_MODEL").unwrap_or_else(|_| "claude-fable-5".into());
+        let mut cfg = nebula_llm::ClaudeConfig::new(key, model);
+        if let Ok(base) = std::env::var("NEBULA_LLM_ANTHROPIC_BASE") {
+            cfg.base_url = base;
+        }
+        match std::env::var("NEBULA_LLM_ANTHROPIC_FALLBACK").as_deref() {
+            Ok("off") => cfg.fallback_model = None,
+            Ok(m) if !m.is_empty() => cfg.fallback_model = Some(m.to_string()),
+            _ => {}
+        }
+        cfg.timeout = connect_timeout;
+        cfg.read_timeout = read_timeout;
+        Arc::new(nebula_llm::ClaudeLlm::new(cfg)?)
+    } else if let Ok(key) = std::env::var("NEBULA_LLM_OPENAI_KEY") {
         let base = std::env::var("NEBULA_LLM_OPENAI_BASE")
             .unwrap_or_else(|_| "https://api.openai.com/v1".into());
         let model = std::env::var("NEBULA_LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
@@ -801,7 +854,19 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     .with_snapshot_scheduler_enabled(snapshot_scheduler_enabled)
     .with_durability_cache(Arc::clone(&durability_cache))
     .with_resource_manager(Arc::clone(&resource_manager))
-    .with_ai_health(Arc::clone(&ai_health));
+    .with_ai_health(Arc::clone(&ai_health))
+    // Class-aware admission (design 0010 §6). Budgets scale with the
+    // worker count and shrink under resource pressure. Disable with
+    // NEBULA_ADMISSION_CONTROL=off for load tests that want raw
+    // saturation behavior.
+    .with_admission(Arc::new(nebula_server::workload::AdmissionController::new(
+        workers,
+        Arc::clone(&resource_manager),
+    )));
+    if std::env::var("NEBULA_ADMISSION_CONTROL").as_deref() == Ok("off") {
+        state.admission = None;
+        tracing::info!("admission control disabled via NEBULA_ADMISSION_CONTROL=off");
+    }
     if let Some(fc) = follower_cursor.as_ref() {
         state = state.with_follower_cursor(Arc::clone(fc));
     }

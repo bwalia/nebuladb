@@ -145,6 +145,14 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             crate::middleware::audit_writes,
         ))
+        // Class-aware admission (design 0010 §6): runs just inside
+        // the rate limiter — abuse control stays outermost, and a
+        // saturated class refuses before burning auth/guard CPU.
+        // Critical-class requests (mutations, admin) pass untouched.
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::workload::admission_control,
+        ))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::ratelimit::rate_limit,
@@ -225,6 +233,10 @@ struct ReliabilityResponse {
     resource: nebula_resource::ReliabilitySnapshot,
     /// `None` when no circuit breaker is wired (mock/dev setups).
     ai: Option<AiReliability>,
+    /// Per-class admission state (design 0010 §6). `None` when no
+    /// admission controller is wired.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    admission: Option<Vec<crate::workload::ClassStats>>,
 }
 
 /// `GET /api/v1/admin/reliability` — the operator's one-stop answer to
@@ -241,6 +253,7 @@ async fn admin_reliability(State(s): State<AppState>) -> Json<ReliabilityRespons
     Json(ReliabilityResponse {
         resource: s.resource.snapshot(),
         ai,
+        admission: s.admission.as_ref().map(|a| a.snapshot()),
     })
 }
 
@@ -472,6 +485,41 @@ fn render_reliability_metrics(body: &mut String, s: &AppState) {
         "nebula_embedding_pending {}",
         s.index.pending_embedding_count()
     );
+
+    // Class-aware admission (design 0010 §6), when wired.
+    if let Some(a) = &s.admission {
+        let stats = a.snapshot();
+        let _ = writeln!(body, "# HELP nebula_admission_in_flight Concurrent requests currently admitted, per workload class");
+        let _ = writeln!(body, "# TYPE nebula_admission_in_flight gauge");
+        for st in &stats {
+            let _ = writeln!(
+                body,
+                "nebula_admission_in_flight{{class=\"{}\"}} {}",
+                st.class.as_str(),
+                st.in_flight
+            );
+        }
+        let _ = writeln!(body, "# HELP nebula_admission_budget Max concurrent requests per workload class at the current operating mode");
+        let _ = writeln!(body, "# TYPE nebula_admission_budget gauge");
+        for st in &stats {
+            let _ = writeln!(
+                body,
+                "nebula_admission_budget{{class=\"{}\"}} {}",
+                st.class.as_str(),
+                st.budget
+            );
+        }
+        let _ = writeln!(body, "# HELP nebula_admission_rejected_total Requests refused 429 class_saturated, per workload class");
+        let _ = writeln!(body, "# TYPE nebula_admission_rejected_total counter");
+        for st in &stats {
+            let _ = writeln!(
+                body,
+                "nebula_admission_rejected_total{{class=\"{}\"}} {}",
+                st.class.as_str(),
+                st.rejected_total
+            );
+        }
+    }
 }
 
 /// cgroup memory accounting, exposed so an alert can fire BEFORE the
