@@ -244,6 +244,44 @@ impl<'a> Serialize for TombstoneSetView<'a> {
     }
 }
 
+/// Point-in-time copy of an [`Hnsw`]'s persisted state, detached from
+/// the live graph's lock. See [`Hnsw::freeze`].
+pub struct FrozenHnsw {
+    dim: usize,
+    metric: Metric,
+    config: HnswConfig,
+    codes: Vec<i8>,
+    scales: Vec<f32>,
+    node_levels: Vec<u8>,
+    neighbors: Vec<Vec<Vec<u32>>>,
+    external: Vec<Id>,
+    tombstones: AHashSet<u32>,
+    entry: Option<(u32, u8)>,
+}
+
+impl FrozenHnsw {
+    /// Same bytes as [`Hnsw::serialize_snapshot_into`] on the graph at
+    /// the moment it was frozen, with no lock held.
+    pub fn serialize_snapshot_into<W: std::io::Write>(&self, writer: W) -> bincode::Result<()> {
+        let view = HnswSnapshotView {
+            dim: self.dim,
+            metric: self.metric,
+            config: &self.config,
+            vectors: DequantizedArenaView {
+                codes: &self.codes,
+                scales: &self.scales,
+                dim: self.dim,
+            },
+            node_levels: &self.node_levels,
+            neighbors: &self.neighbors,
+            external: &self.external,
+            tombstones: TombstoneSetView(&self.tombstones),
+            entry: self.entry,
+        };
+        bincode::serialize_into(writer, &view)
+    }
+}
+
 impl Hnsw {
     pub fn new(dim: usize, metric: Metric, config: HnswConfig) -> Result<Self> {
         if dim == 0 {
@@ -311,6 +349,11 @@ impl Hnsw {
     /// `HnswSnapshot` field-for-field, and bincode's format depends
     /// only on field order + element types + sequence layout — not on
     /// struct or field names.
+    ///
+    /// "Reads remain concurrent" only holds while no writer is queued:
+    /// parking_lot's RwLock parks new readers behind a waiting writer,
+    /// so under steady write load a long hold stalls searches too. For
+    /// large graphs snapshot via [`Self::freeze`] instead.
     pub fn serialize_snapshot_into<W: std::io::Write>(
         &self,
         writer: W,
@@ -335,6 +378,51 @@ impl Hnsw {
             entry: g.entry,
         };
         bincode::serialize_into(writer, &view)
+    }
+
+    /// True if `id` is live and inserting `vector` would store exactly
+    /// the codes and scale it already has. Lets an upsert of unchanged
+    /// content skip the delete + re-insert, which would otherwise
+    /// tombstone a node and grow the graph for nothing.
+    pub fn stores_same_vector(&self, id: Id, vector: &[f32]) -> bool {
+        if vector.len() != self.dim {
+            return false;
+        }
+        let g = self.inner.read();
+        let Some(&node) = g.by_external.get(&id) else {
+            return false;
+        };
+        if g.tombstones.contains(&node) {
+            return false;
+        }
+        let (codes, scale) = quantize(vector);
+        let n = node as usize;
+        g.scales[n].to_bits() == scale.to_bits() && g.codes[n * self.dim..(n + 1) * self.dim] == codes[..]
+    }
+
+    /// Copy the graph's persisted state out from under the lock so it
+    /// can be serialized without holding it. The read lock is held only
+    /// for the copy — a few memcpys plus one allocation per adjacency
+    /// list, ~1s for millions of nodes — rather than for the multi-
+    /// minute dequantize + compress + write of a multi-GB snapshot.
+    ///
+    /// Costs roughly one extra int8 arena + adjacency lists of memory
+    /// while the copy is alive; `by_external` and the RNG are not
+    /// persisted, so they are not copied.
+    pub fn freeze(&self) -> FrozenHnsw {
+        let g = self.inner.read();
+        FrozenHnsw {
+            dim: self.dim,
+            metric: self.metric,
+            config: self.config.clone(),
+            codes: g.codes.clone(),
+            scales: g.scales.clone(),
+            node_levels: g.node_levels.clone(),
+            neighbors: g.neighbors.clone(),
+            external: g.external.clone(),
+            tombstones: g.tombstones.clone(),
+            entry: g.entry,
+        }
     }
 
     /// Capture the whole graph state as a plain-data `HnswSnapshot`.
@@ -963,5 +1051,47 @@ mod tests {
             streamed_bytes, owned_bytes,
             "streamed snapshot bytes diverged from the owned path"
         );
+    }
+
+    #[test]
+    fn stores_same_vector_is_exact() {
+        let h = Hnsw::new(4, Metric::Cosine, HnswConfig::default()).unwrap();
+        h.insert(Id(1), &[0.1, 0.2, 0.3, 0.4]).unwrap();
+        assert!(h.stores_same_vector(Id(1), &[0.1, 0.2, 0.3, 0.4]));
+        assert!(!h.stores_same_vector(Id(1), &[0.1, 0.2, 0.3, 0.5]));
+        assert!(!h.stores_same_vector(Id(1), &[0.1, 0.2, 0.3]), "dim mismatch");
+        assert!(!h.stores_same_vector(Id(2), &[0.1, 0.2, 0.3, 0.4]), "unknown id");
+        h.delete(Id(1)).unwrap();
+        assert!(!h.stores_same_vector(Id(1), &[0.1, 0.2, 0.3, 0.4]), "tombstoned");
+    }
+
+    #[test]
+    fn frozen_serialize_matches_live_and_ignores_later_writes() {
+        let h = Hnsw::new(6, Metric::Cosine, HnswConfig::default()).unwrap();
+        for i in 0..30u64 {
+            let mut v = vec![0.0f32; 6];
+            v[(i as usize) % 6] = (i as f32) + 0.5;
+            h.insert(Id(i), &v).unwrap();
+        }
+        h.delete(Id(3)).unwrap();
+        h.delete(Id(17)).unwrap();
+
+        let mut live_bytes = Vec::new();
+        h.serialize_snapshot_into(&mut live_bytes).unwrap();
+        let frozen = h.freeze();
+
+        // Mutations after the freeze must not leak into it — that is
+        // the point-in-time guarantee the snapshot relies on.
+        h.insert(Id(100), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+        h.delete(Id(5)).unwrap();
+
+        let mut frozen_bytes = Vec::new();
+        frozen.serialize_snapshot_into(&mut frozen_bytes).unwrap();
+        assert_eq!(frozen_bytes, live_bytes, "frozen copy diverged from the graph it copied");
+
+        let back: HnswSnapshot = bincode::deserialize(&frozen_bytes).unwrap();
+        let restored = Hnsw::restore_from_snapshot(back).unwrap();
+        assert_eq!(restored.len(), 30);
+        assert_eq!(restored.len_live(), 28);
     }
 }

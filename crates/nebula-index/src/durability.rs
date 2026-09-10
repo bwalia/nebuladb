@@ -28,6 +28,7 @@
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use ahash::{AHashMap, AHashSet};
@@ -35,7 +36,7 @@ use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize, Serializer};
 
 use nebula_core::Id;
-use nebula_vector::{Hnsw, HnswSnapshot};
+use nebula_vector::{FrozenHnsw, HnswSnapshot};
 use nebula_wal::WalError;
 
 use crate::{Document, IndexError, Result};
@@ -117,9 +118,15 @@ pub struct ParentEntry {
 /// at roughly the live index size plus one doc's metadata string.
 ///
 /// `wal_seq` is the highest WAL seq this snapshot captures —
-/// recovery discards every WAL record with seq `<=` this. Caller
-/// MUST hold a read lock on the index for the duration to keep
-/// `docs` / `parents` / `hnsw` consistent.
+/// recovery discards every WAL record with seq `<=` this.
+///
+/// `docs` / `parents` / `hnsw` must be one point-in-time copy of the
+/// index, taken together under its read lock (see
+/// `TextIndex::freeze_for_snapshot`). They are detached from the live
+/// index, so this runs with **no lock held**: writers and readers
+/// proceed while the multi-GB dequantize + compress + write happens.
+/// Holding the lock for the whole write (the previous contract) stalled
+/// every request for minutes on each scheduled snapshot.
 ///
 /// On-disk format is byte-identical to the old path: borrowed
 /// serializer views mirror the owned types field-for-field, and
@@ -130,9 +137,9 @@ pub fn write_snapshot_streaming(
     dir: &Path,
     wal_seq: u64,
     next_id: u64,
-    docs: &AHashMap<Id, Document>,
+    docs: &[(Id, Arc<Document>)],
     parents: &AHashMap<(String, String), AHashSet<String>>,
-    hnsw: &Hnsw,
+    hnsw: &FrozenHnsw,
 ) -> Result<PathBuf> {
     fs::create_dir_all(dir).map_err(io_to_index)?;
 
@@ -167,12 +174,11 @@ pub fn write_snapshot_streaming(
     {
         let file = File::create(&part_path).map_err(io_to_index)?;
         let mut writer = BufWriter::new(file);
-        // zstd level 1 (was 3): the snapshot holds the index read lock for
-        // the whole serialize, and level-3 compression of a multi-GB arena
-        // dominates that hold (~8 min observed), which starves writers and
-        // piles up in-flight requests until the cgroup OOM-kills the leader.
-        // Level 1 is ~4x faster for ~10-20% larger files — a good trade when
-        // the lock-hold is the production-limiting factor. Decompression is
+        // zstd level 1 (was 3): chosen when the snapshot held the index
+        // read lock for the whole serialize and level-3 compression of a
+        // multi-GB arena dominated that hold (~8 min observed). The write
+        // is now lock-free, but level 1 still keeps a snapshot's CPU and
+        // wall time down for ~10-20% larger files. Decompression is
         // level-agnostic, so existing/new snapshots read back unchanged.
         let mut enc = zstd::Encoder::new(&mut writer, 1)
             .map_err(|e| IndexError::Invalid(format!("zstd enc: {e}")))?;
@@ -245,7 +251,7 @@ struct ParentEntryView<'a> {
     external_ids: ExternalIdsSeqView<'a>,
 }
 
-struct DocsSeqView<'a>(&'a AHashMap<Id, Document>);
+struct DocsSeqView<'a>(&'a [(Id, Arc<Document>)]);
 
 impl<'a> Serialize for DocsSeqView<'a> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
