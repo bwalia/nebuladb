@@ -27,6 +27,7 @@ pub mod log_stream;
 pub mod metrics;
 pub mod middleware;
 pub mod ratelimit;
+pub mod region_failover;
 pub mod router;
 pub mod slow_log;
 pub mod snapshot_scheduler;

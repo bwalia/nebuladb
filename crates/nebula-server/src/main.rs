@@ -1171,6 +1171,59 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             Vec::new()
         };
 
+    // Automatic multi-region failover monitor (design 0011 §4). Opt-in:
+    // only a node explicitly marked a failover candidate self-promotes,
+    // and only for the buckets listed in NEBULA_REGION_FAILOVER_BUCKETS.
+    // This keeps the single-candidate-per-home invariant that (together
+    // with the monotonic epoch fence) prevents split brain.
+    let region_failover_handle: Option<tokio::task::JoinHandle<()>> = {
+        let is_candidate = std::env::var("NEBULA_REGION_FAILOVER_CANDIDATE")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+        let candidates = std::env::var("NEBULA_REGION_FAILOVER_BUCKETS")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| nebula_server::region_failover::parse_failover_candidates(&s))
+            .transpose()
+            .map_err(|e| format!("NEBULA_REGION_FAILOVER_BUCKETS: {e}"))?
+            .unwrap_or_default();
+        if is_candidate && !candidates.is_empty() {
+            let grace: u64 = std::env::var("NEBULA_REGION_FAILOVER_GRACE_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(60);
+            let cooldown = std::env::var("NEBULA_REGION_FAILOVER_COOLDOWN_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(grace.saturating_mul(5));
+            let config = nebula_grpc::cross_region::FailoverConfig {
+                my_region: cluster.region_or_default().to_string(),
+                grace: std::time::Duration::from_secs(grace),
+                cooldown: std::time::Duration::from_secs(cooldown),
+                tick: std::time::Duration::from_secs(5),
+            };
+            let health: Arc<dyn nebula_grpc::cross_region::RegionHealthSource> =
+                Arc::new(cross_region_status.clone());
+            let seed: Arc<dyn nebula_grpc::cross_region::SeedWriter> =
+                Arc::new(nebula_server::region_failover::IndexSeedWriter {
+                    index: Arc::clone(&grpc_index),
+                });
+            tracing::warn!(
+                candidates = candidates.len(),
+                grace_secs = grace,
+                "region failover monitor ENABLED — this node will self-promote on home-region outage",
+            );
+            Some(
+                nebula_grpc::cross_region::RegionFailoverMonitor::new(
+                    config, candidates, health, seed,
+                )
+                .spawn(),
+            )
+        } else {
+            None
+        }
+    };
+
     // Hand off from the boot stub to the real router. We ABORT the stub
     // task rather than gracefully draining it: axum 0.7's
     // `with_graceful_shutdown` blocks until every open connection closes,
@@ -1221,6 +1274,9 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         h.abort();
     }
     for h in cross_region_handles {
+        h.abort();
+    }
+    if let Some(h) = region_failover_handle {
         h.abort();
     }
     if let Some(h) = follower_handle {

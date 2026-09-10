@@ -85,13 +85,26 @@ pub(crate) const MAX_RECORD_BYTES: u32 = 16 * 1024 * 1024;
 /// existing standalone path emits, so the state-machine apply logic in
 /// 2.2 can reuse `TextIndex::apply_wal_record` unchanged.
 ///
-/// Future variants — `ConfigChange` for openraft membership changes
-/// and `NoOp` for leader-establish heartbeats — append at the end of
-/// the enum to preserve bincode wire compatibility.
+/// Variants are append-only to preserve bincode wire compatibility.
+/// `Membership` and `Blank` were added when dynamic membership landed
+/// (design 0011): openraft's Raft log carries membership-change and
+/// leader-establish (blank) entries interleaved with user mutations,
+/// and they MUST round-trip through the log faithfully — collapsing a
+/// membership entry loses the config openraft reads back to answer
+/// `change_membership`, which then panics on a `None` membership.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum LogPayload {
     /// A user mutation. Same shape the WAL has always emitted.
     Mutation(WalRecord),
+    /// An openraft membership-change entry. The bytes are the
+    /// `bincode`-serialized `Membership<NodeId, NebulaNode>`. We hold
+    /// the encoded form rather than the typed struct so this enum
+    /// stays free of an openraft type dependency at the wire layer;
+    /// `storage.rs` does the typed encode/decode at the boundary.
+    Membership(Vec<u8>),
+    /// A leader-establish blank entry. No body — openraft writes one
+    /// on becoming leader; it advances the log index with no effect.
+    Blank,
 }
 
 /// One persisted Raft log entry.
@@ -154,6 +167,13 @@ struct WriterState {
     /// append in a fresh log. Used to enforce monotone-index on
     /// append (an openraft invariant).
     last_index: Option<u64>,
+    /// Raft term of the entry at `last_index`. Tracked in lock-step
+    /// with `last_index` so `get_log_state` can report the *real*
+    /// last `LogId` (term + index) rather than a fabricated term-0.
+    /// openraft's replication-matching compares full LogIds; a wrong
+    /// term stalls commit on every follower (see design 0011 §6 — the
+    /// bug the multi-node harness caught).
+    last_term: Option<u64>,
 }
 
 impl LogStore {
@@ -167,7 +187,7 @@ impl LogStore {
         let segments = list_segments(&dir)?;
 
         // Boot path 1: empty directory. Create segment 0.
-        let (seg_seq, file_handle, bytes_written, last_index) = if segments.is_empty() {
+        let (seg_seq, file_handle, bytes_written, last_index, last_term) = if segments.is_empty() {
             let seg_seq = 0u64;
             let path = segment_path(&dir, seg_seq);
             let mut file = OpenOptions::new()
@@ -178,18 +198,18 @@ impl LogStore {
             file.write_all(MAGIC)?;
             file.sync_all()?;
             let bytes_written = MAGIC.len() as u64;
-            (seg_seq, file, bytes_written, None)
+            (seg_seq, file, bytes_written, None, None)
         } else {
             // Boot path 2: existing segments. Open the newest, scan it
             // to find the last good record, truncate any torn tail.
             let &seg_seq = segments.last().expect("non-empty checked above");
             let path = segment_path(&dir, seg_seq);
-            let (truncate_to, last_index) = scan_segment_for_recovery(&path)?;
+            let (truncate_to, last_index, last_term) = scan_segment_for_recovery(&path)?;
             let file = OpenOptions::new().write(true).read(true).open(&path)?;
             file.set_len(truncate_to)?;
             let mut file = file;
             file.seek(SeekFrom::Start(truncate_to))?;
-            (seg_seq, file, truncate_to, last_index)
+            (seg_seq, file, truncate_to, last_index, last_term)
         };
 
         let writer = BufWriter::new(file_handle);
@@ -201,6 +221,7 @@ impl LogStore {
                 file: writer,
                 bytes_written,
                 last_index,
+                last_term,
             }),
         })
     }
@@ -248,6 +269,7 @@ impl LogStore {
         state.file.write_all(&body)?;
         state.bytes_written += frame_len as u64;
         state.last_index = Some(entry.index);
+        state.last_term = Some(entry.term);
 
         if self.config.fsync_on_append {
             state.file.flush()?;
@@ -279,6 +301,17 @@ impl LogStore {
     /// Last log index ever appended, if any.
     pub fn last_index(&self) -> Option<u64> {
         self.state.lock().last_index
+    }
+
+    /// `(index, term)` of the last log entry, if any. openraft needs the
+    /// real term to build the last `LogId` in `get_log_state`; reporting
+    /// a fabricated term stalls follower replication.
+    pub fn last_log_id_parts(&self) -> Option<(u64, u64)> {
+        let state = self.state.lock();
+        match (state.last_index, state.last_term) {
+            (Some(index), Some(term)) => Some((index, term)),
+            _ => None,
+        }
     }
 
     /// Read entries whose `index` falls in `[start, end)`. Returns
@@ -376,6 +409,7 @@ impl LogStore {
                 })
                 .sum::<u64>();
         let new_last = kept.last().map(|e| e.index);
+        let new_last_term = kept.last().map(|e| e.term);
 
         // Repoint the writer at the rewritten file, positioned at end.
         let file = OpenOptions::new()
@@ -388,6 +422,9 @@ impl LogStore {
         state.file = BufWriter::new(file);
         state.bytes_written = new_bytes;
         state.last_index = new_last;
+        // A conflict-truncate can drop the newest entries, so the last
+        // term may move backward — recompute it from what survived.
+        state.last_term = new_last_term;
         Ok(())
     }
 
@@ -595,7 +632,9 @@ fn list_segments(dir: &Path) -> Result<Vec<u64>, LogStoreError> {
 
 /// Walk a segment, returning the byte offset of the end of the last
 /// good record and the highest log index contained in it.
-fn scan_segment_for_recovery(path: &Path) -> Result<(u64, Option<u64>), LogStoreError> {
+fn scan_segment_for_recovery(
+    path: &Path,
+) -> Result<(u64, Option<u64>, Option<u64>), LogStoreError> {
     let mut file = File::open(path)?;
     let mut magic = [0u8; 8];
     if file.read_exact(&mut magic).is_err() || &magic != MAGIC {
@@ -606,15 +645,17 @@ fn scan_segment_for_recovery(path: &Path) -> Result<(u64, Option<u64>), LogStore
     }
     let mut good_end = MAGIC.len() as u64;
     let mut last_index = None;
+    let mut last_term = None;
 
     let mut reader = BufReader::new(file);
     while let Some(entry) = read_one_frame(&mut reader)? {
         last_index = Some(entry.index);
+        last_term = Some(entry.term);
         let body_len = bincode::serialized_size(&entry.payload)
             .map_err(|e| LogStoreError::Codec(e.to_string()))?;
         good_end += 4 + 4 + HEADER_TAIL_BYTES as u64 + body_len;
     }
-    Ok((good_end, last_index))
+    Ok((good_end, last_index, last_term))
 }
 
 fn iter_segment(path: &Path) -> Result<SegmentIter, LogStoreError> {

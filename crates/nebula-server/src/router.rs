@@ -101,7 +101,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/cluster/nodes", get(admin_cluster_nodes))
         .route("/admin/replication", get(admin_replication))
         .route("/admin/reliability", get(admin_reliability))
-        .route("/admin/promote", post(admin_promote));
+        .route("/admin/promote", post(admin_promote))
+        .route("/admin/raft/membership", get(admin_raft_membership))
+        .route("/admin/raft/initialize", post(admin_raft_initialize))
+        .route("/admin/raft/learner", post(admin_raft_add_learner))
+        .route("/admin/raft/voter/:id", post(admin_raft_promote_voter))
+        .route(
+            "/admin/raft/node/:id",
+            axum::routing::delete(admin_raft_remove_node),
+        );
     let api_normal = if let Some(t) = request_timeout {
         api_normal.layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -2006,6 +2014,131 @@ async fn admin_promote(State(s): State<AppState>) -> Result<Json<PromoteResponse
             }))
         }
     }
+}
+
+// ---- dynamic Raft membership (design 0011 §3.3) ----
+
+/// Reject with 400 when this node did not boot in raft mode. All the
+/// membership endpoints share this gate so the error is uniform.
+fn require_raft(s: &AppState) -> Result<&std::sync::Arc<nebula_raft::RaftHandle>, ApiError> {
+    s.raft.as_ref().ok_or_else(|| {
+        ApiError::BadRequest(
+            "raft mode is not enabled on this node (set NEBULA_RAFT_PEERS)".into(),
+        )
+    })
+}
+
+#[derive(Serialize)]
+struct MembershipResponse {
+    /// This node's Raft id.
+    this_id: u64,
+    /// Current leader as last observed, if any.
+    leader: Option<u64>,
+    /// Voting members.
+    voters: Vec<u64>,
+    /// Non-voting learners (catching up or read replicas).
+    learners: Vec<u64>,
+}
+
+/// `GET /admin/raft/membership` — local view of the current cluster
+/// membership. Non-blocking (reads openraft's metrics watch channel).
+async fn admin_raft_membership(
+    State(s): State<AppState>,
+) -> Result<Json<MembershipResponse>, ApiError> {
+    let rh = require_raft(&s)?;
+    let v = rh.membership();
+    Ok(Json(MembershipResponse {
+        this_id: v.this_id,
+        leader: v.leader,
+        voters: v.voters,
+        learners: v.learners,
+    }))
+}
+
+#[derive(Serialize)]
+struct InitializeResponse {
+    /// `true` if this call formed the cluster, `false` if it was
+    /// already initialized (idempotent).
+    initialized: bool,
+}
+
+/// `POST /admin/raft/initialize` — one-time cluster formation. Idempotent:
+/// a second call (or a call against an already-formed cluster) returns
+/// `initialized: false` rather than erroring, so boot automation can run
+/// it unconditionally.
+async fn admin_raft_initialize(
+    State(s): State<AppState>,
+) -> Result<Json<InitializeResponse>, ApiError> {
+    let rh = require_raft(&s)?;
+    match rh.initialize_cluster().await {
+        Ok(()) => {
+            tracing::warn!("raft cluster initialized via /admin/raft/initialize");
+            Ok(Json(InitializeResponse { initialized: true }))
+        }
+        Err(nebula_raft::MembershipError::AlreadyInitialized) => {
+            Ok(Json(InitializeResponse { initialized: false }))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[derive(Deserialize)]
+struct AddLearnerRequest {
+    /// The new node's Raft id (must be unique in the cluster).
+    node_id: u64,
+    /// The new node's Raft gRPC address, e.g. `node4:50052`.
+    addr: String,
+}
+
+#[derive(Serialize)]
+struct MembershipChangeResponse {
+    /// Human-readable summary of what changed.
+    changed: String,
+}
+
+/// `POST /admin/raft/learner` — add a non-voting learner and block until
+/// its log is caught up (design 0011 §3.4 step 2). Quorum is unchanged
+/// during catch-up, so writes keep flowing. Must run on the leader.
+async fn admin_raft_add_learner(
+    State(s): State<AppState>,
+    Json(body): Json<AddLearnerRequest>,
+) -> Result<Json<MembershipChangeResponse>, ApiError> {
+    let rh = require_raft(&s)?;
+    rh.add_learner(body.node_id, body.addr.clone()).await?;
+    tracing::warn!(node_id = body.node_id, addr = %body.addr, "raft learner added + caught up");
+    Ok(Json(MembershipChangeResponse {
+        changed: format!("learner {} added ({})", body.node_id, body.addr),
+    }))
+}
+
+/// `POST /admin/raft/voter/:id` — promote a caught-up learner to a voter
+/// (design 0011 §3.4 step 3). Joint-consensus; quorum of the current set
+/// stays available. Must run on the leader.
+async fn admin_raft_promote_voter(
+    State(s): State<AppState>,
+    Path(id): Path<u64>,
+) -> Result<Json<MembershipChangeResponse>, ApiError> {
+    let rh = require_raft(&s)?;
+    rh.promote_to_voter(id).await?;
+    tracing::warn!(node_id = id, "raft learner promoted to voter");
+    Ok(Json(MembershipChangeResponse {
+        changed: format!("node {id} promoted to voter"),
+    }))
+}
+
+/// `DELETE /admin/raft/node/:id` — remove a voter from the quorum
+/// (design 0011 §3.4 step 4). Used to evict a dead node once its
+/// replacement has joined. Must run on the leader.
+async fn admin_raft_remove_node(
+    State(s): State<AppState>,
+    Path(id): Path<u64>,
+) -> Result<Json<MembershipChangeResponse>, ApiError> {
+    let rh = require_raft(&s)?;
+    rh.remove_node(id).await?;
+    tracing::warn!(node_id = id, "raft voter removed from quorum");
+    Ok(Json(MembershipChangeResponse {
+        changed: format!("node {id} removed"),
+    }))
 }
 
 // ---- log streaming ----

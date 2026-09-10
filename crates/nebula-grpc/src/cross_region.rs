@@ -43,6 +43,13 @@ use crate::pb;
 /// silently dropping writes.
 pub const STALE_EPOCH: &str = "stale_home_epoch";
 
+/// Id of the operator seed document that carries each bucket's
+/// `home_region` / `home_epoch`. Mirror of `nebula_server::SEED_DOC_ID`
+/// — duplicated here so `nebula-grpc` stays free of a `nebula-server`
+/// dependency. See design-0001 for why the seed doc is the source of
+/// truth.
+pub const SEED_DOC_ID: &str = "__nebuladb_operator_seed__";
+
 /// Shared status sink — trait instead of a concrete type so
 /// `nebula-grpc` doesn't depend on `nebula-server` (the actual
 /// implementation lives in server's `cross_region_status.rs`).
@@ -239,9 +246,6 @@ async fn tail_once(
 /// is treated as "anyone can write"). This is the safety net against
 /// a deposed region reconnecting and streaming pre-failover writes.
 fn epoch_is_fresh(index: &TextIndex, bucket: &str, incoming_epoch: u64) -> bool {
-    // Mirror of home_region::SEED_DOC_ID; see design-0001 for why the
-    // seed doc is the source of truth.
-    const SEED_DOC_ID: &str = "__nebuladb_operator_seed__";
     let local_epoch = index
         .get(bucket, SEED_DOC_ID)
         .and_then(|d| {
@@ -264,6 +268,207 @@ pub enum CrossRegionError {
     Decode(String),
     #[error("apply: {0}")]
     Apply(String),
+}
+
+// ============================================================
+// Automatic multi-region failover (design 0011 §4)
+// ============================================================
+
+/// Read side of the cross-region status hub, consumed by the failover
+/// monitor. Kept as a trait (mirroring [`StatusSink`]) so `nebula-grpc`
+/// stays free of a `nebula-server` dependency — the hub in server's
+/// `cross_region_status.rs` implements it.
+pub trait RegionHealthSource: Send + Sync + 'static {
+    /// True when the named remote region's consumer stream is currently
+    /// healthy (its last streaming call succeeded). A region we have no
+    /// record of is treated as healthy — we only fail over regions we
+    /// are actively tailing and have seen fail.
+    fn is_region_healthy(&self, region: &str) -> bool;
+}
+
+/// A bucket this node is willing to take over if its remote home region
+/// dies. One entry per remote-homed bucket the operator marks as a
+/// failover target for this region.
+#[derive(Clone, Debug)]
+pub struct FailoverCandidate {
+    /// Bucket name.
+    pub bucket: String,
+    /// The region that currently owns the bucket (the one we watch).
+    pub home_region: String,
+}
+
+/// Configuration for the [`RegionFailoverMonitor`].
+#[derive(Clone, Debug)]
+pub struct FailoverConfig {
+    /// This node's own region — the region we promote buckets *to*.
+    pub my_region: String,
+    /// How long a home region must be continuously unreachable before we
+    /// self-promote. Anti-flap: a reconnect inside this window resets
+    /// the counter.
+    pub grace: Duration,
+    /// After a self-promotion, suppress re-promoting the same bucket for
+    /// this long. Bounds churn if a link is genuinely flapping.
+    pub cooldown: Duration,
+    /// Poll cadence. The monitor checks health every `tick`.
+    pub tick: Duration,
+}
+
+impl Default for FailoverConfig {
+    fn default() -> Self {
+        Self {
+            my_region: "default".into(),
+            grace: Duration::from_secs(60),
+            cooldown: Duration::from_secs(300),
+            tick: Duration::from_secs(5),
+        }
+    }
+}
+
+/// Sink for performing a promotion — writing the bucket's seed doc with
+/// a bumped epoch and this node's region as the new home. Abstracted as
+/// a trait so the monitor doesn't need the full `TextIndex` write path
+/// wired through; the server supplies an impl that goes through the
+/// normal (WAL-durable, replicated) upsert.
+#[async_trait::async_trait]
+pub trait SeedWriter: Send + Sync + 'static {
+    /// Read the current `home_epoch` for `bucket` from the local seed
+    /// doc (0 if absent).
+    fn current_epoch(&self, bucket: &str) -> u64;
+    /// Write the seed doc: set `home_region = my_region`, `home_epoch =
+    /// new_epoch`. Durable + replicated. Returns an error string on
+    /// failure so the monitor can log and retry next tick.
+    async fn promote(&self, bucket: &str, my_region: &str, new_epoch: u64) -> Result<(), String>;
+}
+
+/// Per-bucket runtime state the monitor tracks across ticks.
+#[derive(Debug, Default, Clone)]
+struct BucketWatch {
+    /// When the home region was first observed unreachable in the
+    /// current unhealthy streak. `None` while healthy.
+    unhealthy_since: Option<tokio::time::Instant>,
+    /// When we last self-promoted this bucket. `None` if never.
+    last_promoted: Option<tokio::time::Instant>,
+}
+
+/// Watches remote home regions and self-promotes failover-candidate
+/// buckets when their home is down past the grace period.
+///
+/// Anti-oscillation is enforced by three independent mechanisms
+/// (design 0011 §4.3): opt-in single-candidate (only nodes given
+/// candidates run this at all), grace + hysteresis (continuous
+/// unreachability required, reset on any reconnect), monotonic epochs
+/// with no auto-failback, and a post-promotion cooldown.
+pub struct RegionFailoverMonitor {
+    config: FailoverConfig,
+    candidates: Vec<FailoverCandidate>,
+    health: Arc<dyn RegionHealthSource>,
+    seed: Arc<dyn SeedWriter>,
+}
+
+impl RegionFailoverMonitor {
+    pub fn new(
+        config: FailoverConfig,
+        candidates: Vec<FailoverCandidate>,
+        health: Arc<dyn RegionHealthSource>,
+        seed: Arc<dyn SeedWriter>,
+    ) -> Self {
+        Self {
+            config,
+            candidates,
+            health,
+            seed,
+        }
+    }
+
+    /// Spawn the monitor loop. Returns the join handle; abort on
+    /// shutdown. A no-op (returns immediately) when there are no
+    /// candidates so a non-candidate node pays nothing.
+    pub fn spawn(self) -> JoinHandle<()> {
+        tokio::spawn(async move { self.run().await })
+    }
+
+    async fn run(self) {
+        if self.candidates.is_empty() {
+            debug!("region failover monitor: no candidates, not running");
+            return;
+        }
+        info!(
+            region = %self.config.my_region,
+            candidates = self.candidates.len(),
+            grace_secs = self.config.grace.as_secs(),
+            "region failover monitor started",
+        );
+        let mut watches: std::collections::HashMap<String, BucketWatch> =
+            std::collections::HashMap::new();
+        loop {
+            let now = tokio::time::Instant::now();
+            for cand in &self.candidates {
+                self.evaluate(cand, now, watches.entry(cand.bucket.clone()).or_default())
+                    .await;
+            }
+            tokio::time::sleep(self.config.tick).await;
+        }
+    }
+
+    /// Evaluate one candidate bucket for one tick. Extracted so it is
+    /// unit-testable without spawning the loop.
+    async fn evaluate(&self, cand: &FailoverCandidate, now: tokio::time::Instant, w: &mut BucketWatch) {
+        let healthy = self.health.is_region_healthy(&cand.home_region);
+        if healthy {
+            // Reconnected (or never down) — reset the unhealthy streak.
+            // Hysteresis: a flap that recovers inside the grace window
+            // costs us nothing.
+            w.unhealthy_since = None;
+            return;
+        }
+
+        // Region is unhealthy. Start (or continue) the streak clock.
+        let since = *w.unhealthy_since.get_or_insert(now);
+        if now.duration_since(since) < self.config.grace {
+            // Still inside the grace window — wait for it to clear or
+            // to age past grace.
+            return;
+        }
+
+        // Past grace. Respect the post-promotion cooldown so a flapping
+        // link doesn't make us bump the epoch every tick.
+        if let Some(last) = w.last_promoted {
+            if now.duration_since(last) < self.config.cooldown {
+                return;
+            }
+        }
+
+        // Self-promote: bump the epoch and take the home. Epochs are
+        // monotonic, so even a concurrent promotion by another region is
+        // resolved by the epoch fence downstream.
+        let new_epoch = self.seed.current_epoch(&cand.bucket).saturating_add(1);
+        match self
+            .seed
+            .promote(&cand.bucket, &self.config.my_region, new_epoch)
+            .await
+        {
+            Ok(()) => {
+                warn!(
+                    bucket = %cand.bucket,
+                    old_home = %cand.home_region,
+                    new_home = %self.config.my_region,
+                    new_epoch,
+                    "AUTO-FAILOVER: promoted bucket to local region (design 0011 §4)",
+                );
+                w.last_promoted = Some(now);
+                // Reset the streak so we don't immediately re-evaluate
+                // as still-unhealthy on the next tick.
+                w.unhealthy_since = None;
+            }
+            Err(e) => {
+                warn!(
+                    bucket = %cand.bucket,
+                    error = %e,
+                    "AUTO-FAILOVER: promotion write failed; will retry next tick",
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -334,5 +539,170 @@ mod tests {
         let snap = owned.snapshot();
         assert_eq!(snap.len(), 1);
         assert!(snap.contains("mine"));
+    }
+
+    // ---- failover monitor (design 0011 §4) ----
+
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    /// Health source whose answer flips via an atomic, so a test can
+    /// simulate a region going down and coming back.
+    struct FlagHealth {
+        healthy: AtomicBool,
+    }
+    impl RegionHealthSource for FlagHealth {
+        fn is_region_healthy(&self, _region: &str) -> bool {
+            self.healthy.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Seed writer that records promotions in an atomic counter instead
+    /// of touching an index, so `evaluate` is testable in isolation.
+    struct CountingSeed {
+        epoch: AtomicU64,
+        promotions: AtomicU64,
+        fail: AtomicBool,
+    }
+    #[async_trait::async_trait]
+    impl SeedWriter for CountingSeed {
+        fn current_epoch(&self, _bucket: &str) -> u64 {
+            self.epoch.load(Ordering::SeqCst)
+        }
+        async fn promote(&self, _bucket: &str, _region: &str, new_epoch: u64) -> Result<(), String> {
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("simulated write failure".into());
+            }
+            self.epoch.store(new_epoch, Ordering::SeqCst);
+            self.promotions.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn monitor_with(
+        healthy: bool,
+        fail_promote: bool,
+        grace: Duration,
+        cooldown: Duration,
+    ) -> (RegionFailoverMonitor, Arc<CountingSeed>) {
+        let health = Arc::new(FlagHealth {
+            healthy: AtomicBool::new(healthy),
+        });
+        let seed = Arc::new(CountingSeed {
+            epoch: AtomicU64::new(3),
+            promotions: AtomicU64::new(0),
+            fail: AtomicBool::new(fail_promote),
+        });
+        let config = FailoverConfig {
+            my_region: "us-west-2".into(),
+            grace,
+            cooldown,
+            tick: Duration::from_millis(1),
+        };
+        let candidates = vec![FailoverCandidate {
+            bucket: "catalog".into(),
+            home_region: "us-east-1".into(),
+        }];
+        let monitor = RegionFailoverMonitor::new(
+            config,
+            candidates,
+            health.clone(),
+            seed.clone(),
+        );
+        (monitor, seed)
+    }
+
+    #[tokio::test]
+    async fn healthy_region_never_promotes() {
+        let (m, seed) = monitor_with(true, false, Duration::ZERO, Duration::ZERO);
+        let cand = m.candidates[0].clone();
+        let mut w = BucketWatch::default();
+        let now = tokio::time::Instant::now();
+        m.evaluate(&cand, now, &mut w).await;
+        assert_eq!(seed.promotions.load(Ordering::SeqCst), 0);
+        assert!(w.unhealthy_since.is_none());
+    }
+
+    #[tokio::test]
+    async fn unhealthy_within_grace_waits() {
+        // Grace is 10s; a single tick right after the region drops must
+        // NOT promote — hysteresis.
+        let (m, seed) = monitor_with(false, false, Duration::from_secs(10), Duration::ZERO);
+        let cand = m.candidates[0].clone();
+        let mut w = BucketWatch::default();
+        let now = tokio::time::Instant::now();
+        m.evaluate(&cand, now, &mut w).await;
+        assert_eq!(seed.promotions.load(Ordering::SeqCst), 0);
+        assert!(w.unhealthy_since.is_some(), "streak clock should have started");
+    }
+
+    #[tokio::test]
+    async fn reconnect_resets_grace_streak() {
+        // A watch that already has a streak in progress, evaluated by a
+        // now-healthy monitor, must have its streak cleared — this is
+        // the hysteresis that prevents a flap from ever promoting.
+        let (m, seed) = monitor_with(true, false, Duration::from_secs(10), Duration::ZERO);
+        let now = tokio::time::Instant::now();
+        let mut w = BucketWatch {
+            unhealthy_since: Some(now - Duration::from_secs(5)),
+            last_promoted: None,
+        };
+        m.evaluate(&m.candidates[0].clone(), now, &mut w).await;
+        assert!(
+            w.unhealthy_since.is_none(),
+            "a healthy observation must clear the streak"
+        );
+        assert_eq!(seed.promotions.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn past_grace_promotes_and_bumps_epoch() {
+        let (m, seed) = monitor_with(false, false, Duration::from_secs(10), Duration::from_secs(60));
+        let cand = m.candidates[0].clone();
+        // Pretend the region has been down since 20s ago (past 10s grace).
+        let now = tokio::time::Instant::now();
+        let mut w = BucketWatch {
+            unhealthy_since: Some(now - Duration::from_secs(20)),
+            last_promoted: None,
+        };
+        m.evaluate(&cand, now, &mut w).await;
+        assert_eq!(seed.promotions.load(Ordering::SeqCst), 1);
+        // Epoch bumped from 3 -> 4 (monotonic).
+        assert_eq!(seed.epoch.load(Ordering::SeqCst), 4);
+        assert!(w.last_promoted.is_some());
+    }
+
+    #[tokio::test]
+    async fn cooldown_suppresses_reprovote() {
+        let (m, seed) = monitor_with(false, false, Duration::from_secs(1), Duration::from_secs(300));
+        let cand = m.candidates[0].clone();
+        let now = tokio::time::Instant::now();
+        // Just promoted 5s ago; cooldown is 300s, region still down past grace.
+        let mut w = BucketWatch {
+            unhealthy_since: Some(now - Duration::from_secs(10)),
+            last_promoted: Some(now - Duration::from_secs(5)),
+        };
+        m.evaluate(&cand, now, &mut w).await;
+        assert_eq!(
+            seed.promotions.load(Ordering::SeqCst),
+            0,
+            "cooldown must suppress a second promotion"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_promotion_does_not_set_cooldown() {
+        let (m, seed) = monitor_with(false, true, Duration::from_secs(1), Duration::from_secs(60));
+        let cand = m.candidates[0].clone();
+        let now = tokio::time::Instant::now();
+        let mut w = BucketWatch {
+            unhealthy_since: Some(now - Duration::from_secs(10)),
+            last_promoted: None,
+        };
+        m.evaluate(&cand, now, &mut w).await;
+        assert_eq!(seed.promotions.load(Ordering::SeqCst), 0);
+        assert!(
+            w.last_promoted.is_none(),
+            "a failed write must not start the cooldown — we want to retry"
+        );
     }
 }

@@ -32,7 +32,7 @@ use std::sync::Arc;
 use openraft::{Entry, EntryPayload, LogId, Vote};
 
 use crate::log::{LogConfig, LogEntry, LogPayload, LogStore, LogStoreError};
-use crate::types::{NebulaTypeConfig, NodeId};
+use crate::types::{NebulaNode, NebulaTypeConfig, NodeId};
 
 /// File name for the persisted vote. Sits next to the log segments.
 const VOTE_FILE: &str = "vote.bin";
@@ -123,30 +123,46 @@ pub enum VoteIoError {
 
 /// Convert a stored `LogEntry` into openraft's `Entry`.
 ///
-/// openraft owns the membership-change variant; for now we only emit
-/// `EntryPayload::Normal(LogPayload::Mutation)` because membership
-/// changes don't land until Phase 2.4.
+/// All three openraft entry kinds round-trip: a `Mutation` becomes a
+/// `Normal`, a `Membership` is bincode-decoded back into openraft's
+/// `Membership` struct, and `Blank` maps straight through. Faithful
+/// round-tripping of membership entries is required — openraft reads
+/// them back out of the log to answer `change_membership` (design
+/// 0011); a lossy conversion makes that panic on a `None` membership.
 pub fn into_openraft_entry(e: LogEntry) -> Entry<NebulaTypeConfig> {
+    let payload = match e.payload {
+        LogPayload::Mutation(_) => EntryPayload::Normal(e.payload),
+        LogPayload::Membership(bytes) => {
+            // A corrupt/undecodable membership record is unrecoverable —
+            // openraft cannot proceed without the config. Fail loudly
+            // rather than silently dropping it (which reintroduces the
+            // very bug this format change fixes).
+            let m: openraft::Membership<NodeId, NebulaNode> = bincode::deserialize(&bytes)
+                .expect("membership log entry must decode; log corruption");
+            EntryPayload::Membership(m)
+        }
+        LogPayload::Blank => EntryPayload::Blank,
+    };
     Entry {
         log_id: LogId::new(openraft::CommittedLeaderId::new(e.term, 0), e.index),
-        payload: EntryPayload::Normal(e.payload),
+        payload,
     }
 }
 
 /// Convert an openraft `Entry` into our stored `LogEntry`.
 ///
-/// Membership and blank entries get a no-op mutation marker
-/// (`EmptyBucket{ bucket: "" }`) so the wire format keeps a single
-/// shape. The state-machine apply path in 2.2 will see through it —
-/// real mutations have a non-empty bucket. This keeps the on-disk
-/// schema additive: no new `LogPayload` variant before membership
-/// work actually starts.
+/// The inverse of [`into_openraft_entry`]: `Normal` mutations store as
+/// `Mutation`, membership entries are bincode-encoded into
+/// `LogPayload::Membership`, and blank entries store as `Blank`. Every
+/// kind persists losslessly so the log can be read back for both apply
+/// and openraft's own membership queries.
 pub fn from_openraft_entry(e: &Entry<NebulaTypeConfig>) -> LogEntry {
     let payload = match &e.payload {
         EntryPayload::Normal(p) => p.clone(),
-        _ => LogPayload::Mutation(nebula_wal::WalRecord::EmptyBucket {
-            bucket: String::new(),
-        }),
+        EntryPayload::Membership(m) => LogPayload::Membership(
+            bincode::serialize(m).expect("membership must serialize"),
+        ),
+        EntryPayload::Blank => LogPayload::Blank,
     };
     LogEntry {
         term: e.log_id.leader_id.term,
