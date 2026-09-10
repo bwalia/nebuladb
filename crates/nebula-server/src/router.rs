@@ -1448,8 +1448,9 @@ async fn admin_buckets(
     axum::extract::Query(q): axum::extract::Query<BucketsQuery>,
 ) -> Result<Json<Vec<nebula_index::BucketStats>>, ApiError> {
     // `bucket_stats` is a full corpus scan — it iterates every doc
-    // in every bucket and tallies metadata keys, holding the index
-    // read lock throughout. At ~84k docs that was a multi-hundred-ms
+    // in every bucket and tallies metadata keys. It now holds the index
+    // read lock only to copy doc handles, but the walk itself still
+    // costs seconds at prod scale. At ~84k docs that was a multi-hundred-ms
     // walk; at millions of docs it outlives the Admin tab's ~3s poll
     // interval, so without a gate the scans stack without bound, the
     // read lock is held continuously, and a queued writer wedges
