@@ -16,16 +16,12 @@ use tower::ServiceExt;
 
 use nebula_embed::{Embedder, MockEmbedder};
 use nebula_index::TextIndex;
-use nebula_server::{
-    build_router, AppConfig, AppState, JwtConfig, RateLimitConfig, RateLimiter,
-};
+use nebula_server::{build_router, AppConfig, AppState, JwtConfig, RateLimitConfig, RateLimiter};
 use nebula_vector::{HnswConfig, Metric};
 
 fn app_state(keys: &[&str]) -> AppState {
     let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
-    let index = Arc::new(
-        TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
     let cfg = AppConfig {
         api_keys: keys.iter().map(|s| s.to_string()).collect::<AHashSet<_>>(),
         ..AppConfig::default()
@@ -90,7 +86,11 @@ async fn healthz_live_is_public_and_minimal() {
 async fn admin_version_reports_build_identity() {
     let app = build_router(app_state(&[]));
     let res = app
-        .oneshot(Request::get("/api/v1/admin/version").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/v1/admin/version")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
@@ -130,9 +130,7 @@ async fn api_accepts_valid_token() {
             Request::post("/api/v1/bucket/docs/doc")
                 .header("authorization", "Bearer secret")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"id":"1","text":"zero trust dns failover"}"#,
-                ))
+                .body(Body::from(r#"{"id":"1","text":"zero trust dns failover"}"#))
                 .unwrap(),
         )
         .await
@@ -161,9 +159,7 @@ async fn upsert_get_search_delete_roundtrip() {
             .oneshot(
                 Request::post("/api/v1/bucket/docs/doc")
                     .header("content-type", "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"id":"{i}","text":"{text}"}}"#
-                    )))
+                    .body(Body::from(format!(r#"{{"id":"{i}","text":"{text}"}}"#)))
                     .unwrap(),
             )
             .await
@@ -191,9 +187,7 @@ async fn upsert_get_search_delete_roundtrip() {
         .oneshot(
             Request::post("/api/v1/ai/search")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"query":"zero trust networking","top_k":3}"#,
-                ))
+                .body(Body::from(r#"{"query":"zero trust networking","top_k":3}"#))
                 .unwrap(),
         )
         .await
@@ -238,7 +232,9 @@ async fn rag_non_stream_returns_json() {
         .oneshot(
             Request::post("/api/v1/bucket/docs/doc")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"id":"1","text":"dns failover uses health checks"}"#))
+                .body(Body::from(
+                    r#"{"id":"1","text":"dns failover uses health checks"}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -332,7 +328,10 @@ async fn ai_search_hybrid_mode_returns_hits() {
     let body = body_string(res.into_body()).await;
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let hits = v["hits"].as_array().expect("hits array");
-    assert!(!hits.is_empty(), "hybrid search should find the exact token");
+    assert!(
+        !hits.is_empty(),
+        "hybrid search should find the exact token"
+    );
     assert_eq!(hits[0]["id"], "1");
 }
 
@@ -434,9 +433,7 @@ async fn rag_answer_expander_merges_variant_retrievals() {
         .oneshot(
             Request::post("/api/v1/rag/answer")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"query":"vpn","top_k":3,"expand":true}"#,
-                ))
+                .body(Body::from(r#"{"query":"vpn","top_k":3,"expand":true}"#))
                 .unwrap(),
         )
         .await
@@ -445,7 +442,10 @@ async fn rag_answer_expander_merges_variant_retrievals() {
     let body = body_string(res.into_body()).await;
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     let sources = v["sources"].as_array().expect("sources array");
-    assert!(!sources.is_empty(), "expanded retrieval should find the doc");
+    assert!(
+        !sources.is_empty(),
+        "expanded retrieval should find the doc"
+    );
 }
 
 #[test]
@@ -471,8 +471,9 @@ async fn hybrid_search_honors_per_bucket_weights() {
     // fusion stage.
     let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
     let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
-    let state = AppState::new(index, AppConfig::default())
-        .with_hybrid_weights(Arc::new(HybridWeights::new((0.5, 0.5)).with_bucket("docs", (0.0, 1.0))));
+    let state = AppState::new(index, AppConfig::default()).with_hybrid_weights(Arc::new(
+        HybridWeights::new((0.5, 0.5)).with_bucket("docs", (0.0, 1.0)),
+    ));
     let app = build_router(state);
 
     for (id, text) in [
@@ -546,9 +547,7 @@ async fn rag_stream_emits_sse_events() {
         .oneshot(
             Request::post("/api/v1/ai/rag")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"query":"alpha","top_k":1,"stream":true}"#,
-                ))
+                .body(Body::from(r#"{"query":"alpha","top_k":1,"stream":true}"#))
                 .unwrap(),
         )
         .await
@@ -624,8 +623,7 @@ async fn metrics_durability_gauges_nonzero_when_persistent() {
     let dir = tempfile::tempdir().unwrap();
     let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
     let index = Arc::new(
-        TextIndex::open_persistent(emb, Metric::Cosine, HnswConfig::default(), dir.path())
-            .unwrap(),
+        TextIndex::open_persistent(emb, Metric::Cosine, HnswConfig::default(), dir.path()).unwrap(),
     );
     // Pretend the scheduler is live so the flag path is exercised too.
     // The durability gauges now come from a background-sampled cache
@@ -681,7 +679,9 @@ async fn metrics_durability_gauges_render_from_cache() {
 
     let cache = Arc::new(nebula_server::state::DurabilityMetricsCache::default());
     cache.wal_bytes.store(4096, Ordering::Relaxed);
-    cache.wal_bytes_since_snapshot.store(1024, Ordering::Relaxed);
+    cache
+        .wal_bytes_since_snapshot
+        .store(1024, Ordering::Relaxed);
     // A snapshot taken ~100s ago (in unix millis).
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -705,7 +705,10 @@ async fn metrics_durability_gauges_render_from_cache() {
     assert!(body.contains("# TYPE nebula_wal_bytes gauge"));
     assert_eq!(scrape_gauge(&body, "nebula_wal_bytes"), Some(4096));
     assert!(body.contains("# TYPE nebula_wal_bytes_since_snapshot gauge"));
-    assert_eq!(scrape_gauge(&body, "nebula_wal_bytes_since_snapshot"), Some(1024));
+    assert_eq!(
+        scrape_gauge(&body, "nebula_wal_bytes_since_snapshot"),
+        Some(1024)
+    );
     // Snapshot exists in the cache -> age line emitted, ~100s.
     assert!(body.contains("# TYPE nebula_snapshot_age_seconds gauge"));
     let age = scrape_gauge(&body, "nebula_snapshot_age_seconds").unwrap();
@@ -839,9 +842,7 @@ async fn rag_stream_forwards_llm_deltas() {
         .oneshot(
             Request::post("/api/v1/ai/rag")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"query":"widgets","top_k":1,"stream":true}"#,
-                ))
+                .body(Body::from(r#"{"query":"widgets","top_k":1,"stream":true}"#))
                 .unwrap(),
         )
         .await
@@ -854,7 +855,10 @@ async fn rag_stream_forwards_llm_deltas() {
     assert!(text.contains("event: context"), "no context event:\n{text}");
     // Multiple answer_delta events (mock LLM tokenizes on whitespace).
     let delta_count = text.matches("event: answer_delta").count();
-    assert!(delta_count >= 2, "expected multiple deltas, got {delta_count}");
+    assert!(
+        delta_count >= 2,
+        "expected multiple deltas, got {delta_count}"
+    );
     // Terminal done event.
     assert!(text.contains("event: done"));
 }
@@ -868,8 +872,7 @@ async fn metrics_exposes_cache_counters_when_wired() {
     // Build the same kind of state the binary does: wrap the mock
     // embedder in a cache, feed stats into AppState, verify /metrics
     // surfaces them.
-    let raw: Arc<dyn nebula_embed::Embedder> =
-        Arc::new(nebula_embed::MockEmbedder::new(32));
+    let raw: Arc<dyn nebula_embed::Embedder> = Arc::new(nebula_embed::MockEmbedder::new(32));
     let cache = Arc::new(nebula_cache::CachingEmbedder::new(raw, 64));
     let stats = cache.stats();
     let index = Arc::new(
@@ -1189,7 +1192,9 @@ async fn bulk_upsert_rejects_empty_or_oversize() {
         .oneshot(
             Request::post("/api/v1/bucket/x/docs/bulk")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"items":[{"id":"a","text":"  ","metadata":{}}]}"#))
+                .body(Body::from(
+                    r#"{"items":[{"id":"a","text":"  ","metadata":{}}]}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -1207,7 +1212,11 @@ async fn admin_durability_reports_in_memory_status() {
     let app = build_router(app_state(&[]));
     let res = app
         .clone()
-        .oneshot(Request::get("/api/v1/admin/durability").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/v1/admin/durability")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
@@ -1253,7 +1262,11 @@ async fn admin_stats_returns_json_snapshot() {
         .await
         .unwrap();
     let res = app
-        .oneshot(Request::get("/api/v1/admin/stats").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/v1/admin/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
@@ -1328,7 +1341,11 @@ async fn admin_buckets_reports_per_bucket_stats() {
             .unwrap();
     }
     let res = app
-        .oneshot(Request::get("/api/v1/admin/buckets").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/v1/admin/buckets")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
@@ -1361,7 +1378,11 @@ async fn admin_buckets_is_ttl_cached() {
 
     let res = app
         .clone()
-        .oneshot(Request::get("/api/v1/admin/buckets").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/v1/admin/buckets")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert!(body_string(res.into_body()).await.contains("\"docs\":1"));
@@ -1370,7 +1391,11 @@ async fn admin_buckets_is_ttl_cached() {
     let _ = app.clone().oneshot(upsert("2")).await.unwrap();
     let res = app
         .clone()
-        .oneshot(Request::get("/api/v1/admin/buckets").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/v1/admin/buckets")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert!(
@@ -1381,7 +1406,9 @@ async fn admin_buckets_is_ttl_cached() {
     // Different top_keys → cache miss → fresh scan sees both docs.
     let res = app
         .oneshot(
-            Request::get("/api/v1/admin/buckets?top_keys=5").body(Body::empty()).unwrap(),
+            Request::get("/api/v1/admin/buckets?top_keys=5")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await
         .unwrap();
@@ -1406,7 +1433,10 @@ async fn sql_explain_returns_typed_plan() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_string(res.into_body()).await;
-    assert!(body.contains("\"node\":\"scan\""), "missing node tag: {body}");
+    assert!(
+        body.contains("\"node\":\"scan\""),
+        "missing node tag: {body}"
+    );
     assert!(body.contains("\"semantic\""));
     assert!(body.contains("\"limit\":5"));
 }
@@ -1465,11 +1495,9 @@ async fn admin_slow_records_slow_sql_queries() {
     // MockEmbedder query gets captured — the default 10ms threshold
     // is too strict for a tight unit test.
     use std::sync::Arc;
-    let emb: Arc<dyn nebula_embed::Embedder> =
-        Arc::new(nebula_embed::MockEmbedder::new(32));
-    let index = Arc::new(
-        nebula_index::TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let emb: Arc<dyn nebula_embed::Embedder> = Arc::new(nebula_embed::MockEmbedder::new(32));
+    let index =
+        Arc::new(nebula_index::TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
     let state = AppState::new(index, AppConfig::default())
         .with_slow_log(nebula_server::SlowQueryLog::new(10, 0));
     let app = build_router(state);
@@ -1498,7 +1526,11 @@ async fn admin_slow_records_slow_sql_queries() {
         .unwrap();
 
     let res = app
-        .oneshot(Request::get("/api/v1/admin/slow").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/api/v1/admin/slow")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
@@ -1715,9 +1747,7 @@ use nebula_server::state::FollowerCursor;
 
 fn app_state_with_role(role: NodeRole) -> AppState {
     let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
-    let index = Arc::new(
-        TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
     let cluster = Arc::new(ClusterConfig {
         node_id: Some("node-under-test".into()),
         role,
@@ -1869,9 +1899,7 @@ async fn admin_logs_stream_delivers_snapshot() {
     use std::sync::Arc;
 
     let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
-    let index = Arc::new(
-        TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
     let bus = Arc::new(LogBus::new(16, LogLevel::Trace));
     for i in 0..3 {
         bus.push_for_test(LogEvent {
@@ -1923,7 +1951,10 @@ async fn admin_logs_stream_delivers_snapshot() {
     // Snapshot events arrive in order, each prefixed with `event: log`.
     assert!(accum.contains("seed-0"), "missing seed-0 in: {accum}");
     assert!(accum.contains("seed-2"), "missing seed-2 in: {accum}");
-    assert!(accum.contains("snapshot_done"), "snapshot_done marker missing");
+    assert!(
+        accum.contains("snapshot_done"),
+        "snapshot_done marker missing"
+    );
 }
 
 // Multi-thread runtime required: TextIndex writes use
@@ -1934,9 +1965,7 @@ async fn admin_logs_stream_level_filter() {
     use std::sync::Arc;
 
     let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
-    let index = Arc::new(
-        TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap(),
-    );
+    let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
     let bus = Arc::new(LogBus::new(16, LogLevel::Trace));
     bus.push_for_test(LogEvent {
         ts_ms: 1,
@@ -2090,7 +2119,8 @@ async fn admin_backup_round_trip_via_local_target() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let resp: serde_json::Value = serde_json::from_str(&body_string(res.into_body()).await).unwrap();
+    let resp: serde_json::Value =
+        serde_json::from_str(&body_string(res.into_body()).await).unwrap();
     let job_id = resp["backup_id"].as_str().unwrap().to_string();
 
     // Poll for completion. The actual run is async; allow a few hundred ms.
@@ -2109,7 +2139,10 @@ async fn admin_backup_round_trip_via_local_target() {
         let body = body_string(res.into_body()).await;
         if body.contains("\"phase\":\"completed\"") {
             completed = true;
-            assert!(body.contains("\"manifest_url\""), "expected manifest_url in body: {body}");
+            assert!(
+                body.contains("\"manifest_url\""),
+                "expected manifest_url in body: {body}"
+            );
             break;
         }
         if body.contains("\"phase\":\"failed\"") {
@@ -2159,9 +2192,7 @@ async fn bucket_export_import_roundtrip() {
             .oneshot(
                 Request::post("/api/v1/bucket/migratable/doc")
                     .header("content-type", "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"id":"{i}","text":"{text}"}}"#
-                    )))
+                    .body(Body::from(format!(r#"{{"id":"{i}","text":"{text}"}}"#)))
                     .unwrap(),
             )
             .await
@@ -2297,7 +2328,10 @@ async fn rest_wrong_home_region_rejects_cross_region_writes() {
         "cross-region write must 421"
     );
     let body = body_string(res.into_body()).await;
-    assert!(body.contains("\"code\":\"wrong_home_region\""), "got {body}");
+    assert!(
+        body.contains("\"code\":\"wrong_home_region\""),
+        "got {body}"
+    );
     assert!(body.contains("\"home_region\":\"us-east-1\""));
 
     // Reads must still work.
@@ -2375,7 +2409,8 @@ async fn admin_replication_includes_cross_region_remotes() {
             ..ClusterConfig::default()
         });
         s = s.with_cluster(cluster);
-        s.cross_region_status.register("us-west-2", "http://u:50051");
+        s.cross_region_status
+            .register("us-west-2", "http://u:50051");
         s.cross_region_status.record_apply("us-west-2", 2, 512);
         s
     };
@@ -2679,4 +2714,225 @@ async fn caught_up_flips_to_200_after_promote() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+}
+
+// -------------------------------------------------------------------------
+// Reliability / operating-mode tests (design 0010)
+// -------------------------------------------------------------------------
+//
+// The resource manager is driven with synthetic samples here — no OS
+// probing — so these tests exercise exactly the policy the write gate
+// and the endpoints depend on: mode derivation, the disk-critical
+// gate's scope, and recovery.
+
+use nebula_resource::{ResourceManager, ResourceSample, Thresholds};
+
+/// Drive a shared manager into DiskCritical with two consecutive
+/// (debounced) critically-low disk samples.
+fn app_state_disk_critical() -> AppState {
+    let state = app_state(&[]);
+    let critical = ResourceSample {
+        disk_free: Some(10 * 1024 * 1024),          // 10 MiB free
+        disk_total: Some(100 * 1024 * 1024 * 1024), // of 100 GiB
+        ..Default::default()
+    };
+    state.resource.observe(critical);
+    state.resource.observe(critical);
+    assert!(
+        state.resource.writes_gated(),
+        "test setup: gate must be engaged"
+    );
+    state
+}
+
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disk_critical_rejects_data_writes_with_503() {
+    let app = build_router(app_state_disk_critical());
+    let res = app
+        .oneshot(
+            Request::post("/api/v1/bucket/b/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"x","text":"y","metadata":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        res.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok()),
+        Some("30"),
+        "clients need Retry-After to back off politely"
+    );
+    let body = body_string(res.into_body()).await;
+    assert!(
+        body.contains("write_unavailable"),
+        "stable error code; got {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disk_critical_keeps_reads_and_admin_recovery_paths_open() {
+    let state = app_state_disk_critical();
+    // Seed a doc BEFORE engaging would be nicer, but the gate is
+    // middleware-only: writing through the index directly still works.
+    state
+        .index
+        .upsert_text("b", "d1", "hello reliability", serde_json::json!({}))
+        .await
+        .unwrap();
+    let app = build_router(state);
+
+    // Reads are never gated.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/bucket/b/doc/d1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // SQL (POST-as-read) is not a /bucket/ mutation — the gate must
+    // not intercept it. (It may still 400 on engine grounds — plain
+    // scans need a semantic clause — the assertion is only about the
+    // gate.)
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/query")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"sql":"SELECT id FROM b LIMIT 1"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Admin recovery actions stay reachable — snapshot+compact is how
+    // an operator frees the disk that tripped the gate.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/admin/wal/compact")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        res.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "admin compact must not be gated"
+    );
+
+    // The mode is visible on the public health probe.
+    let res = app
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"mode\":\"disk_critical\""), "got {body}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_releases_after_recovery_and_reports_transitions() {
+    let state = app_state_disk_critical();
+    let healthy = ResourceSample {
+        disk_free: Some(50 * 1024 * 1024 * 1024),
+        disk_total: Some(100 * 1024 * 1024 * 1024),
+        ..Default::default()
+    };
+    state.resource.observe(healthy);
+    state.resource.observe(healthy);
+    assert!(!state.resource.writes_gated());
+    let app = build_router(state);
+
+    // Writes flow again.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/b/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"x","text":"y","metadata":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // The reliability endpoint tells the story: enter + exit = 2
+    // transitions, most recent back to normal.
+    let res = app
+        .oneshot(
+            Request::get("/api/v1/admin/reliability")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["mode"], "normal");
+    assert_eq!(v["transitions_total"], 2);
+    let last = v["recent_transitions"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last["from"], "disk_critical");
+    assert_eq!(last["to"], "normal");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metrics_expose_operating_mode_and_rejected_writes() {
+    let app = build_router(app_state_disk_critical());
+    // Trip the gate once so the rejection counter is nonzero.
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/bucket/b/doc")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"id":"x","text":"y","metadata":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let res = app
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(
+        body.contains("nebula_operating_mode 4"),
+        "mode gauge; got:\n{body}"
+    );
+    assert!(body.contains("nebula_resource_pressure{resource=\"disk\"} 2"));
+    assert!(body.contains("nebula_writes_rejected_total 1"));
+    assert!(body.contains("nebula_mode_transitions_total 1"));
+    assert!(body.contains("nebula_disk_free_bytes"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_bad_sample_does_not_gate_writes() {
+    // Debounce: a single anomalous statvfs reading must not flip the
+    // node into refusing writes.
+    let mgr = ResourceManager::new(Thresholds::default());
+    let critical = ResourceSample {
+        disk_free: Some(1024),
+        disk_total: Some(100 * 1024 * 1024 * 1024),
+        ..Default::default()
+    };
+    mgr.observe(critical);
+    assert!(
+        !mgr.writes_gated(),
+        "one sample must not commit a transition"
+    );
 }

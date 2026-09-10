@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 nebula-core = { path = "../nebula-core" }
+nebula-resource = { path = "../nebula-resource" }
 nebula-vector = { path = "../nebula-vector" }
 nebula-embed = { path = "../nebula-embed" }
 nebula-chunk = { path = "../nebula-chunk" }
@@ -51,6 +52,7 @@ dashmap.workspace = true
 jsonwebtoken.workspace = true
 
 [dev-dependencies]
+nebula-resource = { path = "../nebula-resource" }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true

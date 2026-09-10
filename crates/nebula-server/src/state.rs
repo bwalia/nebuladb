@@ -332,6 +332,13 @@ pub struct AppState {
     /// to an even 0.5/0.5 split for every bucket; override globally or
     /// per-bucket via [`Self::with_hybrid_weights`].
     pub hybrid_weights: Arc<HybridWeights>,
+    /// Resource manager + operating-mode state machine (design 0010).
+    /// A background sampler in `main.rs` feeds it every ~5s; the
+    /// disk-critical write gate and the reliability endpoints read it
+    /// lock-free. Always present — with no sampler running it stays
+    /// in `Normal` forever, which is the correct in-memory/test
+    /// behavior.
+    pub resource: Arc<nebula_resource::ResourceManager>,
     /// TTL cache + single-flight gate for `/admin/buckets`.
     /// `bucket_stats` is a full corpus scan under the index read
     /// lock; the showcase Admin tab polls every ~3s, and at
@@ -392,6 +399,9 @@ impl AppState {
             reranker: Arc::new(NoopReranker),
             query_expander: Arc::new(NoopQueryExpander),
             hybrid_weights: Arc::new(HybridWeights::default()),
+            resource: Arc::new(nebula_resource::ResourceManager::new(
+                nebula_resource::Thresholds::default(),
+            )),
             bucket_stats_cache: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
@@ -501,6 +511,13 @@ impl AppState {
 
     pub fn with_rate_limiter(mut self, limiter: RateLimiter) -> Self {
         self.rate_limiter = Some(limiter);
+        self
+    }
+
+    /// Share the resource manager the background sampler feeds, so
+    /// the write gate and `/admin/reliability` observe live pressure.
+    pub fn with_resource_manager(mut self, manager: Arc<nebula_resource::ResourceManager>) -> Self {
+        self.resource = manager;
         self
     }
 }

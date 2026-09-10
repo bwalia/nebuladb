@@ -168,6 +168,58 @@ pub async fn guard_writes_on_follower(
         .into_response()
 }
 
+/// Disk-critical write gate (design 0010 §3).
+///
+/// When the resource manager reports `DiskCritical` — free space on
+/// the data volume below the critical watermark or under the absolute
+/// floor (2× a WAL segment) — data-plane mutations are refused with
+/// 503 + `Retry-After`. Refusing a write is a client retry; letting
+/// `Wal::append` hit ENOSPC mid-frame is a torn segment and an
+/// incident. Reads are never gated.
+///
+/// Scope is deliberately the data plane only (`/bucket/...` paths):
+/// admin control-plane actions stay reachable precisely because they
+/// are how an operator recovers — `/admin/snapshot` +
+/// `/admin/wal/compact` free disk, `/admin/promote` moves the write
+/// role elsewhere. The gate reads one relaxed atomic per request; in
+/// `Normal` mode the cost is a load and a branch.
+pub async fn guard_writes_under_disk_pressure(
+    axum::extract::State(state): axum::extract::State<crate::state::AppState>,
+    req: Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    if !state.resource.writes_gated() {
+        return next.run(req).await;
+    }
+    let is_write = !matches!(
+        req.method(),
+        &axum::http::Method::GET | &axum::http::Method::HEAD | &axum::http::Method::OPTIONS
+    );
+    if !is_write {
+        return next.run(req).await;
+    }
+    // Same nest-stripping convention as the follower guard: the
+    // middleware sits on the nested /api/v1 router, but tests hit it
+    // with full-path URIs.
+    let path = req.uri().path();
+    let nest_stripped = path.strip_prefix("/api/v1").unwrap_or(path);
+    let is_data_mutation =
+        nest_stripped.starts_with("/bucket/") && !nest_stripped.starts_with("/bucket//");
+    if !is_data_mutation {
+        return next.run(req).await;
+    }
+    state.metrics.inc_write_rejected();
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::RETRY_AFTER, "30"),
+        ],
+        r#"{"error":{"code":"write_unavailable","message":"disk critically low on data volume; mutations refused until space is reclaimed (mode: disk_critical)"}}"#,
+    )
+        .into_response()
+}
+
 /// Reject writes targeted at a bucket whose `home_region` is NOT this
 /// node's region. The nebula-client SDK reads the home-region map and
 /// routes writes to the right region; this middleware is the safety
@@ -319,9 +371,18 @@ mod bucket_path_tests {
     fn extracts_from_bucket_path() {
         // Full path (no nest) and nested path (after /api/v1 strip)
         // both work.
-        assert_eq!(extract_bucket_from_path("/api/v1/bucket/catalog/doc"), Some("catalog"));
-        assert_eq!(extract_bucket_from_path("/bucket/catalog/doc"), Some("catalog"));
-        assert_eq!(extract_bucket_from_path("/bucket/catalog/docs/bulk"), Some("catalog"));
+        assert_eq!(
+            extract_bucket_from_path("/api/v1/bucket/catalog/doc"),
+            Some("catalog")
+        );
+        assert_eq!(
+            extract_bucket_from_path("/bucket/catalog/doc"),
+            Some("catalog")
+        );
+        assert_eq!(
+            extract_bucket_from_path("/bucket/catalog/docs/bulk"),
+            Some("catalog")
+        );
         assert_eq!(
             extract_bucket_from_path("/api/v1/admin/bucket/catalog/export"),
             Some("catalog")
