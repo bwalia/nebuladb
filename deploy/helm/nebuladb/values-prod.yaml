@@ -28,10 +28,18 @@ server:
   #
   # This is headroom, not a fix: without tombstone reclamation the arena
   # still grows without bound and 24Gi only buys time.
+  #
+  # Sep 10: 24Gi -> 32Gi. Under the lead feeder's write load every image
+  # grew from ~8Gi to 16-22Gi within 25 minutes of serving — glibc malloc
+  # arena bloat (~15Gi in per-thread arena heaps, see the global
+  # allocator note in nebula-server/src/main.rs) — and a snapshot adds
+  # ~5Gi at peak, which put the 24Gi pod within 1Gi of an OOMKill. The
+  # server now uses jemalloc; 32Gi keeps headroom until its footprint is
+  # measured in prod, after which this can come back down.
   resources:
     limits:
       cpu: "4"
-      memory: "24Gi"
+      memory: "32Gi"
     requests:
       cpu: "500m"
       memory: "8Gi"

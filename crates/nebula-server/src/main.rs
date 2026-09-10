@@ -10,6 +10,20 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+// glibc malloc gives each thread its own arena (up to 8 x CPUs — 96 on
+// prod's node) and never hands memory freed in one arena to another or
+// back to the OS. Under the steady write load of the lead feeder, every
+// prod image grew from ~8 GiB after recovery to 16-22 GiB within 10-25
+// minutes of serving, plateauing only once the arenas saturated:
+// /proc/1/smaps showed ~15 GiB in 64 MiB-aligned arena heaps against
+// ~9 GiB of actual index. That bloat is what OOMKilled the 8 GiB pod
+// (Sep 8) and nearly the 24 GiB one mid-snapshot (Sep 10). jemalloc's
+// size-class arenas fragment far less and purge unused dirty pages
+// back to the OS on a timer.
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use ahash::AHashSet;
 use nebula_cache::{CacheStats, CachingEmbedder};
 use nebula_chunk::{Chunker, FixedSizeChunker};
