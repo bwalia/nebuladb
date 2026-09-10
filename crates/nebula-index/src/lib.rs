@@ -215,8 +215,14 @@ impl Inner {
     /// index. Returns the removed `Document`, mirroring
     /// `HashMap::remove`, so callers keep their existing control flow.
     fn remove_doc(&mut self, id: Id) -> Option<Document> {
-        self.bm25.remove(id.0);
-        self.docs.remove(&id)
+        let doc = self.docs.remove(&id);
+        match &doc {
+            // `insert_doc` indexed exactly `doc.text`, so the targeted
+            // removal finds every posting it created.
+            Some(d) => self.bm25.remove_text(id.0, &d.text),
+            None => self.bm25.remove(id.0),
+        }
+        doc
     }
 }
 
