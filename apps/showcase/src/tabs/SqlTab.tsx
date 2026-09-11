@@ -1,7 +1,14 @@
 import { useState } from "react";
-import { api, ApiError, type SqlRow } from "../api";
+import { api, ApiError, type Explain, type SqlRow } from "../api";
 import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
+import { ExplainPanel } from "../explain";
 import { downloadBlob, recordHistory, rowsToCsv } from "../utils";
+
+const EXPLAIN_KEY = "nebula:sql-explain";
+/** `EXPLAIN [ANALYZE] SELECT ...` typed by the user — the server answers
+ *  with QUERY PLAN rows, so the Explain toggle is redundant for it. */
+const EXPLAIN_SQL = /^\s*explain\b/i;
+const PLAN_COLUMN = "QUERY PLAN";
 
 const EXAMPLES: Array<{ label: string; sql: string }> = [
   {
@@ -36,7 +43,23 @@ const EXAMPLES: Array<{ label: string; sql: string }> = [
     label: "leads — discover values for a field",
     sql: "SELECT city FROM leads\n WHERE semantic_match(text, 'london')\n LIMIT 20",
   },
+  {
+    label: "EXPLAIN ANALYZE — why so few London rows?",
+    sql: "EXPLAIN ANALYZE SELECT id, company_name, city FROM leads\n WHERE semantic_match(text, 'flowers') AND city = 'London'\n LIMIT 5",
+  },
+  {
+    label: "EXPLAIN — plan only, nothing runs",
+    sql: "EXPLAIN SELECT id, company_name FROM leads\n WHERE semantic_match(text, 'training')\n   AND city IN ('London', 'Leeds')\n ORDER BY score\n LIMIT 10",
+  },
 ];
+
+function loadExplainPref(): boolean {
+  try {
+    return localStorage.getItem(EXPLAIN_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
 
 export function SqlTab() {
   const [sql, setSql] = useState(EXAMPLES[0].sql);
@@ -45,14 +68,26 @@ export function SqlTab() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<SqlRow | null>(null);
+  const [explainOn, setExplainOn] = useState(loadExplainPref);
+  const [explain, setExplain] = useState<Explain | null>(null);
+
+  const toggleExplain = (on: boolean) => {
+    setExplainOn(on);
+    try {
+      localStorage.setItem(EXPLAIN_KEY, on ? "on" : "off");
+    } catch {
+      /* storage blocked — the toggle still works for this session */
+    }
+  };
 
   const run = async () => {
     setErr(null);
     setBusy(true);
     try {
-      const r = await api.sql(sql);
+      const r = await api.sql(sql, explainOn && !EXPLAIN_SQL.test(sql));
       setRows(r.rows);
       setTook(r.took_ms);
+      setExplain(r.explain ?? null);
       setSelected(null);
       // Persist the success so the Admin tab can show a queryable
       // history across page reloads.
@@ -61,6 +96,7 @@ export function SqlTab() {
       const msg = e instanceof ApiError ? `${e.code}: ${e.body}` : (e as Error).message;
       setErr(msg);
       setRows(null);
+      setExplain(null);
       recordHistory({ ts: Date.now(), sql, ok: false, error: msg });
     } finally {
       setBusy(false);
@@ -83,6 +119,7 @@ export function SqlTab() {
   };
 
   const columns = computeColumns(rows);
+  const planRows = isPlanRows(rows);
 
   return (
     <div className="space-y-4">
@@ -124,13 +161,34 @@ export function SqlTab() {
           <button className="btn" onClick={run} disabled={busy}>
             {busy ? <Spinner label="running…" /> : "Run"}
           </button>
+          <label
+            className="inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-muted cursor-pointer select-none"
+            title="Run with EXPLAIN ANALYZE: show every stage, row counts, timings and why each row matched"
+          >
+            <input
+              type="checkbox"
+              checked={explainOn}
+              onChange={(e) => toggleExplain(e.target.checked)}
+            />
+            Explain
+          </label>
           {took !== null && <Stat label="took" value={`${took}ms`} />}
-          {rows !== null && <Stat label="rows" value={rows.length} />}
+          {rows !== null && !planRows && <Stat label="rows" value={rows.length} />}
         </div>
         <ErrorBanner err={err} />
       </Panel>
 
-      {rows && rows.length > 0 && (
+      {explain && <ExplainPanel explain={explain} />}
+
+      {rows && planRows && (
+        <Panel title={PLAN_COLUMN} subtitle="psql-style output of your EXPLAIN statement">
+          <pre className="text-xs font-mono rounded-md border border-gray-200 bg-gray-50 p-3 overflow-x-auto dark:border-edge dark:bg-carbon-950">
+            {rows.map((r) => String(r.fields[PLAN_COLUMN] ?? "")).join("\n")}
+          </pre>
+        </Panel>
+      )}
+
+      {rows && rows.length > 0 && !planRows && (
         <Panel
           title="Results"
           subtitle="Click a row to inspect raw JSON"
@@ -197,6 +255,18 @@ export function SqlTab() {
         </Panel>
       )}
     </div>
+  );
+}
+
+/** Rows from an `EXPLAIN [ANALYZE]` statement: one QUERY PLAN column. */
+function isPlanRows(rows: SqlRow[] | null): boolean {
+  return (
+    !!rows &&
+    rows.length > 0 &&
+    rows.every((r) => {
+      const keys = Object.keys(r.fields);
+      return keys.length === 1 && keys[0] === PLAN_COLUMN;
+    })
   );
 }
 

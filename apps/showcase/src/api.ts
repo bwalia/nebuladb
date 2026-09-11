@@ -30,6 +30,8 @@ export interface Hit {
 export interface SearchResponse {
   hits: Hit[];
   took_ms: number;
+  /** Present when the request set `explain: true`. */
+  explain?: Explain;
 }
 
 export interface SqlRow {
@@ -42,6 +44,83 @@ export interface SqlRow {
 export interface SqlResponse {
   took_ms: number;
   rows: SqlRow[];
+  /** Present for `explain: true` and for `EXPLAIN [ANALYZE] ...` SQL. */
+  explain?: Explain;
+}
+
+// ---- EXPLAIN ------------------------------------------------------------
+//
+// How a query arrived at its result — the server's analogue of Postgres
+// `EXPLAIN ANALYZE`, shared by SQL, search and RAG. Mirrors the server's
+// JSON 1:1 (contract: every field name here is what the server emits).
+
+/** One executed (or, for plan-only EXPLAIN, planned) pipeline stage. */
+export interface ExplainStage {
+  /** Stable id: "parse" | "plan" | "cache" | "embed" | "hnsw" | "bm25" |
+   *  "fuse" | "bucket_filter" | "filter" | "sort" | "limit" | "project" |
+   *  "aggregate" | "join" | "expand" | "merge" | "rerank" | "prompt" |
+   *  "llm". Unknown names render generically. */
+  name: string;
+  label: string;
+  detail: string;
+  rows_in: number | null;
+  rows_out: number | null;
+  /** Microseconds; 0 for plan-only EXPLAIN. */
+  took_us: number;
+  attrs: Record<string, unknown>;
+}
+
+export interface ExplainNote {
+  level: "info" | "warn";
+  message: string;
+}
+
+export interface TermContribution {
+  term: string;
+  tf: number;
+  df: number;
+  idf: number;
+  contribution: number;
+}
+
+export interface HitExplain {
+  id: string;
+  rank: number;
+  final_score: number;
+  score_kind: "distance" | "fused" | "bm25";
+  vector: null | {
+    distance: number;
+    similarity: number;
+    normalized: number | null;
+    /** Fusion weight applied to `normalized` (hybrid only). */
+    weight: number | null;
+    weighted: number | null;
+    rank: number | null;
+  };
+  bm25: null | {
+    score: number;
+    normalized: number | null;
+    /** Fusion weight applied to `normalized` (hybrid only). */
+    weight: number | null;
+    weighted: number | null;
+    rank: number | null;
+    terms: TermContribution[];
+  };
+  filters: null | Array<{ predicate: string; actual: unknown; passed: boolean }>;
+}
+
+export interface Explain {
+  kind: "sql" | "search" | "rag";
+  /** true = the query ran (ANALYZE); false = plan-only EXPLAIN. */
+  analyzed: boolean;
+  summary: string;
+  total_us: number;
+  stages: ExplainStage[];
+  notes: ExplainNote[];
+  hits: HitExplain[];
+  plan: unknown | null;
+  prompt: string | null;
+  text: string[];
 }
 
 export interface RagJsonResponse {
@@ -200,16 +279,29 @@ export const api = {
       { method: "DELETE" }
     ),
 
-  search: (query: string, top_k = 5, bucket?: string) =>
+  search: (
+    query: string,
+    top_k = 5,
+    bucket?: string,
+    opts: { hybrid?: boolean; explain?: boolean } = {}
+  ) =>
     request<SearchResponse>("/api/v1/ai/search", {
       method: "POST",
-      body: JSON.stringify({ query, top_k, bucket }),
+      // Only send the flags when set so the request body for the plain
+      // path is unchanged.
+      body: JSON.stringify({
+        query,
+        top_k,
+        bucket,
+        ...(opts.hybrid ? { hybrid: true } : {}),
+        ...(opts.explain ? { explain: true } : {}),
+      }),
     }),
 
-  sql: (sql: string) =>
+  sql: (sql: string, explain = false) =>
     request<SqlResponse>("/api/v1/query", {
       method: "POST",
-      body: JSON.stringify({ sql }),
+      body: JSON.stringify(explain ? { sql, explain: true } : { sql }),
     }),
 
   ragJson: (query: string, top_k = 5, bucket?: string) =>

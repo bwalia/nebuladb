@@ -1,7 +1,8 @@
 import { useCallback, useRef, useState } from "react";
-import { type Hit } from "../api";
+import { type Explain, type Hit } from "../api";
 import { sseStream } from "../sse";
 import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
+import { ExplainPanel } from "../explain";
 
 interface Turn {
   query: string;
@@ -12,6 +13,12 @@ interface Turn {
   startedAt: number;
   firstTokenAt?: number;
   endedAt?: number;
+  /** Set when the turn was asked with Explain and the server sent the
+   *  `explain` frame (after the last answer token, before `done`). */
+  explain?: Explain;
+  /** Whether Explain was requested — lets the view say "not received"
+   *  instead of silently showing nothing. */
+  explainRequested?: boolean;
 }
 
 /**
@@ -32,6 +39,7 @@ export function RagTab() {
   const [topK, setTopK] = useState(3);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [explainOn, setExplainOn] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const cancel = useCallback(() => {
@@ -52,9 +60,10 @@ export function RagTab() {
     // where two token chunks arrive out of order in React's batching.
     const startedAt = performance.now();
     const turnIdx = turns.length;
+    const wantExplain = explainOn;
     setTurns((prev) => [
       ...prev,
-      { query, context: [], answer: "", done: false, startedAt },
+      { query, context: [], answer: "", done: false, startedAt, explainRequested: wantExplain },
     ]);
     const updater = (mut: (t: Turn) => Turn) =>
       setTurns((prev) => prev.map((t, i) => (i === turnIdx ? mut(t) : t)));
@@ -67,7 +76,13 @@ export function RagTab() {
         "/api/v1/ai/rag",
         // `bucket || undefined` so a blank field omits the key and
         // the server falls back to unscoped retrieval.
-        { query, top_k: topK, stream: true, bucket: bucket || undefined },
+        {
+          query,
+          top_k: topK,
+          stream: true,
+          bucket: bucket || undefined,
+          ...(wantExplain ? { explain: true } : {}),
+        },
         ctrl.signal
       )) {
         switch (frame.event) {
@@ -85,6 +100,14 @@ export function RagTab() {
               answer: t.answer + frame.data,
               firstTokenAt: t.firstTokenAt ?? performance.now(),
             }));
+            break;
+          case "explain":
+            try {
+              const explain = JSON.parse(frame.data) as Explain;
+              updater((t) => ({ ...t, explain }));
+            } catch {
+              /* ignore malformed frame — the answer is still valid */
+            }
             break;
           case "done":
             updater((t) => ({ ...t, done: true, endedAt: performance.now() }));
@@ -155,6 +178,13 @@ export function RagTab() {
               value={topK}
               onChange={(e) => setTopK(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
             />
+          </label>
+          <label
+            className="inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-muted cursor-pointer select-none pb-2"
+            title="Show how the answer was produced: retrieval stages, ranking, the exact prompt and LLM timings"
+          >
+            <input type="checkbox" checked={explainOn} onChange={(e) => setExplainOn(e.target.checked)} />
+            Explain
           </label>
           {busy ? (
             <button className="btn-secondary" onClick={cancel}>
@@ -253,6 +283,25 @@ function TurnView({ turn }: { turn: Turn }) {
           </div>
         )}
       </div>
+
+      {turn.explain ? (
+        <details className="text-xs" open>
+          <summary className="cursor-pointer text-gray-500">
+            explain — how this answer was produced
+          </summary>
+          <div className="pt-2">
+            <ExplainPanel explain={turn.explain} embedded />
+          </div>
+        </details>
+      ) : (
+        turn.explainRequested &&
+        turn.done &&
+        !turn.error && (
+          <div className="text-xs text-gray-500 dark:text-muted">
+            explain requested, but the server didn't send one (it may predate the explain feature).
+          </div>
+        )
+      )}
 
       <details className="text-xs">
         <summary className="cursor-pointer text-gray-500">debug</summary>
