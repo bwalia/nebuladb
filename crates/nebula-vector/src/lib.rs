@@ -12,4 +12,4 @@ pub mod distance;
 pub mod hnsw;
 
 pub use distance::{Metric, dot, euclidean_sq, cosine_distance};
-pub use hnsw::{FrozenHnsw, Hnsw, HnswConfig, HnswSnapshot, SearchResult};
+pub use hnsw::{FrozenHnsw, Hnsw, HnswConfig, HnswSearchStats, HnswSnapshot, SearchResult};

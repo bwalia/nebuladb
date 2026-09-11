@@ -22,6 +22,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
+use nebula_index::explain::{self as ix, Explain, ExplainKind, Stage};
 use nebula_llm::{build_rag_prompt, LlmChunk};
 
 use crate::error::ApiError;
@@ -905,6 +906,9 @@ struct AiSearchRequest {
     /// keeps vector-only behaviour until benchmarked (design 0008 §6).
     #[serde(default)]
     hybrid: bool,
+    /// Also return an EXPLAIN ANALYZE of how the result was produced.
+    #[serde(default)]
+    explain: bool,
 }
 
 fn default_top_k() -> usize {
@@ -915,6 +919,8 @@ fn default_top_k() -> usize {
 struct SearchResponse {
     hits: Vec<nebula_index::Hit>,
     took_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    explain: Option<Explain>,
 }
 
 async fn vector_search(
@@ -942,6 +948,7 @@ async fn vector_search(
     Ok(Json(SearchResponse {
         hits,
         took_ms: started.elapsed().as_millis() as u64,
+        explain: None,
     }))
 }
 
@@ -954,6 +961,33 @@ async fn ai_search(
     }
     let top_k = validate_top_k(req.top_k, s.config.max_top_k)?;
     let started = std::time::Instant::now();
+    if req.explain {
+        let weights = req.hybrid.then(|| s.hybrid_weights.resolve(req.bucket.as_deref()));
+        let (hits, trace) = std::sync::Arc::clone(&s.index)
+            .search_text_explained(req.query.clone(), req.bucket.clone(), top_k, req.ef, weights)
+            .await?;
+        s.metrics.inc_semantic_search();
+        let mut ex = Explain::new(ExplainKind::Search, true);
+        ex.absorb(trace);
+        let mode = match weights {
+            Some((v, b)) => format!("Hybrid search (vector × {v} + BM25 × {b})"),
+            None => "Vector search".to_string(),
+        };
+        let scope = req.bucket.as_deref().map_or(String::new(), |b| format!(" in bucket '{b}'"));
+        ex.finish(
+            format!(
+                "{mode} for '{}'{scope} returned {} of the {top_k} requested hits.",
+                req.query,
+                hits.len()
+            ),
+            started.elapsed(),
+        );
+        return Ok(Json(SearchResponse {
+            hits,
+            took_ms: started.elapsed().as_millis() as u64,
+            explain: Some(ex),
+        }));
+    }
     let hits = if req.hybrid {
         let weights = s.hybrid_weights.resolve(req.bucket.as_deref());
         std::sync::Arc::clone(&s.index)
@@ -968,6 +1002,7 @@ async fn ai_search(
     Ok(Json(SearchResponse {
         hits,
         took_ms: started.elapsed().as_millis() as u64,
+        explain: None,
     }))
 }
 
@@ -994,6 +1029,9 @@ struct RagRequest {
     /// returns a single JSON object.
     #[serde(default)]
     stream: bool,
+    /// Also return an EXPLAIN ANALYZE of how the result was produced.
+    #[serde(default)]
+    explain: bool,
 }
 
 #[derive(Deserialize)]
@@ -1017,6 +1055,8 @@ struct RagResponse {
     /// here; the vertical slice returns a deterministic summary so the
     /// contract and streaming plumbing are testable end-to-end.
     answer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    explain: Option<Explain>,
 }
 
 async fn ai_rag(
@@ -1037,11 +1077,26 @@ async fn ai_rag(
     // trigger observed via showcase RAG chat after PR #51 / #52
     // (which fixed search_vector but missed the search_text leak
     // for the RAG / SQL / gRPC paths).
-    let hits = std::sync::Arc::clone(&s.index)
-        .search_text_blocking(req.query.clone(), req.bucket.clone(), top_k, None)
-        .await?;
+    let started = std::time::Instant::now();
+    let (hits, ex) = if req.explain {
+        let (hits, trace) = std::sync::Arc::clone(&s.index)
+            .search_text_explained(req.query.clone(), req.bucket.clone(), top_k, None, None)
+            .await?;
+        let mut ex = Explain::new(ExplainKind::Rag, true);
+        ex.absorb(trace);
+        (hits, Some(ex))
+    } else {
+        let hits = std::sync::Arc::clone(&s.index)
+            .search_text_blocking(req.query.clone(), req.bucket.clone(), top_k, None)
+            .await?;
+        (hits, None)
+    };
+    let prompt_started = std::time::Instant::now();
     let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
     let prompt = build_rag_prompt(&req.query, &snippets);
+    let mut rex = ex.map(|ex| {
+        RagExplain::new(ex, &prompt, snippets.len(), prompt_started.elapsed(), s.llm.model(), &req.query, started)
+    });
 
     let wants_stream = req.stream || qs.stream.unwrap_or(false);
     if wants_stream {
@@ -1049,16 +1104,22 @@ async fn ai_rag(
         // error (bad key, dead Ollama) surfaces as an HTTP 5xx
         // *before* we commit to an `Sse` response. Once we hand axum
         // an `Sse` there's no way to send a status code.
+        if let Some(r) = rex.as_mut() {
+            r.llm_started = std::time::Instant::now();
+        }
         let llm_stream = s
             .llm
             .generate(prompt)
             .await
             .map_err(|e| ApiError::Internal(format!("llm: {e}")))?;
-        Ok(rag_sse_response(req.query, hits, llm_stream))
+        Ok(rag_sse_response(req.query, hits, llm_stream, rex))
     } else {
         // Non-streaming path: drain the LLM stream into a single
         // string and return JSON. Useful for curl / ORMs without SSE
         // support.
+        if let Some(r) = rex.as_mut() {
+            r.llm_started = std::time::Instant::now();
+        }
         let mut llm_stream = s
             .llm
             .generate(prompt)
@@ -1067,7 +1128,12 @@ async fn ai_rag(
         let mut answer = String::new();
         while let Some(item) = llm_stream.next().await {
             match item.map_err(|e| ApiError::Internal(format!("llm: {e}")))? {
-                LlmChunk::Delta(t) => answer.push_str(&t),
+                LlmChunk::Delta(t) => {
+                    if let Some(r) = rex.as_mut() {
+                        r.on_delta(&t);
+                    }
+                    answer.push_str(&t)
+                }
                 LlmChunk::Done => break,
             }
         }
@@ -1075,8 +1141,74 @@ async fn ai_rag(
             query: req.query,
             context: hits,
             answer,
+            explain: rex.map(RagExplain::finish),
         })
         .into_response())
+    }
+}
+
+/// EXPLAIN state carried through a RAG answer until the LLM finishes,
+/// so the `llm` stage reports real time-to-first-token and duration.
+struct RagExplain {
+    ex: Explain,
+    started: std::time::Instant,
+    llm_started: std::time::Instant,
+    first_token: Option<Duration>,
+    answer_chars: usize,
+    model: String,
+    retrieved: usize,
+    query: String,
+}
+
+impl RagExplain {
+    fn new(
+        mut ex: Explain,
+        prompt: &nebula_llm::Prompt,
+        snippets: usize,
+        prompt_took: Duration,
+        model: &str,
+        query: &str,
+        started: std::time::Instant,
+    ) -> Self {
+        let system = prompt.system.as_deref();
+        ex.stages.push(ix::prompt_stage(system, &prompt.user, snippets, prompt_took));
+        ex.prompt = Some(ix::prompt_text(system, &prompt.user));
+        Self {
+            ex,
+            started,
+            llm_started: std::time::Instant::now(),
+            first_token: None,
+            answer_chars: 0,
+            model: model.to_string(),
+            retrieved: snippets,
+            query: query.to_string(),
+        }
+    }
+
+    fn on_delta(&mut self, text: &str) {
+        let since_start = self.llm_started.elapsed();
+        self.first_token.get_or_insert(since_start);
+        self.answer_chars += text.len();
+    }
+
+    fn finish(mut self) -> Explain {
+        self.ex.stages.push(ix::llm_stage(
+            &self.model,
+            self.first_token,
+            self.llm_started.elapsed(),
+            self.answer_chars,
+        ));
+        let summary = format!(
+            "Retrieved {} chunk{} for '{}', numbered them into the prompt as context, and '{}' \
+             generated a {}-character answer from it.",
+            self.retrieved,
+            if self.retrieved == 1 { "" } else { "s" },
+            self.query,
+            self.model,
+            self.answer_chars
+        );
+        self.ex.finish(summary, self.started.elapsed());
+        self.ex
     }
 }
 
@@ -1084,6 +1216,8 @@ async fn ai_rag(
 /// - `event: context` — one per retrieved chunk, data is the JSON `Hit`.
 /// - `event: answer_delta` — one per LLM token-group.
 /// - `event: error` — if the LLM stream produces an error mid-flight.
+/// - `event: explain` — only when explain was requested: the JSON
+///   `Explain`, sent after the last `answer_delta` and before `done`.
 /// - `event: done` — terminal marker.
 ///
 /// We emit `context` first so clients can render citations before the
@@ -1093,33 +1227,59 @@ fn rag_sse_response(
     query: String,
     hits: Vec<nebula_index::Hit>,
     llm_stream: futures::stream::BoxStream<'static, nebula_llm::Result<LlmChunk>>,
+    explain: Option<RagExplain>,
 ) -> Response {
     let context_events = hits
         .into_iter()
         .map(|h| Ok::<_, Infallible>(Event::default().event("context").json_data(h).unwrap()));
 
-    let answer_events = llm_stream.map(|item| match item {
-        Ok(LlmChunk::Delta(t)) => {
-            Ok::<_, Infallible>(Event::default().event("answer_delta").data(t))
-        }
-        Ok(LlmChunk::Done) => Ok(Event::default()
-            .event("done")
-            .json_data(serde_json::json!({ "reason": "llm_done" }))
-            .unwrap()),
-        Err(e) => Ok(Event::default().event("error").data(e.to_string())),
+    // Explain state is shared between the answer stream and the trailer:
+    // whichever sees the end first (the LLM's `Done`, or the stream just
+    // ending) emits the `explain` frame, exactly once, before `done`.
+    let explain = std::sync::Arc::new(parking_lot::Mutex::new(explain));
+    let explain_frame = |slot: &parking_lot::Mutex<Option<RagExplain>>| {
+        slot.lock()
+            .take()
+            .map(|r| Ok::<_, Infallible>(Event::default().event("explain").json_data(r.finish()).unwrap()))
+    };
+
+    let slot = std::sync::Arc::clone(&explain);
+    let answer_events = llm_stream.flat_map(move |item| {
+        let events: Vec<Result<Event, Infallible>> = match item {
+            Ok(LlmChunk::Delta(t)) => {
+                if let Some(r) = slot.lock().as_mut() {
+                    r.on_delta(&t);
+                }
+                vec![Ok(Event::default().event("answer_delta").data(t))]
+            }
+            Ok(LlmChunk::Done) => explain_frame(&slot)
+                .into_iter()
+                .chain(std::iter::once(Ok(Event::default()
+                    .event("done")
+                    .json_data(serde_json::json!({ "reason": "llm_done" }))
+                    .unwrap())))
+                .collect(),
+            Err(e) => vec![Ok(Event::default().event("error").data(e.to_string()))],
+        };
+        stream::iter(events)
     });
 
-    let trailer = Ok::<_, Infallible>(
-        Event::default()
-            .event("done")
-            .json_data(serde_json::json!({ "query": query }))
-            .unwrap(),
-    );
+    let trailer = stream::once(async move {
+        let events: Vec<Result<Event, Infallible>> = explain_frame(&explain)
+            .into_iter()
+            .chain(std::iter::once(Ok(Event::default()
+                .event("done")
+                .json_data(serde_json::json!({ "query": query }))
+                .unwrap())))
+            .collect();
+        stream::iter(events)
+    })
+    .flatten();
 
     let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(
         stream::iter(context_events)
             .chain(answer_events)
-            .chain(stream::iter(std::iter::once(trailer))),
+            .chain(trailer),
     );
 
     Sse::new(stream)
@@ -1152,6 +1312,9 @@ struct RagAnswerRequest {
     /// No effect when the server uses the default NoopReranker.
     #[serde(default)]
     rerank: bool,
+    /// Also return an EXPLAIN ANALYZE of how the result was produced.
+    #[serde(default)]
+    explain: bool,
 }
 
 /// One retrieved chunk, attributed back to its source document. `doc`
@@ -1172,6 +1335,8 @@ struct RagAnswerResponse {
     answer: String,
     sources: Vec<AnswerSource>,
     took_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    explain: Option<Explain>,
 }
 
 fn attribute(hit: &nebula_index::Hit) -> AnswerSource {
@@ -1201,6 +1366,7 @@ fn attribute(hit: &nebula_index::Hit) -> AnswerSource {
 ///
 /// With both flags off and the default Noop stages, this collapses to a
 /// single retrieval call — identical to the pre-§7 behaviour.
+#[allow(clippy::too_many_arguments)]
 async fn retrieve_grounding(
     s: &AppState,
     query: &str,
@@ -1209,14 +1375,33 @@ async fn retrieve_grounding(
     hybrid: bool,
     expand: bool,
     rerank: bool,
+    mut ex: Option<&mut Explain>,
 ) -> Result<Vec<nebula_index::Hit>, ApiError> {
     // 1. Expansion. Default expander returns just the original query, so
     // the non-expand path is a single-element loop.
+    let started = std::time::Instant::now();
     let variants = if expand {
         s.query_expander.expand(query).await
     } else {
         vec![query.to_string()]
     };
+    if let (Some(ex), true) = (ex.as_deref_mut(), expand) {
+        ex.stages.push(
+            Stage::new(
+                "expand",
+                "Query expansion",
+                format!(
+                    "Expanded the question into {} variant{}: {}.",
+                    variants.len(),
+                    if variants.len() == 1 { "" } else { "s" },
+                    variants.iter().map(|v| format!("'{v}'")).collect::<Vec<_>>().join(", ")
+                ),
+            )
+            .rows(Some(1), Some(variants.len()))
+            .took(started.elapsed())
+            .attr("variants", variants.clone()),
+        );
+    }
 
     // Overfetch when we'll rerank/merge so the better stage has more to
     // work with; otherwise fetch exactly top_k.
@@ -1231,9 +1416,39 @@ async fn retrieve_grounding(
     // surfaced by two variants isn't double-counted.
     let mut by_id: std::collections::HashMap<String, nebula_index::Hit> =
         std::collections::HashMap::new();
+    let mut hit_explains: std::collections::HashMap<String, ix::HitExplain> =
+        std::collections::HashMap::new();
+    // Hybrid scores are higher-is-better; vector distances
+    // lower-is-better. Keep whichever the current pipeline considers
+    // stronger.
+    let better = |new: f32, old: f32| if hybrid { new > old } else { new < old };
     let weights = s.hybrid_weights.resolve(bucket.as_deref());
-    for v in &variants {
-        let hits = if hybrid {
+    let mut retrieved = 0;
+    for (i, v) in variants.iter().enumerate() {
+        let hits = if let Some(ex) = ex.as_deref_mut() {
+            let (hits, trace) = std::sync::Arc::clone(&s.index)
+                .search_text_explained(v.clone(), bucket.clone(), fetch_k, None, hybrid.then_some(weights))
+                .await?;
+            let prefix = if variants.len() > 1 { format!("variant {}: ", i + 1) } else { String::new() };
+            for mut st in trace.stages {
+                st.label = format!("{prefix}{}", st.label);
+                ex.stages.push(st);
+            }
+            for n in trace.notes {
+                if !ex.notes.iter().any(|m| m.message == n.message) {
+                    ex.notes.push(n);
+                }
+            }
+            for h in trace.hits {
+                match hit_explains.get(&h.id) {
+                    Some(old) if !better(h.final_score, old.final_score) => {}
+                    _ => {
+                        hit_explains.insert(h.id.clone(), h);
+                    }
+                }
+            }
+            hits
+        } else if hybrid {
             std::sync::Arc::clone(&s.index)
                 .search_text_hybrid_blocking(v.clone(), bucket.clone(), fetch_k, None, weights)
                 .await?
@@ -1242,19 +1457,12 @@ async fn retrieve_grounding(
                 .search_text_blocking(v.clone(), bucket.clone(), fetch_k, None)
                 .await?
         };
+        retrieved += hits.len();
         for h in hits {
             by_id
                 .entry(h.id.clone())
                 .and_modify(|existing| {
-                    // Hybrid scores are higher-is-better; vector
-                    // distances lower-is-better. Keep whichever the
-                    // current pipeline considers stronger.
-                    let better = if hybrid {
-                        h.score > existing.score
-                    } else {
-                        h.score < existing.score
-                    };
-                    if better {
+                    if better(h.score, existing.score) {
                         *existing = h.clone();
                     }
                 })
@@ -1262,6 +1470,21 @@ async fn retrieve_grounding(
         }
     }
     let mut merged: Vec<nebula_index::Hit> = by_id.into_values().collect();
+    if let (Some(ex), true) = (ex.as_deref_mut(), variants.len() > 1) {
+        ex.stages.push(
+            Stage::new(
+                "merge",
+                "Merge variants",
+                format!(
+                    "Merged {retrieved} results from {} variants into {} unique chunks, keeping \
+                     each chunk's best score.",
+                    variants.len(),
+                    merged.len()
+                ),
+            )
+            .rows(Some(retrieved), Some(merged.len())),
+        );
+    }
 
     // Stable pre-rerank ordering so the Noop reranker (order-preserving)
     // and the no-rerank path agree. Hybrid: descending; vector: ascending.
@@ -1280,7 +1503,9 @@ async fn retrieve_grounding(
 
     // 2. Rerank (opt-in). The default NoopReranker just truncates in the
     // order above, so the non-rerank path and default-config path match.
-    if rerank {
+    let out: Vec<nebula_index::Hit> = if rerank {
+        let started = std::time::Instant::now();
+        let before: Vec<String> = merged.iter().map(|h| h.id.clone()).collect();
         let candidates: Vec<nebula_rerank::Candidate> = merged
             .iter()
             .map(|h| nebula_rerank::Candidate {
@@ -1296,7 +1521,7 @@ async fn retrieve_grounding(
         // Re-project ids → Hits, applying the reranker's score.
         let mut index: std::collections::HashMap<String, nebula_index::Hit> =
             merged.into_iter().map(|h| (h.id.clone(), h)).collect();
-        let reordered = scored
+        let reordered: Vec<nebula_index::Hit> = scored
             .into_iter()
             .filter_map(|sc| {
                 index.remove(&sc.id).map(|mut h| {
@@ -1305,11 +1530,61 @@ async fn retrieve_grounding(
                 })
             })
             .collect();
-        Ok(reordered)
+        if let Some(ex) = ex.as_deref_mut() {
+            let moved = reordered
+                .iter()
+                .enumerate()
+                .filter(|(i, h)| before.get(*i) != Some(&h.id))
+                .count();
+            ex.stages.push(
+                Stage::new(
+                    "rerank",
+                    "Rerank",
+                    format!(
+                        "Re-scored {} candidates against the question with the configured \
+                         reranker and kept the top {}; {moved} of them changed position.",
+                        before.len(),
+                        reordered.len()
+                    ),
+                )
+                .rows(Some(before.len()), Some(reordered.len()))
+                .took(started.elapsed())
+                .attr("order_before", before.iter().take(20).cloned().collect::<Vec<_>>())
+                .attr(
+                    "order_after",
+                    reordered.iter().take(20).map(|h| h.id.clone()).collect::<Vec<_>>(),
+                ),
+            );
+            ex.notes.push(ix::Note::info(
+                "After reranking, result scores are the reranker's own (higher is better).",
+            ));
+        }
+        reordered
     } else {
+        let before = merged.len();
         merged.truncate(top_k);
-        Ok(merged)
+        if let (Some(ex), true) = (ex.as_deref_mut(), before > merged.len()) {
+            ex.stages.push(
+                Stage::new("limit", "Limit", format!("Kept the best {top_k} of {before} candidates."))
+                    .rows(Some(before), Some(merged.len())),
+            );
+        }
+        merged
+    };
+
+    if let Some(ex) = ex {
+        ex.hits = out
+            .iter()
+            .enumerate()
+            .filter_map(|(i, h)| {
+                let mut e = hit_explains.get(&h.id).cloned()?;
+                e.rank = i + 1;
+                e.final_score = h.score;
+                Some(e)
+            })
+            .collect();
     }
+    Ok(out)
 }
 
 /// Non-streaming, one-call RAG: retrieve → prompt → drain LLM → return
@@ -1328,6 +1603,7 @@ async fn rag_answer(
     s.metrics.inc_rag();
     let started = std::time::Instant::now();
 
+    let mut ex = req.explain.then(|| Explain::new(ExplainKind::Rag, true));
     let hits = retrieve_grounding(
         &s,
         &req.query,
@@ -1336,10 +1612,18 @@ async fn rag_answer(
         req.hybrid,
         req.expand,
         req.rerank,
+        ex.as_mut(),
     )
     .await?;
+    let prompt_started = std::time::Instant::now();
     let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
     let prompt = build_rag_prompt(&req.query, &snippets);
+    let mut rex = ex.map(|ex| {
+        RagExplain::new(ex, &prompt, snippets.len(), prompt_started.elapsed(), s.llm.model(), &req.query, started)
+    });
+    if let Some(r) = rex.as_mut() {
+        r.llm_started = std::time::Instant::now();
+    }
 
     // Surface a provider error (bad key, dead Ollama) as an HTTP 5xx
     // before we commit to a 200 body.
@@ -1351,7 +1635,12 @@ async fn rag_answer(
     let mut answer = String::new();
     while let Some(item) = llm_stream.next().await {
         match item.map_err(|e| ApiError::Internal(format!("llm: {e}")))? {
-            LlmChunk::Delta(t) => answer.push_str(&t),
+            LlmChunk::Delta(t) => {
+                if let Some(r) = rex.as_mut() {
+                    r.on_delta(&t);
+                }
+                answer.push_str(&t)
+            }
             LlmChunk::Done => break,
         }
     }
@@ -1362,6 +1651,7 @@ async fn rag_answer(
         answer,
         sources,
         took_ms: started.elapsed().as_millis() as u64,
+        explain: rex.map(RagExplain::finish),
     }))
 }
 
@@ -1370,12 +1660,19 @@ async fn rag_answer(
 #[derive(Deserialize)]
 struct SqlQueryRequest {
     sql: String,
+    /// Run the query and also return an EXPLAIN ANALYZE of it. (SQL
+    /// `EXPLAIN [ANALYZE] SELECT ...` works too, and returns the plan as
+    /// `QUERY PLAN` rows.)
+    #[serde(default)]
+    explain: bool,
 }
 
 #[derive(Serialize)]
 struct SqlQueryResponse {
     took_ms: u64,
     rows: Vec<nebula_sql::executor::Row>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    explain: Option<Explain>,
 }
 
 async fn sql_query(
@@ -1390,14 +1687,15 @@ async fn sql_query(
     // reach the point of computing `took_ms`. A query that burns
     // 5s and then errors is exactly what operators want to see.
     let started = std::time::Instant::now();
-    let result = s.sql.run(&req.sql).await;
+    let result = s.sql.execute(&req.sql, req.explain).await;
     let took_ms = started.elapsed().as_millis() as u64;
     match result {
-        Ok(out) => {
+        Ok((out, explain)) => {
             s.slow_log.record(&req.sql, took_ms, out.rows.len(), true);
             Ok(Json(SqlQueryResponse {
                 took_ms: out.took_ms,
                 rows: out.rows,
+                explain,
             }))
         }
         Err(e) => {

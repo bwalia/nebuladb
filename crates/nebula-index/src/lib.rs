@@ -11,6 +11,8 @@
 //! behaviour we still ship for tests and demos.
 
 pub mod durability;
+pub mod explain;
+mod search_run;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1545,40 +1547,7 @@ impl TextIndex {
         k: usize,
         ef: Option<usize>,
     ) -> Result<Vec<Hit>> {
-        // Over-fetch when filtering because ANN results are post-filtered.
-        // 4x is a rule-of-thumb; a real system would adapt based on the
-        // bucket's share of the corpus.
-        let fetch = if bucket.is_some() { k.saturating_mul(4).max(32) } else { k };
-
-        // Lock order discipline: `inner` before `hnsw`, everywhere.
-        // Writers take `inner.write()` then drive `hnsw` under it;
-        // readers take `inner.read()` then `hnsw.search` under it.
-        // Mixing the order would expose us to an AB-BA deadlock
-        // under `parking_lot::RwLock`'s write-priority contention.
-        let g = self.inner.read();
-        let raw = self.hnsw.search(vector, fetch, ef)?;
-        let mut hits = Vec::with_capacity(raw.len());
-        for r in raw {
-            let Some(doc) = g.docs.get(&r.id) else {
-                continue; // tombstoned
-            };
-            if let Some(b) = bucket {
-                if doc.bucket != b {
-                    continue;
-                }
-            }
-            hits.push(Hit {
-                bucket: doc.bucket.clone(),
-                id: doc.external_id.clone(),
-                text: doc.text.clone(),
-                score: r.distance,
-                metadata: doc.metadata.clone(),
-            });
-            if hits.len() >= k {
-                break;
-            }
-        }
-        Ok(hits)
+        Ok(self.run_vector(vector, bucket, k, ef)?.hits)
     }
 
     /// Search by text: embed the query, then delegate. The embed call is
@@ -1599,35 +1568,9 @@ impl TextIndex {
     /// no embedder call. Returns `Hit`s with `score` set to the raw
     /// BM25 weight (larger = more relevant), which is the *opposite*
     /// sense to the vector `score` (a distance). Callers that mix the
-    /// two must normalize; [`Self::search_hybrid`] does.
+    /// two must normalize; [`Self::search_vector_hybrid`] does.
     pub fn search_bm25(&self, query: &str, bucket: Option<&str>, k: usize) -> Vec<Hit> {
-        let g = self.inner.read();
-        // Over-fetch when bucket-filtering, same rationale as the
-        // vector path: BM25 ranks the whole corpus and we post-filter.
-        let fetch = if bucket.is_some() { k.saturating_mul(4).max(32) } else { k };
-        let raw = g.bm25.search(query, fetch);
-        let mut hits = Vec::with_capacity(raw.len().min(k));
-        for r in raw {
-            let Some(doc) = g.docs.get(&Id(r.id)) else {
-                continue; // tombstoned between search and assembly
-            };
-            if let Some(b) = bucket {
-                if doc.bucket != b {
-                    continue;
-                }
-            }
-            hits.push(Hit {
-                bucket: doc.bucket.clone(),
-                id: doc.external_id.clone(),
-                text: doc.text.clone(),
-                score: r.score,
-                metadata: doc.metadata.clone(),
-            });
-            if hits.len() >= k {
-                break;
-            }
-        }
-        hits
+        self.run_bm25(query, bucket, k).hits
     }
 
     /// Hybrid retrieval: fuse dense (vector) and lexical (BM25) signals
@@ -1660,54 +1603,9 @@ impl TextIndex {
         ef: Option<usize>,
         weights: (f32, f32),
     ) -> Result<Vec<Hit>> {
-        // Over-fetch each stage so the fusion set is the union of both
-        // top-k's, not just their intersection.
-        let stage_k = k.saturating_mul(4).max(16);
-        let vec_hits = self.search_vector(query_vector, bucket, stage_k, ef)?;
-        let bm_hits = self.search_bm25(query_text, bucket, stage_k);
-
-        // Map vector distance → similarity so "higher = better" holds
-        // for both stages before normalization.
-        let vec_scored: Vec<(String, f32, Hit)> = vec_hits
-            .into_iter()
-            .map(|h| {
-                let sim = 1.0 / (1.0 + h.score);
-                (h.id.clone(), sim, h)
-            })
-            .collect();
-        let bm_scored: Vec<(String, f32, Hit)> =
-            bm_hits.into_iter().map(|h| (h.id.clone(), h.score, h)).collect();
-
-        let vec_norm = min_max_normalize(vec_scored.iter().map(|(_, s, _)| *s));
-        let bm_norm = min_max_normalize(bm_scored.iter().map(|(_, s, _)| *s));
-        let (w_vec, w_bm) = weights;
-
-        // Accumulate fused score per external id, keeping one `Hit`
-        // representative (either stage carries the same doc fields).
-        let mut fused: AHashMap<String, (f32, Hit)> = AHashMap::new();
-        for ((id, _, hit), n) in vec_scored.into_iter().zip(vec_norm) {
-            fused.entry(id).or_insert((0.0, hit)).0 += w_vec * n;
-        }
-        for ((id, _, hit), n) in bm_scored.into_iter().zip(bm_norm) {
-            fused.entry(id).or_insert((0.0, hit)).0 += w_bm * n;
-        }
-
-        let mut out: Vec<Hit> = fused
-            .into_iter()
-            .map(|(_, (score, mut hit))| {
-                hit.score = score;
-                hit
-            })
-            .collect();
-        // Descending fused score; tie-break on id for determinism.
-        out.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.id.cmp(&b.id))
-        });
-        out.truncate(k);
-        Ok(out)
+        Ok(self
+            .run_hybrid(query_vector, query_text, bucket, k, ef, weights)?
+            .hits)
     }
 
     /// Text-in hybrid search: embed the query, then fuse with BM25 over
@@ -1797,6 +1695,75 @@ mod tests {
     fn make_index() -> TextIndex {
         let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(64));
         TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap()
+    }
+
+    async fn leads_index() -> Arc<TextIndex> {
+        let idx = Arc::new(make_index());
+        let rows = [
+            ("a", "leads", "County: Kent\nRegion: South East florist flowers"),
+            ("b", "leads", "County: London\nRegion: London florist"),
+            ("c", "leads", "County: Essex\nRegion: East builder"),
+            ("d", "other", "County: Kent florist wholesale"),
+            ("e", "leads", "County: Kent\nRegion: South East plumber"),
+        ];
+        for (id, bucket, text) in rows {
+            idx.upsert_text(bucket, id, text, serde_json::json!({})).await.unwrap();
+        }
+        idx
+    }
+
+    /// EXPLAIN must describe the search that actually runs: identical
+    /// hits and scores to the plain path, for vector and hybrid alike.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explained_search_returns_the_same_hits() {
+        let idx = leads_index().await;
+        let plain = idx.search_text("florist in Kent", Some("leads"), 3, None).await.unwrap();
+        let (hits, trace) = Arc::clone(&idx)
+            .search_text_explained("florist in Kent".into(), Some("leads".into()), 3, None, None)
+            .await
+            .unwrap();
+        let ids = |h: &[Hit]| h.iter().map(|x| (x.id.clone(), x.score)).collect::<Vec<_>>();
+        assert_eq!(ids(&hits), ids(&plain));
+        let names: Vec<_> = trace.stages.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["embed", "hnsw", "bucket_filter"]);
+        assert_eq!(trace.hits.len(), hits.len());
+        assert!(
+            trace.notes.iter().any(|n| n.message.contains("pseudo-random")),
+            "mock embedder must be called out"
+        );
+
+        let w = (0.5, 0.5);
+        let plain = idx.search_text_hybrid("florist in Kent", Some("leads"), 3, None, w).await.unwrap();
+        let (hits, trace) = Arc::clone(&idx)
+            .search_text_explained("florist in Kent".into(), Some("leads".into()), 3, None, Some(w))
+            .await
+            .unwrap();
+        assert_eq!(ids(&hits), ids(&plain));
+        let names: Vec<_> = trace.stages.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["embed", "hnsw", "bucket_filter", "bm25", "bucket_filter", "fuse"]);
+        assert!(trace.notes.iter().any(|n| n.message.contains("'in' is not in the index vocabulary")));
+    }
+
+    /// Every per-hit breakdown must add up to the score it explains.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn hybrid_hit_explanations_add_up() {
+        let idx = leads_index().await;
+        let (hits, trace) = Arc::clone(&idx)
+            .search_text_explained("florist Kent".into(), None, 4, None, Some((0.3, 0.7)))
+            .await
+            .unwrap();
+        for (h, e) in hits.iter().zip(&trace.hits) {
+            assert_eq!(h.id, e.id);
+            let v = e.vector.as_ref().and_then(|v| v.weighted).unwrap_or(0.0);
+            let b = e.bm25.as_ref().and_then(|b| b.weighted).unwrap_or(0.0);
+            assert!((v + b - h.score).abs() < 1e-5, "{}: {v} + {b} != {}", h.id, h.score);
+            if let Some(bm) = &e.bm25 {
+                if bm.rank.is_some() {
+                    let sum: f32 = bm.terms.iter().map(|t| t.contribution).sum();
+                    assert!((sum - bm.score).abs() < 1e-4, "{}: terms {sum} != bm25 {}", h.id, bm.score);
+                }
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

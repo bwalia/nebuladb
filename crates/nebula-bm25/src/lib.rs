@@ -69,6 +69,29 @@ pub struct Bm25Hit {
     pub score: f32,
 }
 
+/// One query term's share of a document's BM25 score — see
+/// [`Bm25Index::explain_doc`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TermContribution {
+    pub term: String,
+    /// Occurrences of `term` in the document.
+    pub tf: u32,
+    /// Live documents containing `term` (`n(t)`).
+    pub df: u32,
+    pub idf: f32,
+    /// This term's weight in the document's score; the score is the sum.
+    pub contribution: f32,
+}
+
+/// A query term's corpus statistics — see [`Bm25Index::query_terms`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueryTerm {
+    pub term: String,
+    /// Live documents containing the term; 0 = not in the vocabulary.
+    pub df: u32,
+    pub idf: f32,
+}
+
 /// A postings entry: a document and the raw term frequency within it.
 ///
 /// `generation` identifies the [`Bm25Index::add`] call that created the
@@ -270,30 +293,29 @@ impl Bm25Index {
     /// determinism. Returns fewer than `k` when the corpus is smaller
     /// or no document matches any query term.
     pub fn search(&self, query: &str, k: usize) -> Vec<Bm25Hit> {
+        self.search_counted(query, k).0
+    }
+
+    /// [`Self::search`] plus the number of documents that matched at
+    /// least one query term, before truncation to `k`.
+    pub fn search_counted(&self, query: &str, k: usize) -> (Vec<Bm25Hit>, usize) {
         if k == 0 || self.docs.is_empty() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
 
         let q_terms: AHashSet<String> = tokenize(query).into_iter().collect();
         if q_terms.is_empty() {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
 
-        let n = self.docs.len() as f32;
         let avgdl = self.avgdl();
-        let k1 = self.params.k1;
-        let b = self.params.b;
 
         let mut acc: AHashMap<u64, f32> = AHashMap::new();
         for term in &q_terms {
             let Some(pl) = self.postings.get(term) else {
                 continue;
             };
-            let df = pl.live as f32;
-            // Lucene-style IDF: the inner `1 +` floors it at 0 so a
-            // term present in every doc adds nothing instead of pulling
-            // scores negative.
-            let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+            let idf = self.idf(pl.live);
 
             for p in &pl.list {
                 let Some(doc) = self.docs.get(&p.id) else {
@@ -302,14 +324,11 @@ impl Bm25Index {
                 if doc.generation != p.generation {
                     continue;
                 }
-                let dl = doc.len as f32;
-                let tf = p.tf as f32;
-                let denom = tf + k1 * (1.0 - b + b * dl / avgdl);
-                let weight = idf * (tf * (k1 + 1.0)) / denom;
-                *acc.entry(p.id).or_insert(0.0) += weight;
+                *acc.entry(p.id).or_insert(0.0) += self.term_weight(idf, p.tf, doc.len, avgdl);
             }
         }
 
+        let matched = acc.len();
         let mut hits: Vec<Bm25Hit> = acc
             .into_iter()
             .map(|(id, score)| Bm25Hit { id, score })
@@ -322,7 +341,78 @@ impl Bm25Index {
                 .then(a.id.cmp(&b.id))
         });
         hits.truncate(k);
-        hits
+        (hits, matched)
+    }
+}
+
+impl Bm25Index {
+    /// Lucene-style IDF: the inner `1 +` floors it at 0 so a term
+    /// present in every doc adds nothing instead of pulling scores
+    /// negative.
+    fn idf(&self, df: u32) -> f32 {
+        let n = self.docs.len() as f32;
+        let df = df as f32;
+        (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+    }
+
+    /// One term's BM25 weight in one document. Shared by
+    /// [`Self::search`] and [`Self::explain_doc`] so an explanation can
+    /// never drift from the score it explains.
+    fn term_weight(&self, idf: f32, tf: u32, doc_len: u32, avgdl: f32) -> f32 {
+        let (k1, b) = (self.params.k1, self.params.b);
+        let tf = tf as f32;
+        let denom = tf + k1 * (1.0 - b + b * doc_len as f32 / avgdl);
+        idf * (tf * (k1 + 1.0)) / denom
+    }
+
+    /// The query's distinct terms, in query order, with their corpus
+    /// document frequency and IDF. A term with `df == 0` isn't in the
+    /// vocabulary and can't match anything.
+    pub fn query_terms(&self, query: &str) -> Vec<QueryTerm> {
+        let mut seen = AHashSet::new();
+        tokenize(query)
+            .into_iter()
+            .filter(|t| seen.insert(t.clone()))
+            .map(|term| {
+                let df = self.postings.get(&term).map_or(0, |pl| pl.live);
+                QueryTerm {
+                    idf: self.idf(df),
+                    term,
+                    df,
+                }
+            })
+            .collect()
+    }
+
+    /// Break document `id`'s score for `query` down by term. `text` must
+    /// be the text it was indexed with: term frequencies come from
+    /// re-tokenizing it, which is exact (the index was built from the
+    /// same tokenizer) and O(doc length) — reading them from posting
+    /// lists would mean scanning lists as long as the corpus. Only
+    /// terms the document contains are returned; they sum to the score
+    /// [`Self::search`] gives it. Empty if `id` isn't live.
+    pub fn explain_doc(&self, query: &str, id: u64, text: &str) -> Vec<TermContribution> {
+        let Some(doc) = self.docs.get(&id) else {
+            return Vec::new();
+        };
+        let mut tf: AHashMap<String, u32> = AHashMap::new();
+        for tok in tokenize(text) {
+            *tf.entry(tok).or_insert(0) += 1;
+        }
+        let avgdl = self.avgdl();
+        self.query_terms(query)
+            .into_iter()
+            .filter_map(|q| {
+                let &n = tf.get(&q.term)?;
+                Some(TermContribution {
+                    contribution: self.term_weight(q.idf, n, doc.len, avgdl),
+                    tf: n,
+                    df: q.df,
+                    idf: q.idf,
+                    term: q.term,
+                })
+            })
+            .collect()
     }
 }
 
@@ -503,6 +593,32 @@ mod tests {
         assert_eq!(pl.live, 1_000);
         assert!(pl.list.len() <= 1_501, "list grew to {}", pl.list.len());
         assert_eq!(idx.search("county", 5_000).len(), 1_000);
+    }
+
+    #[test]
+    fn explain_doc_sums_to_search_score() {
+        let docs = [
+            (1, "County: Kent\nRegion: South East florist"),
+            (2, "County: Kent\nRegion: London florist florist"),
+            (3, "County: Essex\nRegion: East builder"),
+        ];
+        let idx = build(&docs);
+        let q = "florist in Kent";
+        for hit in idx.search(q, 10) {
+            let text = docs.iter().find(|(id, _)| *id == hit.id).unwrap().1;
+            let parts = idx.explain_doc(q, hit.id, text);
+            let sum: f32 = parts.iter().map(|p| p.contribution).sum();
+            assert!((sum - hit.score).abs() < 1e-5, "doc {}: {sum} vs {}", hit.id, hit.score);
+            assert!(parts.iter().all(|p| p.term != "in"), "absent term listed");
+        }
+        let two = idx.explain_doc(q, 2, docs[1].1);
+        assert_eq!(two.iter().find(|p| p.term == "florist").unwrap().tf, 2);
+
+        let terms = idx.query_terms("Florist in florist Kent");
+        let names: Vec<_> = terms.iter().map(|t| t.term.as_str()).collect();
+        assert_eq!(names, vec!["florist", "in", "kent"], "dedup, query order");
+        assert_eq!(terms[1].df, 0, "'in' is not in the vocabulary");
+        assert_eq!(terms[2].df, 2);
     }
 
     #[test]

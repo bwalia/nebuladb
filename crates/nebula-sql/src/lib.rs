@@ -50,14 +50,18 @@
 pub mod cache;
 pub mod error;
 pub mod executor;
+mod explain;
 pub mod parser;
 pub mod plan;
 pub mod plan_tree;
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use nebula_index::explain::{Explain, ExplainKind, Note, Stage};
 use nebula_index::TextIndex;
 use nebula_llm::LlmClient;
+use sqlparser::ast;
 
 pub use cache::SemanticCache;
 pub use error::SqlError;
@@ -66,6 +70,21 @@ pub use plan::{Plan, SemanticClause};
 pub use plan_tree::{AggregateFn, AggregateSpec, AnswerPlan, JoinPlan, JoinPredicate, QueryPlan};
 
 pub type Result<T> = std::result::Result<T, SqlError>;
+
+/// The filtering stage that removed the largest share of its input,
+/// if any removed anything. Retrieval stages are skipped: HNSW's
+/// "input" is the whole corpus, which would always win.
+fn biggest_drop(stages: &[Stage]) -> Option<&Stage> {
+    stages
+        .iter()
+        .filter(|s| matches!(s.name.as_str(), "bucket_filter" | "filter" | "limit" | "join"))
+        .filter_map(|s| match (s.rows_in, s.rows_out) {
+            (Some(i), Some(o)) if i > o => Some((s, (i - o) as f64 / i as f64)),
+            _ => None,
+        })
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(s, _)| s)
+}
 
 /// High-level entry point. A thin facade that glues parser, planner,
 /// executor, and optional result cache.
@@ -104,7 +123,52 @@ impl SqlEngine {
     /// produce different embeddings for the same text, so cached
     /// results under one model are invalid under another.
     pub async fn run(&self, sql: &str) -> Result<QueryResult> {
+        Ok(self.execute(sql, false).await?.0)
+    }
+
+    /// [`Self::run`] with EXPLAIN support:
+    ///
+    /// - `EXPLAIN ANALYZE <select>` runs the query and returns its
+    ///   explanation as `QUERY PLAN` text rows (Postgres parity — works
+    ///   over pgwire too), plus the structured [`Explain`].
+    /// - `EXPLAIN <select>` plans without executing anything.
+    /// - `explain = true` runs `<select>` normally but also returns an
+    ///   [`Explain`] alongside its real rows.
+    ///
+    /// Explained runs bypass the result cache: a cached answer would
+    /// explain nothing about how the result is produced.
+    pub async fn execute(&self, sql: &str, explain: bool) -> Result<(QueryResult, Option<Explain>)> {
+        let started = Instant::now();
         let stmt = parser::parse(sql)?;
+        let parse_took = started.elapsed();
+
+        if let ast::Statement::Explain { describe_alias, analyze, statement, .. } = stmt {
+            if describe_alias != ast::DescribeAlias::Explain {
+                return Err(SqlError::Unsupported(format!("{describe_alias}")));
+            }
+            let ex = if analyze {
+                self.analyze(*statement, parse_took, started).await?.1
+            } else {
+                Self::plan_only(*statement)?
+            };
+            let rows = ex
+                .text
+                .iter()
+                .map(|line| executor::Row {
+                    id: String::new(),
+                    bucket: String::new(),
+                    score: 0.0,
+                    fields: serde_json::json!({ "QUERY PLAN": line }),
+                })
+                .collect();
+            let result = QueryResult { took_ms: started.elapsed().as_millis() as u64, rows };
+            return Ok((result, Some(ex)));
+        }
+        if explain {
+            let (result, ex) = self.analyze(stmt, parse_took, started).await?;
+            return Ok((result, Some(ex)));
+        }
+
         let plan = plan_tree::build(stmt)?;
 
         // The result cache keys on `(sql, embedder_model)` — valid for
@@ -118,7 +182,7 @@ impl SqlEngine {
             if let Some(cache) = &self.cache {
                 let key = cache.key(sql, self.index.embedder_model());
                 if let Some(hit) = cache.get(&key) {
-                    return Ok(hit);
+                    return Ok((hit, None));
                 }
             }
         }
@@ -135,7 +199,65 @@ impl SqlEngine {
                 cache.put(key, out.clone());
             }
         }
-        Ok(out)
+        Ok((out, None))
+    }
+
+    /// EXPLAIN ANALYZE: plan, run with a recorder, summarize.
+    async fn analyze(
+        &self,
+        stmt: ast::Statement,
+        parse_took: Duration,
+        started: Instant,
+    ) -> Result<(QueryResult, Explain)> {
+        let t = Instant::now();
+        let plan = plan_tree::build(stmt)?;
+        let describe = explain::describe(&plan);
+        let mut ex = Explain::new(ExplainKind::Sql, true);
+        ex.plan = serde_json::to_value(&plan).ok();
+        ex.stages.push(Stage::new("parse", "Parse", "Parsed the statement.").took(parse_took));
+        ex.stages.push(Stage::new("plan", "Plan", format!("{describe}.")).took(t.elapsed()));
+        if self.cache.is_some() && !matches!(plan, QueryPlan::Answer(_)) {
+            ex.notes.push(Note::info(
+                "The result cache was bypassed so every stage actually ran; a normal run of this \
+                 query may be served from cache.",
+            ));
+        }
+
+        let mut exec = Executor::new(Arc::clone(&self.index));
+        if let Some(llm) = &self.llm {
+            exec = exec.with_llm(Arc::clone(llm));
+        }
+        let mut rec = Some(explain::Recorder::new(ex));
+        let out = exec.run_recorded(plan, &mut rec).await?;
+        let mut ex = rec.map(|r| r.ex).expect("recorder is always Some here");
+
+        let n = out.rows.len();
+        let mut summary = format!("{describe}. Returned {n} row{}.", if n == 1 { "" } else { "s" });
+        if let Some(st) = biggest_drop(&ex.stages) {
+            summary.push_str(&format!(
+                " Most rows were dropped by {} ({} → {}).",
+                st.label,
+                st.rows_in.unwrap_or(0),
+                st.rows_out.unwrap_or(0)
+            ));
+        }
+        ex.finish(summary, started.elapsed());
+        Ok((out, ex))
+    }
+
+    /// Plain EXPLAIN: describe the stages without running anything.
+    fn plan_only(stmt: ast::Statement) -> Result<Explain> {
+        let plan = plan_tree::build(stmt)?;
+        let mut ex = Explain::new(ExplainKind::Sql, false);
+        ex.plan = serde_json::to_value(&plan).ok();
+        explain::plan_only(&plan, &mut ex);
+        let summary = format!(
+            "{}. Nothing was executed — use EXPLAIN ANALYZE to run it and see row counts and \
+             timings.",
+            explain::describe(&plan)
+        );
+        ex.finish(summary, Duration::ZERO);
+        Ok(ex)
     }
 
     /// Parse + plan a statement without running it. Returns the typed
