@@ -40,7 +40,11 @@ use crate::{Result, SqlError};
 const DEFAULT_ANSWER_TOP_K: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "fn", rename_all = "snake_case")]
+// Adjacent, not internal, tagging: serde cannot internally tag a
+// newtype variant wrapping a String, so `{"fn": ...}` alone made every
+// plan with COUNT(col)/SUM/AVG/MIN/MAX fail to serialize — /query/explain
+// returned 500 for them. COUNT(*) keeps its `{"fn":"count_star"}` shape.
+#[serde(tag = "fn", content = "col", rename_all = "snake_case")]
 pub enum AggregateFn {
     CountStar,
     Count(String),
