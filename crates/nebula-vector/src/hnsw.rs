@@ -84,6 +84,25 @@ impl Default for HnswConfig {
     }
 }
 
+/// How one [`Hnsw::search_with_stats`] traversal went.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct HnswSearchStats {
+    /// Beam width used at layer 0 (`max(ef, k)`).
+    pub ef: usize,
+    /// Graph layers descended (top level + 1).
+    pub levels: usize,
+    /// Nodes distance-computed at layer 0.
+    pub visited: usize,
+    /// Best-`ef` candidates the beam ended with.
+    pub pool: usize,
+    /// Of `pool`, how many were deleted nodes — they occupy beam slots
+    /// but can't be returned, so a high share costs recall.
+    pub tombstoned_in_pool: usize,
+    /// Graph size including deleted nodes, and deleted nodes alone.
+    pub nodes_total: usize,
+    pub tombstones_total: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SearchResult {
     pub id: Id,
@@ -649,6 +668,18 @@ impl Hnsw {
     /// k-NN search. `ef` overrides the configured `ef_search`; pass
     /// `None` to use the default. `ef` is clamped to `>= k`.
     pub fn search(&self, query: &[f32], k: usize, ef: Option<usize>) -> Result<Vec<SearchResult>> {
+        self.search_with_stats(query, k, ef).map(|(r, _)| r)
+    }
+
+    /// [`Self::search`] plus how the traversal went — what EXPLAIN shows.
+    /// The counters are a few integer increments on the existing walk.
+    pub fn search_with_stats(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: Option<usize>,
+    ) -> Result<(Vec<SearchResult>, HnswSearchStats)> {
+        let mut stats = HnswSearchStats::default();
         if query.len() != self.dim {
             return Err(NebulaError::DimensionMismatch {
                 expected: self.dim,
@@ -656,13 +687,17 @@ impl Hnsw {
             });
         }
         if k == 0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), stats));
         }
         let g = self.inner.read();
+        stats.nodes_total = g.external.len();
+        stats.tombstones_total = g.tombstones.len();
         let Some((mut ep, ep_level)) = g.entry else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), stats));
         };
         let ef = ef.unwrap_or(self.config.ef_search).max(k);
+        stats.ef = ef;
+        stats.levels = ep_level as usize + 1;
 
         // Greedy descent from the top to layer 1.
         for l in (1..=ep_level).rev() {
@@ -670,11 +705,17 @@ impl Hnsw {
         }
 
         // Beam search at layer 0, then filter tombstones and truncate.
-        let pool = self.search_layer(&g, query, &[ep], ef, 0);
+        let (pool, visited) = self.search_layer_counted(&g, query, &[ep], ef, 0);
+        stats.visited = visited;
+        stats.pool = pool.len();
 
         let mut results: Vec<SearchResult> = pool
             .into_iter()
-            .filter(|c| !g.tombstones.contains(&c.node))
+            .filter(|c| {
+                let dead = g.tombstones.contains(&c.node);
+                stats.tombstoned_in_pool += dead as usize;
+                !dead
+            })
             .map(|c| SearchResult {
                 id: g.external[c.node as usize],
                 distance: c.distance,
@@ -686,7 +727,7 @@ impl Hnsw {
                 .unwrap_or(Ordering::Greater)
         });
         results.truncate(k);
-        Ok(results)
+        Ok((results, stats))
     }
 
     /// Walk one upper layer from `entry`, hopping to whichever neighbor
@@ -723,6 +764,19 @@ impl Hnsw {
         ef: usize,
         level: u8,
     ) -> Vec<Candidate> {
+        self.search_layer_counted(g, query, entries, ef, level).0
+    }
+
+    /// [`Self::search_layer`] that also returns how many nodes it
+    /// distance-computed.
+    fn search_layer_counted(
+        &self,
+        g: &Inner,
+        query: &[f32],
+        entries: &[u32],
+        ef: usize,
+        level: u8,
+    ) -> (Vec<Candidate>, usize) {
         // `visited`: nodes we've already distance-computed.
         // `candidates`: frontier, min-heap keyed by distance (Reverse).
         // `results`: best-`ef`-so-far, max-heap so we can evict the worst.
@@ -775,7 +829,7 @@ impl Hnsw {
                 }
             }
         }
-        results.into_vec()
+        (results.into_vec(), visited.len())
     }
 }
 

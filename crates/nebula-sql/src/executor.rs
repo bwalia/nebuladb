@@ -20,6 +20,11 @@ use futures::StreamExt;
 use nebula_index::{Hit, TextIndex};
 use nebula_llm::{build_rag_prompt, LlmChunk, LlmClient};
 
+use std::time::Instant;
+
+use nebula_index::explain as ix;
+
+use crate::explain::Recorder;
 use crate::plan::{Filter, OrderBy, OrderDir, OrderKey, Plan, Projection, SemanticClause};
 use crate::plan_tree::{AggregateFn, AggregatePlan, AnswerPlan, JoinPlan, QueryPlan};
 use crate::{Result, SqlError};
@@ -63,12 +68,23 @@ impl Executor {
     /// to a specialized routine. Timing is tracked here so every
     /// variant returns the same shape.
     pub async fn run(&self, plan: QueryPlan) -> Result<QueryResult> {
-        let started = std::time::Instant::now();
+        self.run_recorded(plan, &mut None).await
+    }
+
+    /// [`Self::run`], additionally recording an EXPLAIN ANALYZE into
+    /// `rec` when it is `Some`. One code path for both, so the
+    /// explanation always describes what actually ran.
+    pub(crate) async fn run_recorded(
+        &self,
+        plan: QueryPlan,
+        rec: &mut Option<Recorder>,
+    ) -> Result<QueryResult> {
+        let started = Instant::now();
         let rows = match plan {
-            QueryPlan::Scan(p) => self.run_scan(p).await?,
-            QueryPlan::Aggregate(p) => self.run_aggregate(*p).await?,
-            QueryPlan::Join(p) => self.run_join(*p).await?,
-            QueryPlan::Answer(p) => self.run_answer(p).await?,
+            QueryPlan::Scan(p) => self.run_scan(p, rec).await?,
+            QueryPlan::Aggregate(p) => self.run_aggregate(*p, rec).await?,
+            QueryPlan::Join(p) => self.run_join(*p, rec).await?,
+            QueryPlan::Answer(p) => self.run_answer(p, rec).await?,
         };
         Ok(QueryResult {
             took_ms: started.elapsed().as_millis() as u64,
@@ -82,21 +98,40 @@ impl Executor {
     /// `sources` array (doc id, chunk ordinal, score) so SQL clients
     /// get the same attribution the REST `/rag/answer` endpoint
     /// provides (design 0008 §5).
-    async fn run_answer(&self, plan: AnswerPlan) -> Result<Vec<Row>> {
+    async fn run_answer(&self, plan: AnswerPlan, rec: &mut Option<Recorder>) -> Result<Vec<Row>> {
         let llm = self.llm.as_ref().ok_or_else(|| {
             SqlError::Unsupported(
                 "ai_answer(...) requires an LLM; this engine was built without one".into(),
             )
         })?;
 
-        let hits = self
-            .index
-            .search_text(&plan.query, plan.bucket.as_deref(), plan.top_k, None)
-            .await?;
+        let hits = match rec {
+            Some(r) => {
+                let (hits, trace) = self
+                    .index
+                    .clone()
+                    .search_text_explained(plan.query.clone(), plan.bucket.clone(), plan.top_k, None, None)
+                    .await?;
+                r.absorb(trace, "");
+                hits
+            }
+            None => {
+                self.index
+                    .search_text(&plan.query, plan.bucket.as_deref(), plan.top_k, None)
+                    .await?
+            }
+        };
 
+        let started = Instant::now();
         let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
         let prompt = build_rag_prompt(&plan.query, &snippets);
+        if let Some(r) = rec {
+            r.stage(ix::prompt_stage(prompt.system.as_deref(), &prompt.user, snippets.len(), started.elapsed()));
+            r.ex.prompt = Some(ix::prompt_text(prompt.system.as_deref(), &prompt.user));
+        }
 
+        let started = Instant::now();
+        let mut first_token = None;
         let mut stream = llm
             .generate(prompt)
             .await
@@ -104,9 +139,15 @@ impl Executor {
         let mut answer = String::new();
         while let Some(item) = stream.next().await {
             match item.map_err(|e| SqlError::Llm(e.to_string()))? {
-                LlmChunk::Delta(t) => answer.push_str(&t),
+                LlmChunk::Delta(t) => {
+                    first_token.get_or_insert_with(|| started.elapsed());
+                    answer.push_str(&t);
+                }
                 LlmChunk::Done => break,
             }
+        }
+        if let Some(r) = rec {
+            r.stage(ix::llm_stage(llm.model(), first_token, started.elapsed(), answer.len()));
         }
 
         let sources: Vec<serde_json::Value> = hits
@@ -130,13 +171,21 @@ impl Executor {
 
     /// Legacy single-bucket scan. Kept as a private helper because
     /// the aggregate and join paths drive it as their retrieval step.
-    async fn run_scan(&self, plan: Plan) -> Result<Vec<Row>> {
-        let hits = self.retrieve(&plan).await?;
-        let filtered = apply_filters(hits, &plan.filters);
-        let mut rows = filtered;
+    async fn run_scan(&self, plan: Plan, rec: &mut Option<Recorder>) -> Result<Vec<Row>> {
+        let mut rows = self.retrieve_filtered(&plan, rec, "").await?;
+
+        let started = Instant::now();
         sort_rows(&mut rows, plan.order_by.as_ref());
+        if let Some(r) = rec {
+            r.sort(plan.order_by.as_ref(), rows.len(), started.elapsed());
+        }
+        let before_limit = rows.len();
         if let Some(n) = plan.limit {
             rows.truncate(n);
+        }
+        if let Some(r) = rec {
+            r.limit(plan.limit, before_limit, rows.len());
+            r.project(&plan, &rows, std::time::Duration::ZERO);
         }
         Ok(rows
             .into_iter()
@@ -146,14 +195,60 @@ impl Executor {
 
     /// Retrieval + filter, returning raw hits without projection. The
     /// aggregate and join paths need to see every metadata field, not
-    /// just the scan's projection.
-    async fn retrieve_filtered(&self, plan: &Plan) -> Result<Vec<Hit>> {
-        let hits = self.retrieve(plan).await?;
-        Ok(apply_filters(hits, &plan.filters))
+    /// just the scan's projection. `side` labels the stages of a join.
+    async fn retrieve_filtered(
+        &self,
+        plan: &Plan,
+        rec: &mut Option<Recorder>,
+        side: &str,
+    ) -> Result<Vec<Hit>> {
+        let hits = self.retrieve(plan, rec, side).await?;
+        let started = Instant::now();
+        let Some(r) = rec else {
+            return Ok(apply_filters(hits, &plan.filters));
+        };
+        let kept = apply_filters(hits.clone(), &plan.filters);
+        r.filters(plan, &hits, kept.len(), started.elapsed(), side);
+        Ok(kept)
     }
 
-    async fn retrieve(&self, plan: &Plan) -> Result<Vec<Hit>> {
+    async fn retrieve(&self, plan: &Plan, rec: &mut Option<Recorder>, side: &str) -> Result<Vec<Hit>> {
         let top_k = plan.top_k();
+        if let SemanticClause::Distance { vector, .. } = &plan.semantic {
+            if vector.len() != self.index.dim() {
+                return Err(SqlError::TypeError(format!(
+                    "vector length {} does not match index dimension {}",
+                    vector.len(),
+                    self.index.dim()
+                )));
+            }
+        }
+        if let Some(r) = rec {
+            let (hits, trace) = match &plan.semantic {
+                SemanticClause::Match { query, .. } => {
+                    self.index
+                        .clone()
+                        .search_text_explained(query.clone(), Some(plan.bucket.clone()), top_k, None, None)
+                        .await?
+                }
+                SemanticClause::Distance { vector, .. } => {
+                    self.index
+                        .clone()
+                        .search_vector_explained(vector.clone(), Some(plan.bucket.clone()), top_k, None)
+                        .await?
+                }
+            };
+            r.stage(
+                ix::Stage::new(
+                    "top_k",
+                    &if side.is_empty() { "Retrieval size".to_string() } else { format!("{side}: Retrieval size") },
+                    format!("Asked the index for {}.", crate::explain::top_k_reason(plan)),
+                )
+                .attr("top_k", top_k),
+            );
+            r.absorb(trace, side);
+            return Ok(hits);
+        }
         match &plan.semantic {
             SemanticClause::Match { query, .. } => {
                 // search_text is async only because of the embedder;
@@ -171,13 +266,6 @@ impl Executor {
                     .await?)
             }
             SemanticClause::Distance { vector, .. } => {
-                if vector.len() != self.index.dim() {
-                    return Err(SqlError::TypeError(format!(
-                        "vector length {} does not match index dimension {}",
-                        vector.len(),
-                        self.index.dim()
-                    )));
-                }
                 // Same wedge-avoidance pattern router.rs:628
                 // already uses for REST `/vector/search`. The sync
                 // `search_vector` pins a tokio worker for the entire
@@ -205,8 +293,10 @@ impl Executor {
     /// place. The choice of `HashMap` over a sorted vector is the
     /// usual one — smaller corpora this handles, large corpora would
     /// need a proper spill-to-disk strategy, which is out of scope.
-    async fn run_aggregate(&self, plan: AggregatePlan) -> Result<Vec<Row>> {
-        let hits = self.retrieve_filtered(&plan.input).await?;
+    async fn run_aggregate(&self, plan: AggregatePlan, rec: &mut Option<Recorder>) -> Result<Vec<Row>> {
+        let hits = self.retrieve_filtered(&plan.input, rec, "").await?;
+        let started = Instant::now();
+        let input_rows = hits.len();
 
         // Group key is a Vec<Value> — we serialize to a stable JSON
         // string for the HashMap key. Using the JSON directly avoids a
@@ -233,6 +323,27 @@ impl Executor {
             .into_values()
             .map(|g| finalize_group(&g, &plan.group_keys, &plan.aggs))
             .collect();
+        if let Some(r) = rec {
+            r.stage(
+                ix::Stage::new(
+                    "aggregate",
+                    "Aggregate (GROUP BY)",
+                    format!(
+                        "Grouped {input_rows} rows by ({}) into {} group{}.",
+                        plan.group_keys.join(", "),
+                        rows.len(),
+                        if rows.len() == 1 { "" } else { "s" }
+                    ),
+                )
+                .rows(Some(input_rows), Some(rows.len()))
+                .took(started.elapsed()),
+            );
+            r.note(ix::Note::info(format!(
+                "Aggregates cover only the {input_rows} rows semantic_match retrieved (top_k={}),                  not the whole '{}' bucket.",
+                plan.input.top_k(),
+                plan.input.bucket
+            )));
+        }
 
         // Sort + limit on aggregate output. The plan's order_by
         // already validated that the key is either a group-by column
@@ -250,8 +361,12 @@ impl Executor {
                 }
             });
         }
+        let before_limit = rows.len();
         if let Some(n) = plan.limit {
             rows.truncate(n);
+        }
+        if let Some(r) = rec {
+            r.limit(plan.limit, before_limit, rows.len());
         }
         Ok(rows)
     }
@@ -262,9 +377,11 @@ impl Executor {
     /// because it's typically the smaller "dimension" input in
     /// analytical workloads; a cost-based optimizer would pick, but
     /// we don't have one yet.
-    async fn run_join(&self, plan: JoinPlan) -> Result<Vec<Row>> {
-        let left_hits = self.retrieve_filtered(&plan.left).await?;
-        let right_hits = self.retrieve_filtered(&plan.right).await?;
+    async fn run_join(&self, plan: JoinPlan, rec: &mut Option<Recorder>) -> Result<Vec<Row>> {
+        let left_hits = self.retrieve_filtered(&plan.left, rec, "left").await?;
+        let right_hits = self.retrieve_filtered(&plan.right, rec, "right").await?;
+        let started = Instant::now();
+        let right_rows = right_hits.len();
 
         // Build right-side hash table.
         let mut right_by_key: HashMap<String, Vec<Hit>> = HashMap::new();
@@ -289,12 +406,36 @@ impl Executor {
                 }
             }
         }
+        if let Some(r) = rec {
+            r.stage(
+                ix::Stage::new(
+                    "join",
+                    "Hash join",
+                    format!(
+                        "Hashed {right_rows} right rows on {}.{} into {} distinct keys, probed with                          {} left rows on {}.{}, and produced {} joined rows.",
+                        plan.right_alias,
+                        plan.predicate.right_column,
+                        right_by_key.len(),
+                        left_hits.len(),
+                        plan.left_alias,
+                        plan.predicate.left_column,
+                        rows.len()
+                    ),
+                )
+                .rows(Some(left_hits.len() + right_rows), Some(rows.len()))
+                .took(started.elapsed()),
+            );
+        }
 
         if let Some(ob) = &plan.order_by {
             sort_join_rows(&mut rows, ob);
         }
+        let before_limit = rows.len();
         if let Some(n) = plan.limit {
             rows.truncate(n);
+        }
+        if let Some(r) = rec {
+            r.limit(plan.limit, before_limit, rows.len());
         }
         Ok(rows)
     }
@@ -557,7 +698,7 @@ fn apply_filters(hits: Vec<Hit>, filters: &[Filter]) -> Vec<Hit> {
 
 /// Evaluate a filter against a hit's metadata. Paths are `.`-joined;
 /// a path resolves to `Value::Null` when any segment is missing.
-fn eval_filter(f: &Filter, meta: &serde_json::Value) -> bool {
+pub(crate) fn eval_filter(f: &Filter, meta: &serde_json::Value) -> bool {
     match f {
         Filter::Eq { path, value } => path_lookup(meta, path) == value,
         Filter::In { path, values } => {
@@ -567,7 +708,7 @@ fn eval_filter(f: &Filter, meta: &serde_json::Value) -> bool {
     }
 }
 
-fn path_lookup<'a>(root: &'a serde_json::Value, path: &[String]) -> &'a serde_json::Value {
+pub(crate) fn path_lookup<'a>(root: &'a serde_json::Value, path: &[String]) -> &'a serde_json::Value {
     let mut cur = root;
     for seg in path {
         match cur.get(seg) {

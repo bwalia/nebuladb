@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { api, ApiError, type Hit } from "../api";
+import { api, ApiError, type Explain, type Hit } from "../api";
 import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
+import { ExplainPanel } from "../explain";
 
 /**
  * Semantic search explorer. Deliberately small — this is the
@@ -18,16 +19,30 @@ export function SearchTab() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
+  // Hybrid fuses vector similarity with BM25 keyword relevance; its
+  // score is higher-is-better, unlike the plain vector distance.
+  const [hybrid, setHybrid] = useState(false);
+  const [explainOn, setExplainOn] = useState(false);
+  const [explain, setExplain] = useState<Explain | null>(null);
+  // The score semantics of the hits on screen, not of the checkbox —
+  // flipping Hybrid shouldn't relabel results from the previous run.
+  const [ranHybrid, setRanHybrid] = useState(false);
 
   const run = async () => {
     setErr(null);
     setBusy(true);
     try {
-      const r = await api.search(query, topK, bucket || undefined);
+      const r = await api.search(query, topK, bucket || undefined, {
+        hybrid,
+        explain: explainOn,
+      });
       setHits(r.hits);
       setTook(r.took_ms);
+      setExplain(r.explain ?? null);
+      setRanHybrid(hybrid);
       setExpanded(null);
     } catch (e) {
+      setExplain(null);
       if (e instanceof ApiError) setErr(`${e.code}: ${e.body}`);
       else setErr((e as Error).message);
     } finally {
@@ -79,11 +94,27 @@ export function SearchTab() {
           </button>
         </div>
 
-        <div className="flex items-center gap-3 pt-2">
+        <div className="flex flex-wrap items-center gap-3 pt-2">
+          <label
+            className="inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-muted cursor-pointer select-none"
+            title="Fuse vector similarity with BM25 keyword relevance"
+          >
+            <input type="checkbox" checked={hybrid} onChange={(e) => setHybrid(e.target.checked)} />
+            Hybrid
+          </label>
+          <label
+            className="inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-muted cursor-pointer select-none"
+            title="Show how the results were produced: stages, candidate counts, timings and per-hit scoring"
+          >
+            <input type="checkbox" checked={explainOn} onChange={(e) => setExplainOn(e.target.checked)} />
+            Explain
+          </label>
           {took !== null && <Stat label="took" value={`${took}ms`} />}
           {hits !== null && <Stat label="hits" value={hits.length} />}
           <span className="text-xs text-gray-500 dark:text-gray-400">
-            score = distance (lower is closer)
+            {ranHybrid
+              ? "score = fused vector + keyword relevance (higher is better)"
+              : "score = distance (lower is closer)"}
           </span>
         </div>
 
@@ -127,6 +158,8 @@ export function SearchTab() {
           )}
         </div>
       )}
+
+      {explain && <ExplainPanel explain={explain} />}
     </div>
   );
 }
