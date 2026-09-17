@@ -163,6 +163,10 @@ pub fn build_router(state: AppState) -> Router {
         // caught up to its leader (or is a leader/standalone), 503 while
         // it trails. The rolling orchestrator polls this between steps.
         .route("/healthz/caught-up", get(healthz_caught_up))
+        // Unauthenticated WAL tip for follower lag probes. Lives outside
+        // /api/v1 so NEBULA_API_KEYS / JWT do not 401 the catch-up gate
+        // (design 0009). Exposes only cursors, not document bodies.
+        .route("/healthz/wal-tip", get(healthz_wal_tip))
         .route("/metrics", get(metrics_handler))
         .nest("/api/v1", api)
         .layer(RequestBodyLimitLayer::new(limit))
@@ -2030,7 +2034,7 @@ struct ReplicationInfo {
     remotes: Vec<crate::cross_region_status::RemoteRegionStatus>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct CursorView {
     segment_seq: u64,
     byte_offset: u64,
@@ -2371,6 +2375,20 @@ async fn healthz_caught_up(State(s): State<AppState>) -> (StatusCode, Json<Caugh
     )
 }
 
+async fn healthz_wal_tip(State(s): State<AppState>) -> Json<CursorView> {
+    let tip = s.index.wal().map(|w| {
+        let c = w.newest_cursor();
+        CursorView {
+            segment_seq: c.segment_seq,
+            byte_offset: c.byte_offset,
+        }
+    });
+    Json(tip.unwrap_or(CursorView {
+        segment_seq: 0,
+        byte_offset: 0,
+    }))
+}
+
 async fn fetch_leader_newest() -> Option<CursorView> {
     // The follower knows its leader's gRPC URL (NEBULA_FOLLOW_LEADER)
     // but lag here is an HTTP probe, and gRPC/REST live on different
@@ -2382,11 +2400,32 @@ async fn fetch_leader_newest() -> Option<CursorView> {
         .timeout(std::time::Duration::from_millis(500))
         .build()
         .ok()?;
-    let url = format!(
-        "{}/api/v1/admin/replication",
-        rest_base.trim_end_matches('/')
-    );
-    let v: serde_json::Value = client.get(&url).send().await.ok()?.json().await.ok()?;
+    let base = rest_base.trim_end_matches('/');
+
+    // Prefer the unauthenticated wal-tip endpoint so catch-up works
+    // when the leader requires NEBULA_API_KEYS / JWT on /api/v1.
+    let tip_url = format!("{base}/healthz/wal-tip");
+    if let Ok(resp) = client.get(&tip_url).send().await {
+        if resp.status().is_success() {
+            if let Ok(v) = resp.json::<CursorView>().await {
+                return Some(v);
+            }
+        }
+    }
+
+    // Fallback for older leaders: authenticated admin replication.
+    let url = format!("{base}/api/v1/admin/replication");
+    let mut req = client.get(&url);
+    if let Ok(keys) = std::env::var("NEBULA_API_KEYS") {
+        if let Some(key) = keys.split(',').map(str::trim).find(|k| !k.is_empty()) {
+            req = req.header(axum::http::header::AUTHORIZATION, format!("Bearer {key}"));
+        }
+    } else if let Ok(token) = std::env::var("NEBULA_LEADER_PROBE_TOKEN") {
+        if !token.is_empty() {
+            req = req.header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+    }
+    let v: serde_json::Value = req.send().await.ok()?.json().await.ok()?;
     let newest = v.get("local_newest")?;
     Some(CursorView {
         segment_seq: newest.get("segment_seq")?.as_u64()?,

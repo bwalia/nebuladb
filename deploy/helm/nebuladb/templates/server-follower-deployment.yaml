@@ -1,0 +1,196 @@
+{{- if .Values.ha.withinRegion.enabled -}}
+{{- $resources := .Values.server.resources -}}
+{{- with .Values.ha.withinRegion.resources -}}
+{{- $resources = . -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nebuladb.follower.fullname" . }}
+  labels:
+    {{- include "nebuladb.follower.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.ha.withinRegion.followers | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "nebuladb.follower.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "nebuladb.follower.selectorLabels" . | nindent 8 }}
+        {{- with .Values.server.podLabels }}{{ toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/server-configmap.yaml") . | sha256sum }}
+        {{- with .Values.server.podAnnotations }}{{ toYaml . | nindent 8 }}{{- end }}
+    spec:
+      serviceAccountName: {{ include "nebuladb.serviceAccountName" . }}
+      {{- with .Values.server.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.podSecurityContext }}
+      securityContext: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          {{- with .Values.server.securityContext }}
+          securityContext: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: rest
+              containerPort: 8080
+              protocol: TCP
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+            - name: pg
+              containerPort: 5432
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "nebuladb.fullname" . }}
+            - secretRef:
+                name: {{ include "nebuladb.fullname" . }}-secrets
+                optional: true
+            {{- range $key, $secret := .Values.server.secretEnv }}
+            - secretRef:
+                name: {{ $secret }}
+            {{- end }}
+          env:
+            - name: NEBULA_BIND
+              value: "0.0.0.0:8080"
+            - name: NEBULA_GRPC_BIND
+              value: "0.0.0.0:50051"
+            - name: NEBULA_PG_BIND
+              value: "0.0.0.0:5432"
+            {{- if .Values.server.persistence.enabled }}
+            - name: NEBULA_DATA_DIR
+              value: "/var/lib/nebuladb"
+            {{- end }}
+            - name: NEBULA_NODE_ID
+              value: {{ include "nebuladb.follower.fullname" . | quote }}
+            - name: NEBULA_NODE_ROLE
+              value: "follower"
+            - name: NEBULA_FOLLOW_LEADER
+              value: {{ printf "http://%s:%d" (include "nebuladb.server.fullname" .) (int .Values.server.service.grpcPort) | quote }}
+            # Probe via local nginx sidecar that injects Bearer token —
+            # required when the leader enforces NEBULA_API_KEYS on /api/v1.
+            - name: NEBULA_LEADER_REST_URL
+              value: "http://127.0.0.1:8081"
+            - name: NEBULA_PEERS
+              value: {{ printf "leader=http://%s:%d" (include "nebuladb.server.fullname" .) (int .Values.server.service.restPort) | quote }}
+            {{- if .Values.ha.crossRegion.enabled }}
+            - name: NEBULA_REGION
+              value: {{ .Values.ha.crossRegion.region | quote }}
+            {{- end }}
+          {{- with .Values.ha.withinRegion.livenessProbe }}
+          livenessProbe: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.ha.withinRegion.readinessProbe }}
+          readinessProbe: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources: {{- toYaml $resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.server.persistence.enabled }}
+            - name: data
+              mountPath: /var/lib/nebuladb
+            {{- end }}
+        - name: leader-probe-proxy
+          image: nginx:1.27-alpine
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: probe
+              containerPort: 8081
+              protocol: TCP
+          env:
+            - name: LEADER_HOST
+              value: {{ include "nebuladb.server.fullname" . | quote }}
+            - name: PROBE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.fullname" . }}-secrets
+                  key: NEBULA_API_KEYS
+                  optional: true
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              export PROBE_TOKEN="${PROBE_TOKEN%%,*}"
+              printf '%s\n' \
+                'worker_processes 1;' \
+                'error_log /tmp/error.log warn;' \
+                'pid /tmp/nginx.pid;' \
+                'events { worker_connections 32; }' \
+                'http {' \
+                '  access_log off;' \
+                '  client_body_temp_path /tmp/client_body;' \
+                '  proxy_temp_path       /tmp/proxy_temp;' \
+                '  fastcgi_temp_path     /tmp/fastcgi_temp;' \
+                '  uwsgi_temp_path       /tmp/uwsgi_temp;' \
+                '  scgi_temp_path        /tmp/scgi_temp;' \
+                '  include /tmp/default.conf;' \
+                '}' > /tmp/nginx.conf
+              if [ -n "$PROBE_TOKEN" ]; then
+                AUTH_LINE="proxy_set_header Authorization \"Bearer ${PROBE_TOKEN}\";"
+              else
+                AUTH_LINE=""
+              fi
+              printf '%s\n' \
+                'server {' \
+                '  listen 8081;' \
+                '  location /api/v1/admin/replication {' \
+                "    proxy_pass http://${LEADER_HOST}:8080/api/v1/admin/replication;" \
+                "    ${AUTH_LINE}" \
+                '    proxy_connect_timeout 1s;' \
+                '    proxy_read_timeout 1s;' \
+                '  }' \
+                '  location /healthz/wal-tip {' \
+                "    proxy_pass http://${LEADER_HOST}:8080/healthz/wal-tip;" \
+                '    proxy_connect_timeout 1s;' \
+                '    proxy_read_timeout 1s;' \
+                '  }' \
+                '}' > /tmp/default.conf
+              exec nginx -c /tmp/nginx.conf -g 'daemon off;'
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: probe-tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: probe-tmp
+          emptyDir: {}
+        {{- if .Values.server.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "nebuladb.follower.fullname" . }}-data
+        {{- end }}
+      {{- with (.Values.ha.withinRegion.nodeSelector | default .Values.server.nodeSelector) }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}

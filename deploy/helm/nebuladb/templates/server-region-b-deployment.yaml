@@ -1,30 +1,28 @@
+{{- if and .Values.ha.crossRegion.enabled .Values.ha.crossRegion.deployPeerLeader -}}
+{{- $resources := .Values.server.resources -}}
+{{- with .Values.ha.crossRegion.resources -}}
+{{- $resources = . -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "nebuladb.fullname" . }}
+  name: {{ include "nebuladb.regionB.fullname" . }}
   labels:
-    {{- include "nebuladb.server.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.regionB.selectorLabels" . | nindent 4 }}
     {{- include "nebuladb.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.server.replicaCount }}
+  replicas: 1
   selector:
     matchLabels:
-      {{- include "nebuladb.server.selectorLabels" . | nindent 6 }}
-  # `Recreate` not `RollingUpdate`: NebulaDB is single-writer-per-node
-  # in-memory today, so rolling a new Pod alongside the old one would
-  # split writes across two instances. Flip to RollingUpdate once the
-  # durability story (snapshot + restore) lands.
+      {{- include "nebuladb.regionB.selectorLabels" . | nindent 6 }}
   strategy:
     type: Recreate
   template:
     metadata:
       labels:
-        {{- include "nebuladb.server.selectorLabels" . | nindent 8 }}
+        {{- include "nebuladb.regionB.selectorLabels" . | nindent 8 }}
         {{- with .Values.server.podLabels }}{{ toYaml . | nindent 8 }}{{- end }}
       annotations:
-        # Re-roll the Pod when env-carrying resources change. Without
-        # these, a `helm upgrade` that edits values.env would silently
-        # keep the old Pod running with the old env.
         checksum/config: {{ include (print $.Template.BasePath "/server-configmap.yaml") . | sha256sum }}
         {{- with .Values.server.podAnnotations }}{{ toYaml . | nindent 8 }}{{- end }}
     spec:
@@ -53,21 +51,12 @@ spec:
               containerPort: 5432
               protocol: TCP
           envFrom:
-            # Non-secret env: ConfigMap keeps the values inspectable
-            # via `kubectl describe cm` without leaking secrets.
             - configMapRef:
                 name: {{ include "nebuladb.fullname" . }}
-            # App secrets (NEBULA_API_KEYS / NEBULA_JWT_SECRET / embedder key).
-            # Always mounted, `optional: true` — the secret is created out of
-            # band (the Ring Promoter deploy job fetches it from wslvault, or
-            # an ExternalSecret when enabled). When absent, nebula-server runs
-            # with auth disabled and the mock embedder.
             - secretRef:
                 name: {{ include "nebuladb.fullname" . }}-secrets
                 optional: true
             {{- range $key, $secret := .Values.server.secretEnv }}
-            # Each secret-backed var references its own Secret so
-            # rotation doesn't need to touch every other env entry.
             - secretRef:
                 name: {{ $secret }}
             {{- end }}
@@ -78,58 +67,28 @@ spec:
               value: "0.0.0.0:50051"
             - name: NEBULA_PG_BIND
               value: "0.0.0.0:5432"
-            {{- with (include "nebuladb.redisUrl" .) }}
-            - name: NEBULA_REDIS_URL
-              value: {{ . | quote }}
-            {{- end }}
             {{- if .Values.server.persistence.enabled }}
-            # Durability: enable WAL + snapshot by pointing the
-            # binary at the mounted PVC. Unset → in-memory.
             - name: NEBULA_DATA_DIR
               value: "/var/lib/nebuladb"
             {{- end }}
-            {{- if or .Values.ha.withinRegion.enabled .Values.ha.crossRegion.enabled }}
             - name: NEBULA_NODE_ID
-              value: {{ printf "%s-leader" (include "nebuladb.fullname" .) | quote }}
-            {{- if .Values.ha.withinRegion.enabled }}
-            - name: NEBULA_NODE_ROLE
-              value: "leader"
-            {{- else }}
-            # Cross-region only: standalone leaders (matches compose lab).
+              value: {{ include "nebuladb.regionB.fullname" . | quote }}
             - name: NEBULA_NODE_ROLE
               value: "standalone"
-            {{- end }}
-            {{- end }}
-            {{- if .Values.ha.crossRegion.enabled }}
             - name: NEBULA_REGION
-              value: {{ .Values.ha.crossRegion.region | quote }}
-            {{- $cr := include "nebuladb.crossRegion.peersPrimary" . }}
-            {{- if $cr }}
+              value: {{ .Values.ha.crossRegion.peerRegion | quote }}
             - name: NEBULA_CROSS_REGION_PEERS
-              value: {{ $cr | quote }}
-            {{- end }}
-            {{- end }}
-            {{- $peers := include "nebuladb.cluster.peers" . }}
-            {{- if $peers }}
+              value: {{ include "nebuladb.crossRegion.peersRegionB" . | quote }}
             - name: NEBULA_PEERS
-              value: {{ $peers | quote }}
-            {{- end }}
-          {{- with .Values.server.startupProbe }}
-          startupProbe: {{- toYaml . | nindent 12 }}
-          {{- end }}
+              value: {{ printf "leader=http://%s:%d" (include "nebuladb.server.fullname" .) (int .Values.server.service.restPort) | quote }}
           {{- with .Values.server.livenessProbe }}
           livenessProbe: {{- toYaml . | nindent 12 }}
           {{- end }}
           {{- with .Values.server.readinessProbe }}
           readinessProbe: {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.server.resources }}
-          resources: {{- toYaml . | nindent 12 }}
-          {{- end }}
+          resources: {{- toYaml $resources | nindent 12 }}
           volumeMounts:
-            # `readOnlyRootFilesystem: true` on the container means
-            # we must provide writable paths for tempdir-style needs.
-            # `/tmp` covers rustls, reqwest, and any transient caches.
             - name: tmp
               mountPath: /tmp
             {{- if .Values.server.persistence.enabled }}
@@ -142,14 +101,15 @@ spec:
         {{- if .Values.server.persistence.enabled }}
         - name: data
           persistentVolumeClaim:
-            claimName: {{ include "nebuladb.fullname" . }}-data
+            claimName: {{ include "nebuladb.regionB.fullname" . }}-data
         {{- end }}
-      {{- with .Values.server.nodeSelector }}
+      {{- with (.Values.ha.crossRegion.nodeSelector | default .Values.server.nodeSelector) }}
       nodeSelector: {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.server.tolerations }}
-      tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.server.affinity }}
       affinity: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end -}}

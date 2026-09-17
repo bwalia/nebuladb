@@ -269,3 +269,51 @@ environment: ""
 # (local/dev without Vault). Map of ENV_VAR: value. Never commit real
 # secrets here.
 secrets: {}
+
+# ---------------------------------------------------------------------------
+# HA / multi-region (leader+follower WAL mirror + cross-region XDCR)
+# ---------------------------------------------------------------------------
+# `server.replicaCount` stays 1 per role. HA is multi-Deployment with
+# separate RWO PVCs — do not scale the primary Deployment.
+ha:
+  # Within-region read mirror: one follower Deployment that tails the
+  # primary over gRPC (NEBULA_FOLLOW_LEADER) and probes REST lag.
+  withinRegion:
+    enabled: false
+    followers: 1
+    # Optional resource / persistence overrides; empty → reuse server.*
+    resources: {}
+    persistence: {}
+    nodeSelector: {}
+    # Longer start grace — follower rebuilds the full in-RAM index.
+    livenessProbe:
+      httpGet:
+        path: /healthz/live
+        port: 8080
+      initialDelaySeconds: 30
+      periodSeconds: 30
+      timeoutSeconds: 3
+      failureThreshold: 5
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 15
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 6
+
+  # Cross-region WAL peering. Primary becomes region `region`; an
+  # optional second leader Deployment is created for `peerRegion`.
+  crossRegion:
+    enabled: false
+    region: us-east-1
+    peerRegion: us-west-2
+    # When true, chart deploys a second leader as <release>-region-b.
+    deployPeerLeader: true
+    # Extra peers (region=http://host:50051). Peer-leader URL is
+    # auto-injected when deployPeerLeader is true.
+    peers: []
+    resources: {}
+    persistence: {}
+    nodeSelector: {}

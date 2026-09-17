@@ -50,11 +50,65 @@ their own Services.
 app.kubernetes.io/component: server
 {{- end -}}
 
+{{- define "nebuladb.follower.selectorLabels" -}}
+{{ include "nebuladb.selectorLabels" . }}
+app.kubernetes.io/component: server-follower
+{{- end -}}
+
+{{- define "nebuladb.regionB.selectorLabels" -}}
+{{ include "nebuladb.selectorLabels" . }}
+app.kubernetes.io/component: server-region-b
+{{- end -}}
+
 {{- define "nebuladb.showcase.selectorLabels" -}}
 {{ include "nebuladb.selectorLabels" . }}
 app.kubernetes.io/component: showcase
 {{- end -}}
 
+{{/* In-cluster DNS for the primary server Service. */}}
+{{- define "nebuladb.server.fullname" -}}
+{{ include "nebuladb.fullname" . }}
+{{- end -}}
+
+{{- define "nebuladb.follower.fullname" -}}
+{{ printf "%s-follower" (include "nebuladb.fullname" .) }}
+{{- end -}}
+
+{{- define "nebuladb.regionB.fullname" -}}
+{{ printf "%s-region-b" (include "nebuladb.fullname" .) }}
+{{- end -}}
+
+{{/*
+Cross-region peers env value for the primary (region-a) leader.
+Always includes the chart-managed region-b Service when deployPeerLeader.
+*/}}
+{{- define "nebuladb.crossRegion.peersPrimary" -}}
+{{- $parts := list -}}
+{{- if and .Values.ha.crossRegion.enabled .Values.ha.crossRegion.deployPeerLeader -}}
+{{- $parts = append $parts (printf "%s=http://%s:%d" .Values.ha.crossRegion.peerRegion (include "nebuladb.regionB.fullname" .) (int .Values.server.service.grpcPort)) -}}
+{{- end -}}
+{{- range .Values.ha.crossRegion.peers -}}
+{{- $parts = append $parts (printf "%s=%s" .region .grpcUrl) -}}
+{{- end -}}
+{{- join "," $parts -}}
+{{- end -}}
+
+{{/* Cross-region peers env for region-b (points back at primary). */}}
+{{- define "nebuladb.crossRegion.peersRegionB" -}}
+{{- printf "%s=http://%s:%d" .Values.ha.crossRegion.region (include "nebuladb.server.fullname" .) (int .Values.server.service.grpcPort) -}}
+{{- end -}}
+
+{{/* NEBULA_PEERS listing for cluster admin (REST base URLs). */}}
+{{- define "nebuladb.cluster.peers" -}}
+{{- $parts := list -}}
+{{- if .Values.ha.withinRegion.enabled -}}
+{{- $parts = append $parts (printf "follower=http://%s:%d" (include "nebuladb.follower.fullname" .) (int .Values.server.service.restPort)) -}}
+{{- end -}}
+{{- if and .Values.ha.crossRegion.enabled .Values.ha.crossRegion.deployPeerLeader -}}
+{{- $parts = append $parts (printf "region-b=http://%s:%d" (include "nebuladb.regionB.fullname" .) (int .Values.server.service.restPort)) -}}
+{{- end -}}
+{{- join "," $parts -}}
+{{- end -}}
 {{- define "nebuladb.serviceAccountName" -}}
 {{- if .Values.server.serviceAccount.create -}}
 {{- default (include "nebuladb.fullname" .) .Values.server.serviceAccount.name -}}
