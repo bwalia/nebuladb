@@ -1,0 +1,190 @@
+# Auto Tag on Merge to Main
+#
+# Creates an incremental semantic version tag when code lands on main
+# (PR merge or direct push). Also creates a GitHub Release with
+# generated notes. Manual major/minor bumps via workflow_dispatch.
+#
+# Version scheme: MAJOR.MINOR.PATCH
+#   - PATCH increments on every merge to main
+#   - MINOR/MAJOR increments are manual (workflow_dispatch)
+#   - Tags: v<MAJOR>.<MINOR>.<PATCH> (e.g. v0.1.1)
+#
+# publish.yml already listens for `v*.*.*` tags and pushes Docker
+# Hub `:X.Y.Z` / `:latest` images, so this workflow is the trigger
+# that turns a main merge into a versioned image release.
+
+name: Auto Tag on Merge to Main
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version_type:
+        type: choice
+        description: "Version bump type (for manual major/minor bumps)"
+        required: false
+        default: "patch"
+        options:
+          - patch
+          - minor
+          - major
+      custom_version:
+        type: string
+        description: "Custom version (e.g., v1.2.0) - overrides version_type"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  # Serialize tagging so two quick merges can't race to the same
+  # version. cancel-in-progress: false so a burst of PR merges each
+  # get their own tag (the second waits rather than being cancelled).
+  group: auto-tag-main
+  cancel-in-progress: false
+
+jobs:
+  auto-tag:
+    name: Create Incremental Tag
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout repository with full history
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get latest tag
+        id: get_latest_tag
+        run: |
+          # Union of v-prefixed and bare semver tags, normalise by
+          # stripping leading "v", sort, then re-emit with "v".
+          ALL_TAGS=$(
+            {
+              git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//'
+              git tag -l '[0-9]*.[0-9]*.[0-9]*'
+            } | sort -u -V
+          )
+          LATEST_BARE=$(echo "$ALL_TAGS" | tail -1)
+
+          if [ -z "$LATEST_BARE" ]; then
+            LATEST_TAG="v0.1.0"
+            echo "No existing tags found, starting at v0.1.0"
+          else
+            LATEST_TAG="v${LATEST_BARE}"
+            echo "Latest tag: $LATEST_TAG"
+          fi
+
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate next version
+        id: calc_version
+        run: |
+          LATEST_TAG="${{ steps.get_latest_tag.outputs.latest_tag }}"
+          MAJOR=""
+          MINOR=""
+          PATCH=""
+
+          if [ -n "${{ github.event.inputs.custom_version }}" ]; then
+            NEXT_VERSION="${{ github.event.inputs.custom_version }}"
+            # Ensure v prefix
+            case "$NEXT_VERSION" in
+              v*) ;;
+              *) NEXT_VERSION="v${NEXT_VERSION}" ;;
+            esac
+            echo "Using custom version: $NEXT_VERSION"
+            BASE_VERSION="${NEXT_VERSION#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+          elif [ -n "${{ github.event.inputs.version_type }}" ] \
+              && [ "${{ github.event.inputs.version_type }}" != "patch" ]; then
+            # Manual minor/major bump. The -n guard matters: on push
+            # events, version_type is empty; "" != "patch" would
+            # otherwise enter this branch with no bump and silently
+            # skip tagging forever.
+            VERSION_TYPE="${{ github.event.inputs.version_type }}"
+            BASE_VERSION="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+
+            if [ "$VERSION_TYPE" = "major" ]; then
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+            elif [ "$VERSION_TYPE" = "minor" ]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+            fi
+
+            NEXT_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+            echo "Manual $VERSION_TYPE bump: $LATEST_TAG -> $NEXT_VERSION"
+          else
+            BASE_VERSION="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+            PATCH=$((PATCH + 1))
+            NEXT_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+            echo "Auto patch bump: $LATEST_TAG -> $NEXT_VERSION"
+          fi
+
+          echo "next_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+          echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        id: create_tag
+        run: |
+          NEXT_VERSION="${{ steps.calc_version.outputs.next_version }}"
+
+          if git tag -l "$NEXT_VERSION" | grep -q "^${NEXT_VERSION}$"; then
+            echo "Tag $NEXT_VERSION already exists, skipping creation"
+            echo "tag_created=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Creating tag: $NEXT_VERSION"
+            git tag -a "$NEXT_VERSION" -m "Release $NEXT_VERSION"
+            git push origin "$NEXT_VERSION"
+            echo "tag_created=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.create_tag.outputs.tag_created == 'true'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.calc_version.outputs.next_version }}
+          name: Release ${{ steps.calc_version.outputs.next_version }}
+          generate_release_notes: true
+
+      - name: Notify Slack on new release
+        if: steps.create_tag.outputs.tag_created == 'true'
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL not set — skipping notification"
+            exit 0
+          fi
+
+          NEXT_VERSION="${{ steps.calc_version.outputs.next_version }}"
+          COMMIT_SHA="${{ github.sha }}"
+          ACTOR="${{ github.actor }}"
+          LOGS_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n \
+              --arg version "$NEXT_VERSION" \
+              --arg commit "$COMMIT_SHA" \
+              --arg actor "$ACTOR" \
+              --arg logs "$LOGS_URL" \
+              '{text: (":tag: *New Release Tagged*\nVersion: `\($version)`\nCommit: `\($commit)`\nTriggered by: \($actor)\nLogs: \($logs)")}')"
