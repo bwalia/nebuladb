@@ -1,0 +1,19 @@
+{{- if and .Values.ha.crossRegion.enabled .Values.ha.crossRegion.deployPeerLeader .Values.server.persistence.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nebuladb.regionB.fullname" . }}-data
+  labels:
+    {{- include "nebuladb.regionB.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml (.Values.ha.crossRegion.persistence.accessModes | default .Values.server.persistence.accessModes) | nindent 4 }}
+  {{- $sc := .Values.ha.crossRegion.persistence.storageClass | default .Values.server.persistence.storageClass }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.ha.crossRegion.persistence.size | default .Values.server.persistence.size }}
+{{- end -}}

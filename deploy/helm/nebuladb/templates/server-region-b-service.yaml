@@ -1,0 +1,26 @@
+{{- if and .Values.ha.crossRegion.enabled .Values.ha.crossRegion.deployPeerLeader -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nebuladb.regionB.fullname" . }}
+  labels:
+    {{- include "nebuladb.regionB.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nebuladb.regionB.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: rest
+      port: {{ .Values.server.service.restPort }}
+      targetPort: rest
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.server.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+    - name: pg
+      port: {{ .Values.server.service.pgPort }}
+      targetPort: pg
+      protocol: TCP
+{{- end -}}

@@ -82,3 +82,37 @@ showcase:
 externalSecret:
   enabled: false
 environment: prod
+
+# Within-region follower + cross-region second leader. Same topology as
+# int; Raft stays off. Follower PVC is smaller than the primary 50Gi
+# until catch-up proves size needs — bump if the mirror OOMs.
+ha:
+  withinRegion:
+    enabled: true
+    followers: 1
+    persistence:
+      size: 50Gi
+    # Mirror needs the same working set as the leader (~full index).
+    resources:
+      limits:
+        cpu: "4"
+        memory: "32Gi"
+      requests:
+        cpu: "500m"
+        memory: "8Gi"
+  crossRegion:
+    enabled: true
+    region: us-east-1
+    peerRegion: us-west-2
+    deployPeerLeader: true
+    persistence:
+      size: 50Gi
+    resources:
+      limits:
+        cpu: "4"
+        memory: "32Gi"
+      requests:
+        cpu: "500m"
+        memory: "8Gi"
+
+

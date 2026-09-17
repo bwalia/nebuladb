@@ -134,3 +134,29 @@ groups:
           description: >-
             The disk-critical write gate rejected client mutations in the
             last 5 minutes. Reclaim disk space immediately.
+
+  - name: nebula-replication-ha
+    rules:
+      - alert: NebulaFollowerNotCaughtUp
+        expr: nebula_replication_caught_up == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Follower not caught up on {{ $labels.instance }}"
+          description: >-
+            /healthz/caught-up has reported not-caught-up for 15m.
+            Check NEBULA_FOLLOW_LEADER, the leader-probe proxy sidecar
+            (API key auth), and follower logs (nebula_grpc::follower).
+            See docs/runbooks/ha-replication.md.
+
+      - alert: NebulaReplicationLagHigh
+        expr: nebula_replication_lag_bytes > 100 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Replication lag {{ $value | humanize1024 }}B on {{ $labels.instance }}"
+          description: >-
+            Follower same-segment lag exceeds 100 MiB. Investigate
+            leader write rate, follower apply stalls, or network.

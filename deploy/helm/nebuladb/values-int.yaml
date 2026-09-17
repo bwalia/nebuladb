@@ -60,3 +60,18 @@ showcase:
 externalSecret:
   enabled: false
 environment: int
+
+# Within-region follower + cross-region second leader (us-east-1 /
+# us-west-2 labels on one cluster). Primary ingress stays on
+# int-nebuladb.nebuladb.net; region-b is ClusterIP-only for lab tests.
+ha:
+  withinRegion:
+    enabled: true
+    followers: 1
+    # Prefer a different node from the primary when the scheduler can.
+    # Empty = any node; anti-affinity is left soft via topology later.
+  crossRegion:
+    enabled: true
+    region: us-east-1
+    peerRegion: us-west-2
+    deployPeerLeader: true

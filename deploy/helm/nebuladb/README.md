@@ -40,21 +40,38 @@ NebulaDB is currently in-memory single-node; rolling alongside a
 second writer would split state. Once snapshot-and-restore ships,
 the strategy flips to `RollingUpdate`.
 
+**Liveness must use `/healthz/live`**, not `/healthz`. During WAL /
+snapshot recovery `/healthz` returns 503; probing it as liveness
+OOM-loops or kill-loops a healthy recovering primary (seen on prod
+with a multi-million-doc corpus).
+
 ## Key values
 
 | Path | Default | Purpose |
 |---|---|---|
 | `server.image.repository` | `bwalia/nebula-server` | Docker Hub repo |
 | `server.image.tag` | `latest` | Image tag — pin in production |
-| `server.replicaCount` | `1` | Currently must stay 1 (see above) |
+| `server.replicaCount` | `1` | Must stay 1 per role (RWO PVC); use `ha.*` for mirrors |
 | `server.env.*` | various | Mirrors every `NEBULA_*` env var |
 | `server.secretEnv` | `{}` | Map env-var → Secret name for JWT / API keys |
 | `server.ingress.enabled` | `false` | Set true to expose REST |
-| `server.persistence.enabled` | `false` | Reserved for future snapshot feature |
+| `server.persistence.enabled` | `false` | WAL + snapshots on a PVC when true |
+| `ha.withinRegion.enabled` | `false` | Deploy a follower that tails the primary over gRPC |
+| `ha.crossRegion.enabled` | `false` | Set `NEBULA_REGION` + peer WAL; optional region-b leader |
 | `redis.enabled` | `false` | Bundle Bitnami Redis |
 | `externalRedisUrl` | `""` | Point at external Redis |
 | `showcase.enabled` | `true` | Deploy the React admin UI |
 | `serviceMonitor.enabled` | `false` | kube-prometheus-stack scrape target |
+
+### HA topology
+
+HA is **multi-Deployment**, not replica scale-out:
+
+- Primary: existing `<release>` Deployment (role `leader` when a follower is enabled)
+- Follower: `<release>-follower` + own PVC (`NEBULA_FOLLOW_LEADER`, `NEBULA_LEADER_REST_URL`)
+- Region-b: `<release>-region-b` + own PVC (`NEBULA_CROSS_REGION_PEERS` both ways)
+
+Enable on int via `values-int.yaml` (`ha.withinRegion` + `ha.crossRegion`). Verify with `/api/v1/admin/replication` and `scripts/test_multiregion.sh` pointed at the two REST Services.
 
 See `values.yaml` for the full list with inline comments.
 

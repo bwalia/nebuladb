@@ -88,6 +88,22 @@ endpoints:
       - "[STATUS] == 200"
       - "[BODY].status == ok"
 
+  - name: nebula-follower caught-up
+    group: NebulaDB (replication profile)
+    url: "http://nebula-follower:8080/healthz/caught-up"
+    interval: 30s
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY].caught_up == true"
+
+  - name: nebula-region-b (REST)
+    group: NebulaDB (multi-region)
+    url: "http://region-b:8080/healthz"
+    interval: 15s
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY].status == ok"
+
   # ---------------------------------------------------------------------------
   # AI sidecars
   # ---------------------------------------------------------------------------
