@@ -1,0 +1,21 @@
+name: probe-origin
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe
+        run: |
+          for port in 80 443 8888 30976; do
+            curl -sS -m 8 -o /tmp/b -w "193.237.176.232:$port -> %{http_code} t=%{time_total}\n" \
+              -H 'Host: showcase.nebuladb.net' http://193.237.176.232:$port/ || echo "193.237.176.232:$port FAIL"
+          done
+          for ip in 77.68.126.63 72.62.211.28 85.190.106.88; do
+            curl -sS -m 8 -o /dev/null -w "$ip:80 -> %{http_code} t=%{time_total}\n" \
+              -H 'Host: showcase.nebuladb.net' http://$ip:80/ || echo "$ip FAIL"
+          done
+          # Does solomon backend address differ? Check response time to 8888 with solomon host
+          curl -sS -m 8 -o /dev/null -w "8888 solomon host -> %{http_code} t=%{time_total}\n" \
+            -H 'Host: solomon.fictionally.org' http://193.237.176.232:8888/ || echo solomon-fail
+          curl -sS -m 8 -o /dev/null -w "8888 showcase host -> %{http_code} t=%{time_total}\n" \
+            -H 'Host: showcase.nebuladb.net' http://193.237.176.232:8888/ || echo showcase-fail
