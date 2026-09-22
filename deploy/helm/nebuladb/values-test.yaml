@@ -17,7 +17,7 @@ server:
 
   ingress:
     enabled: true
-    className: traefik-edge
+    className: traefik
     annotations:
       cert-manager.io/cluster-issuer: main-issuer
     hosts:

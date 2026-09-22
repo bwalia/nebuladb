@@ -7,9 +7,8 @@
 #
 # Images are public Docker Hub (bwalia/*), so no imagePullSecret is
 # needed. TLS is issued by cert-manager (`main-issuer`) and the host is
-# published through `traefik-edge` on the public edge nodes (hostNetwork
-# :80). The wslproxy POP proxies Host-header traffic to those nodes —
-# not to the LAN-only :8888 Traefik entry.
+# published through Traefik on k3s1 (`ingressClassName: traefik`). The
+# wslproxy POP proxies Host-header traffic to 193.237.176.232:8888.
 
 server:
   image:
@@ -29,7 +28,7 @@ server:
 
   ingress:
     enabled: true
-    className: traefik-edge
+    className: traefik
     annotations:
       cert-manager.io/cluster-issuer: main-issuer
     hosts:
