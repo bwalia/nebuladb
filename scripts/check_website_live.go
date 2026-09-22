@@ -11,8 +11,15 @@
 //
 //	-limit 10          how many live sites to update (default 10)
 //	-candidates 200    how many search hits to scan for a website field
+//	-ids id1,id2       fetch these doc ids directly (skips search) — use for demos
 //	-dry-run           probe only; do not upsert
 //	-bucket leads      bucket name
+//
+// Note: the prod leads corpus often has no `website` metadata, so search finds
+// nothing until that field is ingested. Seed demo ids then pass -ids, e.g.:
+//
+//	go run scripts/check_website_live.go -dry-run \
+//	  -ids demo-web-001,demo-web-002,demo-web-003,demo-web-004
 package main
 
 import (
@@ -37,6 +44,7 @@ func main() {
 
 	limit := flag.Int("limit", 10, "max leads to mark is_website_live=true")
 	candidates := flag.Int("candidates", 200, "search hits to scan for non-empty website")
+	idsFlag := flag.String("ids", "", "comma-separated doc ids to check (skips search)")
 	bucket := flag.String("bucket", "leads", "bucket name")
 	dryRun := flag.Bool("dry-run", false, "probe only; skip upsert")
 	flag.Parse()
@@ -44,14 +52,24 @@ func main() {
 	client := &http.Client{Timeout: 30 * time.Second}
 	api := &nebulaAPI{base: strings.TrimRight(baseURL, "/"), token: token, http: client}
 
-	fmt.Printf("scanning up to %d candidates in %q for non-empty website…\n", *candidates, *bucket)
-	withSite, err := api.findLeadsWithWebsite(*bucket, *candidates)
+	var (
+		withSite []leadHit
+		err      error
+	)
+	if ids := splitCSV(*idsFlag); len(ids) > 0 {
+		fmt.Printf("loading %d explicit id(s) from %q…\n", len(ids), *bucket)
+		withSite, err = api.leadsByIDs(*bucket, ids)
+	} else {
+		fmt.Printf("scanning up to %d candidates in %q for non-empty website…\n", *candidates, *bucket)
+		withSite, err = api.findLeadsWithWebsite(*bucket, *candidates)
+	}
 	if err != nil {
 		fatal(err.Error())
 	}
 	fmt.Printf("found %d lead(s) with website set\n", len(withSite))
 	if len(withSite) == 0 {
 		fmt.Println("nothing to do (corpus may not store a website metadata field yet)")
+		fmt.Println("tip: seed demos then: go run scripts/check_website_live.go -dry-run -ids demo-web-001,demo-web-002,demo-web-003,demo-web-004")
 		return
 	}
 
@@ -100,6 +118,25 @@ type nebulaAPI struct {
 	base  string
 	token string
 	http  *http.Client
+}
+
+func (a *nebulaAPI) leadsByIDs(bucket string, ids []string) ([]leadHit, error) {
+	out := make([]leadHit, 0, len(ids))
+	for _, id := range ids {
+		doc, err := a.getDoc(bucket, id)
+		if err != nil {
+			fmt.Printf("  skip %s: %v\n", id, err)
+			continue
+		}
+		meta, _ := doc["metadata"].(map[string]any)
+		site := stringField(meta, "website")
+		if site == "" {
+			fmt.Printf("  skip %s: website empty\n", id)
+			continue
+		}
+		out = append(out, leadHit{ID: id, Website: site, Metadata: meta})
+	}
+	return out, nil
 }
 
 func (a *nebulaAPI) findLeadsWithWebsite(bucket string, want int) ([]leadHit, error) {
@@ -298,6 +335,18 @@ func stringField(m map[string]any, key string) string {
 		}
 		return s
 	}
+}
+
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envOr(k, def string) string {
