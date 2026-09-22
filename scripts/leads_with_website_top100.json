@@ -1,0 +1,41 @@
+{
+  "bucket": "leads",
+  "source": "showcase.nebuladb.net",
+  "note": "Prod corpus has no website in admin metadata_keys; only docs with website set (incl. demos) appear here. Semantic search cannot filter IS NOT NULL across 3M docs.",
+  "count": 4,
+  "total_found_with_website": 4,
+  "leads": [
+    {
+      "id": "demo-web-001",
+      "website": "https://example.com",
+      "company_name": "Example Corp",
+      "city": "London",
+      "email": null,
+      "is_website_live": true
+    },
+    {
+      "id": "demo-web-002",
+      "website": "https://github.com",
+      "company_name": "GitHub",
+      "city": "San Francisco",
+      "email": null,
+      "is_website_live": true
+    },
+    {
+      "id": "demo-web-003",
+      "website": "https://httpbin.org",
+      "company_name": "HTTPBin",
+      "city": "Remote",
+      "email": null,
+      "is_website_live": true
+    },
+    {
+      "id": "demo-web-004",
+      "website": "https://this-host-should-not-resolve.invalid",
+      "company_name": "Dead Site Demo",
+      "city": "Nowhere",
+      "email": null,
+      "is_website_live": null
+    }
+  ]
+}
