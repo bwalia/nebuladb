@@ -1,0 +1,101 @@
+# One-shot: fix nebuladb edge backend (public edge node, not LAN :8888).
+# Uses repo secrets. Delete after success.
+name: fix-showcase-edge
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login + re-point rule + verify
+        env:
+          WSL_API: ${{ secrets.WSLPROXY_API_BASE }}
+          WSL_EMAIL: ${{ secrets.WSLPROXY_ADMIN_EMAIL }}
+          WSL_PASS: ${{ secrets.WSLPROXY_ADMIN_PASSWORD }}
+          # Public k3s edge nodes running traefik-edge (hostNetwork :80).
+          # POP can reach these; 193.237.176.232:8888 is LAN-only and times out.
+          BACKEND: "77.68.126.63:80"
+        run: |
+          set -euo pipefail
+          echo "WSL_API host: $(echo "$WSL_API" | sed -E 's#https?://##' | cut -d/ -f1)"
+          echo "email set: $([ -n "$WSL_EMAIL" ] && echo yes || echo no)"
+          echo "pass set: $([ -n "$WSL_PASS" ] && echo yes || echo no)"
+
+          login() {
+            local base="$1"
+            curl -sS --max-time 30 -X POST "${base%/}/api/user/login" \
+              -H 'Content-Type: application/json' \
+              -d "$(jq -nc --arg e "$WSL_EMAIL" --arg p "$WSL_PASS" '{email:$e,password:$p}')"
+          }
+
+          RESP=$(login "$WSL_API" || true)
+          TOKEN=$(echo "$RESP" | jq -r '.data.accessToken // empty')
+          if [ -z "$TOKEN" ]; then
+            echo "primary login failed. body keys: $(echo "$RESP" | jq -r 'keys // .' 2>/dev/null || echo raw)"
+            echo "trying https://lon1.pop0.uk ..."
+            RESP=$(login "https://lon1.pop0.uk" || true)
+            TOKEN=$(echo "$RESP" | jq -r '.data.accessToken // empty')
+            WSL_API="https://lon1.pop0.uk"
+          fi
+          if [ -z "$TOKEN" ]; then
+            echo "trying https://wslproxy.org ..."
+            RESP=$(login "https://wslproxy.org" || true)
+            TOKEN=$(echo "$RESP" | jq -r '.data.accessToken // empty')
+            WSL_API="https://wslproxy.org"
+          fi
+          [ -n "$TOKEN" ] || { echo "::error::all login attempts failed"; echo "$RESP" | head -c 400; exit 1; }
+          echo "authenticated at $WSL_API"
+
+          # Patch committed rule: multi-backend across edge nodes for HA.
+          RULE=$(jq --arg b1 "$BACKEND" --arg b2 "72.62.211.28:80" --arg b3 "85.190.106.88:80" '
+            .match.response.backends = [
+              {address:$b1, label:"traefik-edge cloud003", weight:100},
+              {address:$b2, label:"traefik-edge cloud001", weight:100},
+              {address:$b3, label:"traefik-edge vps002", weight:100}
+            ]
+            | .match.response.redirect_uri = $b1
+            | del(.match.rules.jwt_token_validation)
+          ' .github/wslproxy/data/rules/prod/04152bcb-b3ae-e831-2a07-9d38cca77688.json)
+
+          BODY=$(jq -cn --argjson data "[$RULE]" '{data:$data, dataType:"rules"}')
+          CODE=$(curl -sS --max-time 60 -w "%{http_code}" -o /tmp/imp.json \
+            -X POST "${WSL_API%/}/api/projects/import?_format=json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "x-platform: react-admin" \
+            -H "Content-Type: application/json" \
+            --data-raw "$BODY")
+          echo "import rules -> HTTP $CODE"
+          cat /tmp/imp.json | head -c 500; echo
+          [ "$CODE" = "200" ] || [ "$CODE" = "201" ] || exit 1
+
+          # Re-assert servers so rule linkage sticks.
+          SERVERS='[]'
+          for ring in int test acc prod; do
+            SERVERS=$(jq -c --argjson acc "$SERVERS" 'del(._ring) | $acc + [.]' \
+              "deploy/edge/wslproxy-server-${ring}.json")
+          done
+          BODY=$(jq -cn --argjson data "$SERVERS" '{data:$data, dataType:"servers"}')
+          CODE=$(curl -sS --max-time 60 -w "%{http_code}" -o /tmp/imps.json \
+            -X POST "${WSL_API%/}/api/projects/import?_format=json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "x-platform: react-admin" \
+            -H "Content-Type: application/json" \
+            --data-raw "$BODY")
+          echo "import servers -> HTTP $CODE"
+          [ "$CODE" = "200" ] || [ "$CODE" = "201" ] || exit 1
+
+          echo "waiting for edge to pick up rule..."
+          ok=0
+          for i in $(seq 1 18); do
+            code=$(curl -sS -o /tmp/body -m 12 --max-redirs 0 -w '%{http_code}' \
+              https://showcase.nebuladb.net/ || echo 000)
+            echo "[$i] showcase -> $code"
+            if [ "$code" = "200" ]; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = "1" ] || { echo "::error::showcase still unhealthy"; exit 1; }
+          echo "✅ showcase.nebuladb.net is live"

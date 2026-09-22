@@ -53,7 +53,7 @@ server:
 
   ingress:
     enabled: true
-    className: wslproxy
+    className: traefik-edge
     annotations:
       cert-manager.io/cluster-issuer: main-issuer
     hosts:

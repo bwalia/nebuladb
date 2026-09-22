@@ -6,20 +6,29 @@
     "response": {
       "backends": [
         {
-          "address": "193.237.176.232:8888",
-          "label": "k3s1 ingress entry (Host-header routed); replaces retired AWS ELB 13.42.188.136",
+          "address": "77.68.126.63:80",
+          "label": "traefik-edge cloud003",
+          "weight": 100
+        },
+        {
+          "address": "72.62.211.28:80",
+          "label": "traefik-edge cloud001",
+          "weight": 100
+        },
+        {
+          "address": "85.190.106.88:80",
+          "label": "traefik-edge vps002",
           "weight": 100
         }
       ],
       "code": 305,
-      "redirect_uri": "193.237.176.232:8888",
+      "redirect_uri": "77.68.126.63:80",
       "routing": {
         "mode": "least_conn"
       },
       "strip_path": false
     },
     "rules": {
-      "jwt_token_validation": "equals",
       "path": "/",
       "path_key": "starts_with"
     }
