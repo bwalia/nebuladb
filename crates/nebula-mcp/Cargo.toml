@@ -1,0 +1,31 @@
+[package]
+name = "nebula-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nebula-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Official Rust MCP SDK: tools/resources/prompts + Streamable HTTP server.
+rmcp = { workspace = true }
+schemars = { workspace = true }
+# nebula-mcp is a *client* of a running nebula-server; it never embeds the
+# index. This keeps it independently deployable (design 0012) and reuses
+# nebula-server's existing auth, rate limiting, and durability.
+reqwest = { workspace = true }
+axum = { workspace = true }
+http = "1"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
