@@ -44,6 +44,15 @@ server:
       cpu: "500m"
       memory: "8Gi"
 
+  # Real embeddings via LAN Ollama (overrides chart defaults). Changing
+  # model/dim requires a redeploy + leads empty/reingest — mock-384
+  # vectors are not compatible with nomic-embed-text@768.
+  env:
+    NEBULA_OPENAI_API_KEY: "ollama"
+    NEBULA_OPENAI_BASE_URL: "http://192.168.1.177:11434/v1"
+    NEBULA_OPENAI_MODEL: "nomic-embed-text"
+    NEBULA_EMBED_DIM: "768"
+
   persistence:
     enabled: true
     storageClass: local-path
