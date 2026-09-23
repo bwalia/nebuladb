@@ -228,6 +228,13 @@ pub struct InsertDocumentParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AuditParams {
+    /// Most recent entries to return (default 50).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DocRefParams {
     /// Bucket the document lives in.
     pub bucket: String,
@@ -585,6 +592,48 @@ impl NebulaMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let c = self.client_for(&parts);
         render(c.get("/admin/slow").await)
+    }
+
+    // ---- Security / recovery ----
+
+    #[tool(
+        description = "Return the most recent API audit entries: timestamp, principal (API key \
+                       or client IP), method, path, and HTTP status. Use to review who did what \
+                       and to spot repeated 401/403/429 responses."
+    )]
+    async fn audit_log(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<AuditParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let c = self.client_for(&parts);
+        let limit = p.limit.unwrap_or(50);
+        render(c.get(&format!("/admin/audit?limit={limit}")).await)
+    }
+
+    #[tool(
+        description = "List backup and restore jobs known to this server, with their status. An \
+                       empty list means no backup has been taken since the server started."
+    )]
+    async fn list_backups(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let c = self.client_for(&parts);
+        render(c.get("/admin/backups").await)
+    }
+
+    #[tool(
+        description = "Report durability: whether writes are persisted (WAL enabled), the data \
+                       directory, and WAL segment count, size, and sequence range. The WAL range \
+                       bounds what a restore can replay."
+    )]
+    async fn durability_status(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let c = self.client_for(&parts);
+        render(c.get("/admin/durability").await)
     }
 }
 

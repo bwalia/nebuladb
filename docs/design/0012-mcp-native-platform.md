@@ -53,7 +53,7 @@ Why this matters:
         ▼
   ┌─────────────────────────┐
   │ nebula-mcp (this crate)  │   rmcp 2.2 StreamableHttpService on axum
-  │  ├─ tools.rs   (17 tools)│   #[tool_router] over NebulaMcp
+  │  ├─ tools.rs   (20 tools)│   #[tool_router] over NebulaMcp
   │  ├─ server.rs  (resources│   ServerHandler: resources + prompts + get_info
   │  │             + prompts) │
   │  └─ client.rs  (reqwest) │   forwards caller bearer → upstream
@@ -80,6 +80,7 @@ the caller's `Authorization` header and forward it upstream.
 | Cluster | `cluster_health` | `/admin/cluster/nodes` |
 | Backups | `create_snapshot` | `/admin/snapshot` |
 | Observability | `server_stats`, `reliability_status`, `replication_status`, `slow_queries` | `/admin/*` |
+| Security / recovery | `audit_log`, `list_backups`, `durability_status` | `/admin/audit`, `/admin/backups`, `/admin/durability` |
 
 ### 4a. Changes in the port to `main`
 
@@ -167,6 +168,6 @@ start it and point it at a nebula-server.
 Unit tests cover tool parameter schemas (what the agent introspects) and
 the error-rendering contract. A live smoke test boots a real
 nebula-server + nebula-mcp and drives the full MCP JSON-RPC lifecycle:
-`initialize` → `tools/list` (17 tools) → `tools/call semantic_search`
+`initialize` → `tools/list` (20 tools) → `tools/call semantic_search`
 (real scored hit) → `execute_sql` (real `sql_invalid` surfaced as a
 visible tool error) → `resources/read` → `prompts/list`.

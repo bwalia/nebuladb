@@ -1,0 +1,1 @@
+anthropic[mcp]>=1.8
