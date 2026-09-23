@@ -39,12 +39,19 @@ spec:
             - name: NEBULA_SERVER
               value: {{ include "nebuladb.showcase.serverUrl" . | quote }}
             # nginx's upstream pools use bare host:port (no scheme), and
-            # they're resolved at config-load. In this single-node deploy
-            # both leader and follower point at the same server Service.
+            # they're resolved at config-load, so each must name a Service
+            # that exists. The follower is the pools' `backup` peer: it
+            # serves reads (and takes failed-over writes) only while the
+            # leader is down or recovering. Without a within-region
+            # follower both point at the leader, which is harmless.
             - name: NEBULA_LEADER_HOST
               value: {{ include "nebuladb.fullname" . | quote }}
             - name: NEBULA_FOLLOWER_HOST
+              {{- if .Values.ha.withinRegion.enabled }}
+              value: {{ include "nebuladb.follower.fullname" . | quote }}
+              {{- else }}
               value: {{ include "nebuladb.fullname" . | quote }}
+              {{- end }}
             # Cluster DNS for nginx's variable-based proxy_pass (the image
             # default 127.0.0.11 is Docker-only and unreachable in k8s).
             - name: NGINX_RESOLVER
