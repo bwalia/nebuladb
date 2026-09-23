@@ -111,6 +111,11 @@ a pure REST client. Differences from that first version:
   the fix.
 - `semantic_search` and `answer_question` gained `hybrid`;
   `answer_question` gained `bucket`.
+- Every tool carries MCP annotations (`readOnlyHint`, plus
+  `destructiveHint` / `idempotentHint` on the four writes), enforced by a
+  unit test. Clients use them to gate writes; the showcase MCP tab
+  renders them. `serverInfo` reports `nebula-mcp` and its crate version
+  rather than rmcp's defaults.
 - Default bind is `127.0.0.1:8090`. `NEBULA_MCP_UPSTREAM_TOKEN` is lent to
   any caller without its own bearer, so listening on all interfaces must
   be an explicit choice.
@@ -171,3 +176,18 @@ nebula-server + nebula-mcp and drives the full MCP JSON-RPC lifecycle:
 `initialize` → `tools/list` (20 tools) → `tools/call semantic_search`
 (real scored hit) → `execute_sql` (real `sql_invalid` surfaced as a
 visible tool error) → `resources/read` → `prompts/list`.
+
+## 9. Deployment with the showcase
+
+The server image ships both binaries (`nebula-server`, `nebula-mcp`).
+The showcase's nginx proxies `/mcp` to `${NEBULA_MCP}` with the same
+injected bearer as `/api`:
+
+- **Helm:** a `mcp` sidecar in the showcase pod (`showcase.mcp.enabled`,
+  default on) runs the server image with the nebula-mcp entrypoint on
+  the pod loopback. If the image predates nebula-mcp, the sidecar idles
+  instead of crash-looping, so only the MCP tab degrades.
+- **Compose:** a `nebula-mcp` service on the private network, with
+  `NEBULA_MCP_ALLOW_ANY_HOST=true` since nginx reaches it by service name.
+- **Dev:** Vite proxies `/mcp` to `NEBULA_MCP_TARGET` (default `:8090`).
+

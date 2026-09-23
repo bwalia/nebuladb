@@ -211,6 +211,21 @@ showcase:
   # it at the cluster DNS. 10.43.0.10 is the default kube-dns ClusterIP
   # on k3s (service CIDR 10.43.0.0/16); override if your cluster differs.
   nginxResolver: "10.43.0.10"
+  # nebula-mcp sidecar for the showcase's MCP tab. Runs the server image
+  # (same repository + tag as `server.image`, so its tools always match
+  # the server's REST surface) with the nebula-mcp entrypoint, bound to
+  # the pod's loopback. nginx proxies /mcp to it and injects the app
+  # bearer, which nebula-mcp forwards to nebula-server. Disable to drop
+  # the container; the MCP tab then reports the server as unreachable.
+  mcp:
+    enabled: true
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "64Mi"
+      requests:
+        cpu: "5m"
+        memory: "16Mi"
 
 # ---------------------------------------------------------------------------
 # Redis (bundled Bitnami subchart)

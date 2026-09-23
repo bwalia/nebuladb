@@ -47,7 +47,7 @@ const NAV: NavItem[] = [
   { id: "rag", label: "RAG chat", hint: "Streaming answers", icon: "❯", group: "ai" },
   { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query", icon: "⟡", group: "ai" },
   { id: "agents", label: "AI agents", hint: "Tool-calling agents over MCP", icon: "⬡", group: "ai" },
-  { id: "mcp", label: "MCP", hint: "Tool catalogue + playground", icon: "⚯", group: "ai" },
+  { id: "mcp", label: "MCP", hint: "Live MCP server + playground", icon: "⚯", group: "ai" },
   { id: "cluster", label: "Cluster", hint: "Topology, regions, failover", icon: "⬢", group: "cluster" },
   { id: "rebalance", label: "Rebalance", hint: "Zero-downtime node swap", icon: "⇄", group: "cluster" },
   { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },

@@ -14,7 +14,7 @@
 
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult,
+    CallToolRequestParams, CallToolResult, GetPromptRequestParams, GetPromptResult, Implementation,
     ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt,
     PromptMessage, ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, Role,
     ServerCapabilities, ServerInfo,
@@ -39,6 +39,8 @@ impl ServerHandler for NebulaMcp {
                 .enable_prompts()
                 .build(),
         )
+        // Report this crate, not the rmcp library (its default).
+        .with_server_info(Implementation::new("nebula-mcp", env!("CARGO_PKG_VERSION")))
         .with_instructions(
             "NebulaDB MCP server. Query and operate an AI-native database: SQL, semantic and \
              vector search, RAG, document CRUD, long-term agent memory (remember / recall), \

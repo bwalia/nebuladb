@@ -253,7 +253,8 @@ impl NebulaMcp {
     #[tool(
         description = "Execute a SQL query against NebulaDB. Supports semantic_match() for \
                        vector search, metadata filters, GROUP BY, and inner JOINs. Returns \
-                       result rows as JSON."
+                       result rows as JSON.",
+        annotations(read_only_hint = true)
     )]
     async fn execute_sql(
         &self,
@@ -266,7 +267,8 @@ impl NebulaMcp {
 
     #[tool(
         description = "Return the query plan for a SQL statement without executing it. Use to \
-                       understand how NebulaDB will run a query (retrieval, filters, joins)."
+                       understand how NebulaDB will run a query (retrieval, filters, joins).",
+        annotations(read_only_hint = true)
     )]
     async fn explain_query(
         &self,
@@ -282,7 +284,8 @@ impl NebulaMcp {
     #[tool(
         description = "Semantic (natural-language) search over the vector index. Embeds the \
                        query server-side and returns the top-k most similar documents with \
-                       distance scores and metadata."
+                       distance scores and metadata.",
+        annotations(read_only_hint = true)
     )]
     async fn semantic_search(
         &self,
@@ -305,7 +308,8 @@ impl NebulaMcp {
 
     #[tool(
         description = "Nearest-neighbour search from a raw query vector (length must equal the \
-                       index dimension). Use semantic_search instead if you have text."
+                       index dimension). Use semantic_search instead if you have text.",
+        annotations(read_only_hint = true)
     )]
     async fn vector_search(
         &self,
@@ -331,7 +335,8 @@ impl NebulaMcp {
     #[tool(
         description = "Answer a question using retrieval-augmented generation: retrieve the \
                        most relevant context from the corpus, then generate a grounded answer \
-                       with the configured LLM. Returns the answer plus the cited context."
+                       with the configured LLM. Returns the answer plus the cited context.",
+        annotations(read_only_hint = true)
     )]
     async fn answer_question(
         &self,
@@ -357,7 +362,12 @@ impl NebulaMcp {
     #[tool(
         description = "Store a long-term memory for a user (a preference, fact, or event) so it \
                        can be recalled in later sessions. Write `text` as a self-contained \
-                       sentence. Memories are durable and survive restarts."
+                       sentence. Memories are durable and survive restarts.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
     )]
     async fn remember(
         &self,
@@ -391,7 +401,8 @@ impl NebulaMcp {
     #[tool(
         description = "Recall a user's long-term memories most relevant to a query. Returns only \
                        that user's memories, best match first. Call this at the start of a task \
-                       to personalise it."
+                       to personalise it.",
+        annotations(read_only_hint = true)
     )]
     async fn recall(
         &self,
@@ -424,7 +435,12 @@ impl NebulaMcp {
 
     #[tool(
         description = "Insert or update a document in a bucket. The text is chunked and embedded \
-                       server-side. Re-using an existing doc_id upserts."
+                       server-side. Re-using an existing doc_id upserts.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true
+        )
     )]
     async fn insert_document(
         &self,
@@ -444,7 +460,8 @@ impl NebulaMcp {
 
     #[tool(
         description = "Fetch a document by bucket and id. Works for both single-row documents \
-                       and chunked ones written by insert_document (chunks are returned in order)."
+                       and chunked ones written by insert_document (chunks are returned in order).",
+        annotations(read_only_hint = true)
     )]
     async fn get_document(
         &self,
@@ -493,7 +510,14 @@ impl NebulaMcp {
         })))
     }
 
-    #[tool(description = "Delete a document (and all of its chunks) by bucket and id.")]
+    #[tool(
+        description = "Delete a document (and all of its chunks) by bucket and id.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true
+        )
+    )]
     async fn delete_document(
         &self,
         Extension(parts): Extension<Parts>,
@@ -515,7 +539,8 @@ impl NebulaMcp {
     }
 
     #[tool(
-        description = "List all buckets (collections) with document counts and per-bucket stats."
+        description = "List all buckets (collections) with document counts and per-bucket stats.",
+        annotations(read_only_hint = true)
     )]
     async fn list_buckets(
         &self,
@@ -529,7 +554,8 @@ impl NebulaMcp {
 
     #[tool(
         description = "Report cluster health and node topology (roles, reachability). Use this \
-                       first when diagnosing availability or replication issues."
+                       first when diagnosing availability or replication issues.",
+        annotations(read_only_hint = true)
     )]
     async fn cluster_health(
         &self,
@@ -541,7 +567,14 @@ impl NebulaMcp {
 
     // ---- Backups ----
 
-    #[tool(description = "Trigger an on-demand snapshot (backup) of the current index.")]
+    #[tool(
+        description = "Trigger an on-demand snapshot (backup) of the current index.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false
+        )
+    )]
     async fn create_snapshot(
         &self,
         Extension(parts): Extension<Parts>,
@@ -554,7 +587,8 @@ impl NebulaMcp {
 
     #[tool(
         description = "Return aggregate server stats: document counts, request/error counters, \
-                       cache hit ratios, search and RAG counts."
+                       cache hit ratios, search and RAG counts.",
+        annotations(read_only_hint = true)
     )]
     async fn server_stats(
         &self,
@@ -566,7 +600,8 @@ impl NebulaMcp {
 
     #[tool(
         description = "Report the operating mode and resource pressure (memory/CPU/disk) plus \
-                       AI-subsystem health. The one-stop reliability answer (design 0010)."
+                       AI-subsystem health. The one-stop reliability answer (design 0010).",
+        annotations(read_only_hint = true)
     )]
     async fn reliability_status(
         &self,
@@ -576,7 +611,10 @@ impl NebulaMcp {
         render(c.get("/admin/reliability").await)
     }
 
-    #[tool(description = "Return replication status and lag against the leader / remote regions.")]
+    #[tool(
+        description = "Return replication status and lag against the leader / remote regions.",
+        annotations(read_only_hint = true)
+    )]
     async fn replication_status(
         &self,
         Extension(parts): Extension<Parts>,
@@ -585,7 +623,10 @@ impl NebulaMcp {
         render(c.get("/admin/replication").await)
     }
 
-    #[tool(description = "Return the slowest recently-observed queries, for latency triage.")]
+    #[tool(
+        description = "Return the slowest recently-observed queries, for latency triage.",
+        annotations(read_only_hint = true)
+    )]
     async fn slow_queries(
         &self,
         Extension(parts): Extension<Parts>,
@@ -599,7 +640,8 @@ impl NebulaMcp {
     #[tool(
         description = "Return the most recent API audit entries: timestamp, principal (API key \
                        or client IP), method, path, and HTTP status. Use to review who did what \
-                       and to spot repeated 401/403/429 responses."
+                       and to spot repeated 401/403/429 responses.",
+        annotations(read_only_hint = true)
     )]
     async fn audit_log(
         &self,
@@ -613,7 +655,8 @@ impl NebulaMcp {
 
     #[tool(
         description = "List backup and restore jobs known to this server, with their status. An \
-                       empty list means no backup has been taken since the server started."
+                       empty list means no backup has been taken since the server started.",
+        annotations(read_only_hint = true)
     )]
     async fn list_backups(
         &self,
@@ -626,7 +669,8 @@ impl NebulaMcp {
     #[tool(
         description = "Report durability: whether writes are persisted (WAL enabled), the data \
                        directory, and WAL segment count, size, and sequence range. The WAL range \
-                       bounds what a restore can replay."
+                       bounds what a restore can replay.",
+        annotations(read_only_hint = true)
     )]
     async fn durability_status(
         &self,
@@ -712,6 +756,32 @@ mod tests {
                 .filter_map(|x| x.as_str())
                 .collect();
             assert!(req.contains(&"user_id"), "user_id must be required: {v}");
+        }
+    }
+
+    #[test]
+    fn every_tool_declares_whether_it_writes() {
+        // Clients (and the showcase MCP tab) gate on these hints, so a new
+        // tool must state them and a write must never claim read-only.
+        let writes = [
+            "create_snapshot",
+            "delete_document",
+            "insert_document",
+            "remember",
+        ];
+        for tool in NebulaMcp::tool_router().list_all() {
+            let ann = tool
+                .annotations
+                .unwrap_or_else(|| panic!("{} has no annotations", tool.name));
+            let read_only = ann
+                .read_only_hint
+                .unwrap_or_else(|| panic!("{} lacks readOnlyHint", tool.name));
+            assert_eq!(
+                read_only,
+                !writes.contains(&tool.name.as_ref()),
+                "{} readOnlyHint is wrong",
+                tool.name
+            );
         }
     }
 

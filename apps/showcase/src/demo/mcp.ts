@@ -1,16 +1,14 @@
 /**
- * MCP tool catalogue (build brief section 17).
+ * REST-backed tool catalogue for the Agents tab's scripted plans.
  *
- * NebulaDB does not ship an MCP server endpoint yet, so the transport
- * is simulated — but the *tools are not*. Each entry below is a thin,
- * honest wrapper over a REST endpoint that genuinely exists on this
- * cluster, so invoking a tool in the playground performs the real call
- * and the trace panel shows the real traffic.
+ * The MCP tab talks to the real nebula-mcp server (demo/mcpClient.ts).
+ * The Agents tab still replays fixed plans for a reproducible demo, and
+ * each step here calls the REST endpoint that the equivalent nebula-mcp
+ * tool wraps. For Claude planning the calls over real MCP, see
+ * examples/nebula-agents.
  *
- * That distinction matters: an audience can accept "the MCP wire
- * protocol is stubbed" far more easily than a tool that returns
- * invented data. Tools whose backing endpoint does not exist are
- * marked `backing: null` and refuse to execute rather than fake it.
+ * Tools whose backing endpoint does not exist are marked
+ * `backing: null` and refuse to execute rather than fake it.
  */
 import { api } from "../api";
 

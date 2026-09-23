@@ -49,6 +49,9 @@ spec:
             # default 127.0.0.11 is Docker-only and unreachable in k8s).
             - name: NGINX_RESOLVER
               value: {{ .Values.showcase.nginxResolver | quote }}
+            # /mcp → the nebula-mcp sidecar on the pod's loopback.
+            - name: NEBULA_MCP
+              value: "http://127.0.0.1:8090"
           {{- with .Values.showcase.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -64,6 +67,33 @@ spec:
               port: 80
             initialDelaySeconds: 2
             periodSeconds: 5
+        {{- if .Values.showcase.mcp.enabled }}
+        # MCP adapter for the MCP tab. Loopback-only: nginx in this pod is
+        # its sole client, which also satisfies rmcp's Host allow-list.
+        - name: mcp
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          # A crash-looping container makes the whole pod NotReady, which
+          # would take the showcase UI down with it. Server images built
+          # before nebula-mcp shipped (a deploy-only run pinned to an old
+          # tag) lack the binary, so idle instead of exiting: /mcp then
+          # 502s and only the MCP tab degrades.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              if [ -x /usr/local/bin/nebula-mcp ]; then exec /usr/local/bin/nebula-mcp; fi
+              echo "nebula-mcp is not in this server image; the showcase MCP tab stays offline" >&2
+              exec sleep infinity
+          env:
+            - name: NEBULA_MCP_BIND
+              value: "127.0.0.1:8090"
+            - name: NEBULA_MCP_UPSTREAM_URL
+              value: {{ include "nebuladb.showcase.serverUrl" . | quote }}
+          {{- with .Values.showcase.mcp.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
