@@ -52,8 +52,9 @@ COPY apps apps
 # lock — a common source of "works on my machine" drift.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p nebula-server && \
-    cp /src/target/release/nebula-server /usr/local/bin/nebula-server
+    cargo build --release --locked -p nebula-server -p nebula-mcp && \
+    cp /src/target/release/nebula-server /usr/local/bin/nebula-server && \
+    cp /src/target/release/nebula-mcp /usr/local/bin/nebula-mcp
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime
@@ -83,6 +84,10 @@ RUN groupadd --system --gid 10001 nebula \
 RUN mkdir -p /var/lib/nebuladb && chown nebula:nebula /var/lib/nebuladb
 
 COPY --from=builder /usr/local/bin/nebula-server /usr/local/bin/nebula-server
+# The MCP adapter (crates/nebula-mcp) ships in the same image so it
+# always matches the server's REST surface. Run it by overriding the
+# entrypoint: `--entrypoint /usr/local/bin/nebula-mcp`.
+COPY --from=builder /usr/local/bin/nebula-mcp /usr/local/bin/nebula-mcp
 
 USER nebula
 WORKDIR /home/nebula

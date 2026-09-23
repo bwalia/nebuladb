@@ -19,6 +19,11 @@ export default defineConfig({
         target: process.env.NEBULA_TARGET || "http://localhost:8080",
         changeOrigin: true,
       },
+      // The MCP tab speaks MCP to nebula-mcp (`cargo run -p nebula-mcp`).
+      "/mcp": {
+        target: process.env.NEBULA_MCP_TARGET || "http://localhost:8090",
+        changeOrigin: true,
+      },
       "/metrics": {
         target: process.env.NEBULA_TARGET || "http://localhost:8080",
         changeOrigin: true,
