@@ -129,7 +129,9 @@ server:
     # After changing model/dim: redeploy, then empty + reingest every bucket
     # (existing mock-384 vectors are not compatible).
     NEBULA_OPENAI_API_KEY: "ollama"
-    NEBULA_OPENAI_BASE_URL: "http://192.168.1.177:11434/v1"
+    # Dedicated embed-only Ollama (:11437). Chat clients (kubepilot/strix)
+    # stay on :11434 so large chat models cannot pin/evict the embedder.
+    NEBULA_OPENAI_BASE_URL: "http://192.168.1.177:11437/v1"
     NEBULA_OPENAI_MODEL: "nomic-embed-text"
     NEBULA_EMBED_DIM: "768"
     NEBULA_EMBED_CACHE_SIZE: "20000"
