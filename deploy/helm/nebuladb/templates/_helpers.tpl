@@ -65,6 +65,15 @@ app.kubernetes.io/component: server-region-b
 app.kubernetes.io/component: showcase
 {{- end -}}
 
+{{- define "nebuladb.examples.fullname" -}}
+{{ printf "%s-examples" (include "nebuladb.fullname" .) }}
+{{- end -}}
+
+{{- define "nebuladb.examples.selectorLabels" -}}
+{{ include "nebuladb.selectorLabels" . }}
+app.kubernetes.io/component: examples
+{{- end -}}
+
 {{/* In-cluster DNS for the primary server Service. */}}
 {{- define "nebuladb.server.fullname" -}}
 {{ include "nebuladb.fullname" . }}

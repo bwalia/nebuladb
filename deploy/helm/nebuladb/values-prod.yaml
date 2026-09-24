@@ -68,6 +68,10 @@ server:
     hosts:
       - host: showcase.nebuladb.net
         paths:
+          - path: /examples
+            pathType: Prefix
+            service: nebuladb-examples
+            portNumber: 80
           - path: /
             pathType: Prefix
     tls:
@@ -81,6 +85,10 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
+
+# Claude agents example suite (MCP → NebulaDB), exposed at /examples.
+examples:
+  enabled: true
 
 # App secrets from wslvault (ESO) — pulls secret/nebuladb/prod/config
 # Disabled until Vault is provisioned (policy granting read on

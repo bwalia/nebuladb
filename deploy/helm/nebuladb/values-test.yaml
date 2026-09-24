@@ -30,6 +30,10 @@ server:
     hosts:
       - host: test-showcase.nebuladb.net
         paths:
+          - path: /examples
+            pathType: Prefix
+            service: nebuladb-examples
+            portNumber: 80
           - path: /
             pathType: Prefix
     tls:
@@ -43,6 +47,9 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
+
+examples:
+  enabled: true
 
 # App secrets from wslvault (ESO) — pulls secret/nebuladb/test/config
 # Disabled until Vault is provisioned (policy granting read on

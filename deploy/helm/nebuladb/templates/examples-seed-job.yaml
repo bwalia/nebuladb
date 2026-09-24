@@ -1,0 +1,53 @@
+{{- if and .Values.examples.enabled .Values.examples.seedOnDeploy -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nebuladb.examples.fullname" . }}-seed-{{ .Release.Revision }}
+  labels:
+    {{- include "nebuladb.examples.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    helm.sh/hook-weight: "5"
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        {{- include "nebuladb.examples.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: examples-seed
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: "{{ .Values.examples.image.repository }}:{{ .Values.examples.image.tag }}"
+          imagePullPolicy: {{ .Values.examples.image.pullPolicy }}
+          command:
+            - python
+            - -c
+            - |
+              import json, time, urllib.error, urllib.request
+              base = "http://{{ include "nebuladb.examples.fullname" . }}"
+              for _ in range(60):
+                  try:
+                      urllib.request.urlopen(base + "/healthz", timeout=3)
+                      break
+                  except Exception:
+                      time.sleep(2)
+              else:
+                  raise SystemExit("examples service never became healthy")
+              req = urllib.request.Request(
+                  base + "/examples/seed",
+                  data=b"{}",
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=120) as r:
+                      print(r.read().decode())
+              except urllib.error.HTTPError as e:
+                  print(e.read().decode())
+                  raise
+{{- end -}}

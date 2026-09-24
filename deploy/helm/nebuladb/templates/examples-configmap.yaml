@@ -1,0 +1,18 @@
+{{- if .Values.examples.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nebuladb.examples.fullname" . }}-src
+  labels:
+    {{- include "nebuladb.examples.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+data:
+  nebula_agents.py: |
+{{ .Files.Get "files/examples/nebula_agents.py" | indent 4 }}
+  seed.py: |
+{{ .Files.Get "files/examples/seed.py" | indent 4 }}
+  server.py: |
+{{ .Files.Get "files/examples/server.py" | indent 4 }}
+  requirements.txt: |
+{{ .Files.Get "files/examples/requirements.txt" | indent 4 }}
+{{- end -}}

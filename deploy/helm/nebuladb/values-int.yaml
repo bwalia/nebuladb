@@ -42,6 +42,11 @@ server:
     hosts:
       - host: int-nebuladb.nebuladb.net
         paths:
+          # Examples agents API (more-specific path before showcase /).
+          - path: /examples
+            pathType: Prefix
+            service: nebuladb-examples
+            portNumber: 80
           # No `service`/`portName` → defaults to the showcase gateway.
           - path: /
             pathType: Prefix
@@ -56,6 +61,10 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
+
+# Claude agents example suite (MCP → NebulaDB), exposed at /examples.
+examples:
+  enabled: true
 
 # App secrets from wslvault (ESO) — pulls secret/nebuladb/int/config.
 # Disabled until Vault is provisioned: the ESO token needs a policy

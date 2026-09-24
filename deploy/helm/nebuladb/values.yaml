@@ -236,6 +236,41 @@ showcase:
         memory: "16Mi"
 
 # ---------------------------------------------------------------------------
+# Examples suite (agents over MCP) — deployed alongside the showcase
+# ---------------------------------------------------------------------------
+# Serves Claude-driven NebulaDB agents at /examples on the same ingress
+# host as the showcase. Source is chart-bundled (files/examples); the
+# container is stock python + pip install at start so we don't need a
+# separate image publish for the first cut.
+examples:
+  enabled: false
+  replicas: 1
+  image:
+    repository: python
+    tag: "3.12-slim-bookworm"
+    pullPolicy: IfNotPresent
+  agentModel: "claude-opus-5"
+  # Seed via POST /examples/seed after the Deployment is Ready (avoids
+  # blocking helm on a post-upgrade hook while pip is still installing).
+  seedOnDeploy: false
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+  mcp:
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "64Mi"
+      requests:
+        cpu: "5m"
+        memory: "16Mi"
+  extraEnv: []
+
+# ---------------------------------------------------------------------------
 # Redis (bundled Bitnami subchart)
 # ---------------------------------------------------------------------------
 redis:

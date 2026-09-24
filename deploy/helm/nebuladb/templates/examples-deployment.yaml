@@ -1,0 +1,132 @@
+{{- if .Values.examples.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nebuladb.examples.fullname" . }}
+  labels:
+    {{- include "nebuladb.examples.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.examples.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "nebuladb.examples.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nebuladb.examples.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/src: {{ include (print $.Template.BasePath "/examples-configmap.yaml") . | sha256sum }}
+    spec:
+      initContainers:
+        - name: pip-install
+          image: "{{ .Values.examples.image.repository }}:{{ .Values.examples.image.tag }}"
+          imagePullPolicy: {{ .Values.examples.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              cp -a /src/. /app/
+              python -m pip install --no-cache-dir --target=/app-pkgs -r /app/requirements.txt
+          volumeMounts:
+            - name: src
+              mountPath: /src
+              readOnly: true
+            - name: app
+              mountPath: /app
+            - name: pkgs
+              mountPath: /app-pkgs
+      containers:
+        - name: agents
+          image: "{{ .Values.examples.image.repository }}:{{ .Values.examples.image.tag }}"
+          imagePullPolicy: {{ .Values.examples.image.pullPolicy }}
+          workingDir: /app
+          command:
+            - /bin/sh
+            - -c
+            - |
+              export PYTHONPATH="/app-pkgs:${PYTHONPATH:-}"
+              exec python -m uvicorn server:app --host 0.0.0.0 --port 8088
+          ports:
+            - name: http
+              containerPort: 8088
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: {{ include "nebuladb.fullname" . }}-secrets
+                optional: true
+          env:
+            - name: NEBULA_MCP_URL
+              value: "http://127.0.0.1:8090/mcp"
+            - name: NEBULA_AGENT_MODEL
+              value: {{ .Values.examples.agentModel | quote }}
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            {{- with .Values.examples.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: app
+              mountPath: /app
+            - name: pkgs
+              mountPath: /app-pkgs
+          {{- with .Values.examples.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+        - name: mcp
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              if [ -x /usr/local/bin/nebula-mcp ]; then exec /usr/local/bin/nebula-mcp; fi
+              echo "nebula-mcp missing from server image; examples agents stay offline" >&2
+              exec sleep infinity
+          env:
+            - name: NEBULA_MCP_BIND
+              value: "127.0.0.1:8090"
+            - name: NEBULA_MCP_UPSTREAM_URL
+              value: {{ include "nebuladb.showcase.serverUrl" . | quote }}
+          {{- with .Values.examples.mcp.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: src
+          configMap:
+            name: {{ include "nebuladb.examples.fullname" . }}-src
+        - name: app
+          emptyDir: {}
+        - name: pkgs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nebuladb.examples.fullname" . }}
+  labels:
+    {{- include "nebuladb.examples.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nebuladb.examples.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+{{- end -}}
