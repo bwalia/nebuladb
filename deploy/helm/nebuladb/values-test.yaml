@@ -8,6 +8,13 @@ server:
     tag: "latest"
     pullPolicy: IfNotPresent
 
+  # Embeddings: dedicated Ollama on Mac Studio :11437 (chat stays :11434).
+  env:
+    NEBULA_OPENAI_API_KEY: "ollama"
+    NEBULA_OPENAI_BASE_URL: "http://192.168.1.177:11437/v1"
+    NEBULA_OPENAI_MODEL: "nomic-embed-text"
+    NEBULA_EMBED_DIM: "768"
+
   persistence:
     enabled: true
     storageClass: local-path
