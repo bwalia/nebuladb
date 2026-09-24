@@ -6,11 +6,12 @@ metadata:
     {{- include "nebuladb.server.selectorLabels" . | nindent 4 }}
     {{- include "nebuladb.labels" . | nindent 4 }}
 data:
-  # Only non-empty values get mounted; blank values stay unset so the
-  # server falls back to its hardcoded defaults. This matches the
-  # binary's "unset env var → sensible default" behavior exactly.
+  # Only non-empty, non-null values get mounted; blank/null stay unset so
+  # the server falls back to its hardcoded defaults. Env overlays can set
+  # a key to `null` to clear a chart default (e.g. pin mock-384 until a
+  # 768 wipe+reingest).
   {{- range $k, $v := .Values.server.env }}
-  {{- if ne (toString $v) "" }}
+  {{- if and (ne $v nil) (ne (toString $v) "") (ne (toString $v) "<nil>") }}
   {{ $k }}: {{ $v | quote }}
   {{- end }}
   {{- end }}

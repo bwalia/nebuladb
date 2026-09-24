@@ -121,16 +121,11 @@ server:
     # default is "llama3"; pinned here so a model change is a chart change.
     NEBULA_LLM_MODEL: "llama3.1:8b"
 
-    # Embedder provider. Defaults to MockEmbedder when NEBULA_OPENAI_API_KEY
-    # is unset/empty. Point at the LAN Ollama OpenAI-compat shim so semantic
-    # search is real (nomic-embed-text → 768-d). Placeholder key is required
-    # only to leave MockEmbedder; Ollama ignores Bearer auth.
-    #
-    # After changing model/dim: redeploy, then empty + reingest every bucket
-    # (existing mock-384 vectors are not compatible).
+    # Embedder: chart default targets LAN Ollama nomic-embed-text @ 768.
+    # Live rings (int/test/acc/prod) still have 384-d snapshots — each
+    # values-<env>.yaml clears these with `null` and pins NEBULA_EMBED_DIM
+    # to 384 (mock) until wipe + reingest. Do not re-enable here alone.
     NEBULA_OPENAI_API_KEY: "ollama"
-    # Dedicated embed-only Ollama (:11437). Chat clients (kubepilot/strix)
-    # stay on :11434 so large chat models cannot pin/evict the embedder.
     NEBULA_OPENAI_BASE_URL: "http://192.168.1.177:11437/v1"
     NEBULA_OPENAI_MODEL: "nomic-embed-text"
     NEBULA_EMBED_DIM: "768"

@@ -262,6 +262,9 @@ jobs:
     if: ${{ always() && needs.deploy.result == 'success' }}
     steps:
       - name: Provision DNS via wslproxy edge
+        # Soft-fail: deploy already succeeded. Stale/wrong wslproxy admin
+        # credentials must not red-X the whole run when DNS is already live.
+        continue-on-error: true
         env:
           WSL_API: ${{ secrets.WSLPROXY_API_BASE }}
           WSL_EMAIL: ${{ secrets.WSLPROXY_ADMIN_EMAIL }}
@@ -283,11 +286,18 @@ jobs:
           # All nebuladb edge servers live under the wslproxy `prod` profile
           # on the prod POP (pop0), like beacon — the env differs only by
           # k8s namespace, which Traefik routes on the Host header.
-          TOKEN="$(curl -fsS -X POST "${WSL_API%/}/api/user/login" \
+          LOGIN_CODE=0
+          LOGIN_BODY="$(curl -sS -w '\n%{http_code}' -X POST "${WSL_API%/}/api/user/login" \
             -H 'Content-Type: application/json' \
             -d "$(jq -n --arg e "$WSL_EMAIL" --arg p "$WSL_PASS" '{email:$e,password:$p}')" \
-            | jq -r '.data.accessToken // empty')"
-          [ -n "$TOKEN" ] || { echo "::error::wslproxy admin login failed"; exit 1; }
+            )" || LOGIN_CODE=$?
+          HTTP_CODE="$(echo "$LOGIN_BODY" | tail -n1)"
+          LOGIN_JSON="$(echo "$LOGIN_BODY" | sed '$d')"
+          TOKEN="$(echo "$LOGIN_JSON" | jq -r '.data.accessToken // empty')"
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::wslproxy admin login failed (http=${HTTP_CODE}, curl=${LOGIN_CODE}) — DNS left unchanged for ${HOST}. Update WSLPROXY_ADMIN_* secrets if provisioning is required."
+            exit 0
+          fi
 
           RESP="$(curl -fsS -X POST "${WSL_API%/}/api/dns/provision" \
             -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
