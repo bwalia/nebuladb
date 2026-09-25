@@ -46,7 +46,9 @@ pub fn build_router(state: AppState) -> Router {
     // the live log tail and the RAG token stream.
     let api_streaming = Router::new()
         .route("/admin/logs/stream", get(admin_logs_stream))
-        .route("/ai/rag", post(ai_rag));
+        .route("/ai/rag", post(ai_rag))
+        .route("/ai/chat", post(crate::ai::routes::ai_chat))
+        .route("/ai/frontier-rag", post(crate::ai::routes::ai_frontier_rag));
 
     // Everything else gets the optional per-request timeout.
     let api_normal = Router::new()
@@ -60,6 +62,15 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/vector/search", post(vector_search))
         .route("/ai/search", post(ai_search))
+        .route("/ai/models", get(crate::ai::routes::ai_models))
+        .route("/ai/config", get(crate::ai::routes::ai_config))
+        .route("/ai/tools", get(crate::ai::routes::ai_tools))
+        .route("/ai/agent", post(crate::ai::routes::ai_agent))
+        .route("/ai/sql", post(crate::ai::routes::ai_nl_sql))
+        .route("/ai/traces", get(crate::ai::routes::ai_traces_list))
+        .route("/ai/traces/:id", get(crate::ai::routes::ai_trace_get))
+        .route("/ai/security/seed", post(crate::ai::routes::ai_security_seed))
+        .route("/ai/tenant/seed", post(crate::ai::routes::ai_tenant_seed))
         .route("/rag/answer", post(rag_answer))
         .route("/query", post(sql_query))
         .route("/query/explain", post(sql_explain))
@@ -1139,6 +1150,7 @@ async fn ai_rag(
                     answer.push_str(&t)
                 }
                 LlmChunk::Done => break,
+                _ => {}
             }
         }
         Ok(Json(RagResponse {
@@ -1263,6 +1275,7 @@ fn rag_sse_response(
                     .json_data(serde_json::json!({ "reason": "llm_done" }))
                     .unwrap())))
                 .collect(),
+            Ok(_) => vec![],
             Err(e) => vec![Ok(Event::default().event("error").data(e.to_string()))],
         };
         stream::iter(events)
@@ -1646,6 +1659,7 @@ async fn rag_answer(
                 answer.push_str(&t)
             }
             LlmChunk::Done => break,
+            _ => {}
         }
     }
 

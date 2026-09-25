@@ -13,6 +13,7 @@
 //! Middleware: request tracing, bearer-token auth, per-route metrics.
 //! All handlers return structured JSON errors with stable `code` strings.
 
+pub mod ai;
 pub mod audit;
 pub mod backup_routes;
 pub mod build_info;

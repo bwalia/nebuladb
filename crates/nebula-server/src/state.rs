@@ -332,6 +332,10 @@ pub struct AppState {
     /// to an even 0.5/0.5 split for every bucket; override globally or
     /// per-bucket via [`Self::with_hybrid_weights`].
     pub hybrid_weights: Arc<HybridWeights>,
+    /// Frontier AI gateway (provider registry, routing, fallback).
+    pub ai_gateway: Arc<crate::ai::AiGateway>,
+    /// Recent AI request traces for the observability UI.
+    pub ai_traces: Arc<crate::ai::TraceStore>,
     /// Resource manager + operating-mode state machine (design 0010).
     /// A background sampler in `main.rs` feeds it every ~5s; the
     /// disk-critical write gate and the reliability endpoints read it
@@ -372,6 +376,7 @@ impl AppState {
         // with the SQL engine so `ai_answer(...)` works out of the box.
         let llm: Arc<dyn LlmClient> = Arc::new(MockLlm::default());
         let sql = Arc::new(SqlEngine::new(Arc::clone(&index)).with_llm(Arc::clone(&llm)));
+        let ai_gateway = Arc::new(crate::ai::AiGateway::from_env(Arc::clone(&llm)));
         Self {
             index,
             llm,
@@ -399,6 +404,8 @@ impl AppState {
             reranker: Arc::new(NoopReranker),
             query_expander: Arc::new(NoopQueryExpander),
             hybrid_weights: Arc::new(HybridWeights::default()),
+            ai_gateway,
+            ai_traces: Arc::new(crate::ai::TraceStore::default()),
             resource: Arc::new(nebula_resource::ResourceManager::new(
                 nebula_resource::Thresholds::default(),
             )),
@@ -495,6 +502,7 @@ impl AppState {
     }
 
     pub fn with_llm(mut self, llm: Arc<dyn LlmClient>) -> Self {
+        self.ai_gateway = Arc::new(crate::ai::AiGateway::from_env(Arc::clone(&llm)));
         self.llm = llm;
         self
     }

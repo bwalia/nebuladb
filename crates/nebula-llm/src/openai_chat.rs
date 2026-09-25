@@ -22,7 +22,10 @@ use futures::TryStreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 
-use crate::{LlmChunk, LlmClient, LlmError, Prompt, Result};
+use crate::{
+    GenerateOptions, LlmChunk, LlmClient, LlmError, ModelCapabilities, ModelInfo, Prompt, Result,
+    TokenUsage, ToolSpec,
+};
 
 #[derive(Debug, Clone)]
 pub struct OpenAiChatConfig {
@@ -91,19 +94,48 @@ impl OpenAiChatLlm {
 #[derive(serde::Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
-    messages: Vec<ChatMsg<'a>>,
+    messages: Vec<serde_json::Value>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<serde_json::Value>,
 }
 
-#[derive(serde::Serialize)]
-struct ChatMsg<'a> {
-    role: &'a str,
-    content: &'a str,
+fn tools_to_openai(tools: &[ToolSpec]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.input_schema,
+                }
+            })
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
 struct ChatFrame {
+    #[serde(default)]
     choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+}
+
+#[derive(Deserialize, Default)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u32>,
+    #[serde(default)]
+    completion_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -116,6 +148,28 @@ struct ChatChoice {
 struct ChatDelta {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<OpenAiToolCallDelta>,
+}
+
+#[derive(Deserialize, Default)]
+struct OpenAiToolCallDelta {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    index: Option<usize>,
+    #[serde(default)]
+    function: Option<OpenAiFnDelta>,
+}
+
+#[derive(Deserialize, Default)]
+struct OpenAiFnDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 #[async_trait]
@@ -124,7 +178,29 @@ impl LlmClient for OpenAiChatLlm {
         &self.model_label
     }
 
-    async fn generate(&self, prompt: Prompt) -> Result<BoxStream<'static, Result<LlmChunk>>> {
+    fn info(&self) -> ModelInfo {
+        let vision = self.config.model.contains("gpt-4o")
+            || self.config.model.contains("vision")
+            || self.config.model.contains("gemini");
+        ModelInfo {
+            id: self.config.model.clone(),
+            provider: "openai".into(),
+            display_name: self.config.model.clone(),
+            capabilities: if vision {
+                ModelCapabilities::OPENAI_VISION
+            } else {
+                ModelCapabilities::OPENAI_CHAT
+            },
+            context_window: Some(128_000),
+            is_mock: false,
+        }
+    }
+
+    async fn generate_with_options(
+        &self,
+        prompt: Prompt,
+        opts: GenerateOptions,
+    ) -> Result<BoxStream<'static, Result<LlmChunk>>> {
         if prompt.user.trim().is_empty() {
             return Err(LlmError::Empty);
         }
@@ -135,20 +211,33 @@ impl LlmClient for OpenAiChatLlm {
 
         let mut messages = Vec::with_capacity(2);
         if let Some(sys) = prompt.system.as_deref() {
-            messages.push(ChatMsg {
-                role: "system",
-                content: sys,
-            });
+            messages.push(serde_json::json!({"role": "system", "content": sys}));
         }
-        messages.push(ChatMsg {
-            role: "user",
-            content: &prompt.user,
-        });
+        messages.push(serde_json::json!({"role": "user", "content": prompt.user}));
+
+        let response_format = match &opts.response_format {
+            Some(crate::ResponseFormat::JsonObject) => {
+                Some(serde_json::json!({"type": "json_object"}))
+            }
+            Some(crate::ResponseFormat::JsonSchema { schema }) => Some(serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {"name": "nebula_structured", "schema": schema}
+            })),
+            None => None,
+        };
 
         let body = ChatRequest {
             model: &self.config.model,
             messages,
             stream: true,
+            temperature: opts.temperature,
+            max_tokens: opts.max_tokens,
+            tools: if opts.tools.is_empty() {
+                None
+            } else {
+                Some(tools_to_openai(&opts.tools))
+            },
+            response_format,
         };
         let resp = self.http.post(&url).json(&body).send().await?;
         let status = resp.status();
@@ -209,10 +298,43 @@ where
                 }
                 match serde_json::from_str::<ChatFrame>(payload) {
                     Ok(frame) => {
+                        if let Some(u) = frame.usage {
+                            out.push(Ok(LlmChunk::Usage(TokenUsage {
+                                prompt_tokens: u.prompt_tokens,
+                                completion_tokens: u.completion_tokens,
+                            })));
+                        }
                         if let Some(choice) = frame.choices.into_iter().next() {
                             if let Some(content) = choice.delta.content {
                                 if !content.is_empty() {
                                     out.push(Ok(LlmChunk::Delta(content)));
+                                }
+                            }
+                            if let Some(reasoning) = choice.delta.reasoning_content {
+                                if !reasoning.is_empty() {
+                                    out.push(Ok(LlmChunk::Reasoning(reasoning)));
+                                }
+                            }
+                            for tc in choice.delta.tool_calls {
+                                let id = tc.id.unwrap_or_else(|| {
+                                    format!("call_{}", tc.index.unwrap_or(0))
+                                });
+                                let name = tc
+                                    .function
+                                    .as_ref()
+                                    .and_then(|f| f.name.clone())
+                                    .unwrap_or_default();
+                                let arguments = tc
+                                    .function
+                                    .as_ref()
+                                    .and_then(|f| f.arguments.clone())
+                                    .unwrap_or_default();
+                                if !name.is_empty() || !arguments.is_empty() {
+                                    out.push(Ok(LlmChunk::ToolCall {
+                                        id,
+                                        name,
+                                        arguments,
+                                    }));
                                 }
                             }
                         }
@@ -253,6 +375,7 @@ mod tests {
                     saw_done = true;
                     break;
                 }
+                _ => {}
             }
         }
         assert_eq!(tokens, vec!["Hel".to_string(), "lo".to_string()]);

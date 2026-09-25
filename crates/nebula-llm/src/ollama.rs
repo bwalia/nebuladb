@@ -19,7 +19,9 @@ use futures::stream::{BoxStream, StreamExt};
 use futures::TryStreamExt;
 use serde::Deserialize;
 
-use crate::{LlmChunk, LlmClient, LlmError, Prompt, Result};
+use crate::{
+    GenerateOptions, LlmChunk, LlmClient, LlmError, ModelCapabilities, ModelInfo, Prompt, Result,
+};
 
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
@@ -117,7 +119,28 @@ impl LlmClient for OllamaLlm {
         &self.model_label
     }
 
-    async fn generate(&self, prompt: Prompt) -> Result<BoxStream<'static, Result<LlmChunk>>> {
+    fn info(&self) -> ModelInfo {
+        ModelInfo {
+            id: self.config.model.clone(),
+            provider: "ollama".into(),
+            display_name: self.config.model.clone(),
+            capabilities: ModelCapabilities::OLLAMA,
+            context_window: Some(8_192),
+            is_mock: false,
+        }
+    }
+
+    async fn generate_with_options(
+        &self,
+        prompt: Prompt,
+        opts: GenerateOptions,
+    ) -> Result<BoxStream<'static, Result<LlmChunk>>> {
+        if !opts.tools.is_empty() {
+            return Err(LlmError::Unsupported("tool_calling"));
+        }
+        if opts.response_format.is_some() {
+            return Err(LlmError::Unsupported("structured_output"));
+        }
         if prompt.user.trim().is_empty() {
             return Err(LlmError::Empty);
         }
@@ -141,9 +164,6 @@ impl LlmClient for OllamaLlm {
             });
         }
 
-        // Stream the body byte-by-byte, buffer until newline, parse.
-        // We use `TryStreamExt` to turn reqwest's error-prone byte
-        // stream into a `Stream<Item=Result<Bytes>>`.
         let byte_stream = resp.bytes_stream().map_err(LlmError::from);
         let stream = parse_ndjson_stream(byte_stream);
         Ok(stream.boxed())
@@ -304,6 +324,7 @@ mod tests {
                     saw_done = true;
                     break;
                 }
+                _ => {}
             }
         }
         assert_eq!(
@@ -337,6 +358,7 @@ mod tests {
                     saw_done = true;
                     break;
                 }
+                _ => {}
             }
         }
         assert_eq!(tokens, vec!["hello".to_string(), " world".to_string()]);

@@ -511,16 +511,20 @@ impl pb::ai_service_server::AiService for AiSvc {
         // waiting for the first token.
         tokio::spawn(async move {
             while let Some(item) = llm_stream.next().await {
-                let chunk = match item {
-                    Ok(LlmChunk::Delta(t)) => pb::RagChunk {
+                let maybe_chunk = match item {
+                    Ok(LlmChunk::Delta(t)) => Some(pb::RagChunk {
                         kind: Some(pb::rag_chunk::Kind::AnswerDelta(t)),
-                    },
-                    Ok(LlmChunk::Done) => pb::RagChunk {
+                    }),
+                    Ok(LlmChunk::Done) => Some(pb::RagChunk {
                         kind: Some(pb::rag_chunk::Kind::Done(pb::Done {})),
-                    },
-                    Err(e) => pb::RagChunk {
+                    }),
+                    Ok(_) => None,
+                    Err(e) => Some(pb::RagChunk {
                         kind: Some(pb::rag_chunk::Kind::Error(e.to_string())),
-                    },
+                    }),
+                };
+                let Some(chunk) = maybe_chunk else {
+                    continue;
                 };
                 if tx.send(Ok(chunk)).await.is_err() {
                     break;

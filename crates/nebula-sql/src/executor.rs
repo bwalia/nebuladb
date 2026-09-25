@@ -144,6 +144,7 @@ impl Executor {
                     answer.push_str(&t);
                 }
                 LlmChunk::Done => break,
+                _ => {}
             }
         }
         if let Some(r) = rec {
