@@ -1,0 +1,15 @@
+{{- if .Values.showcase.enabled -}}
+# Keep in sync with apps/showcase/nginx.conf (CI builds bake the same file
+# into the image). Mounted at runtime so HA failover / timeout fixes ship
+# with helm upgrade without waiting for a showcase image rebuild.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nebuladb.fullname" . }}-showcase-nginx
+  labels:
+    {{- include "nebuladb.showcase.selectorLabels" . | nindent 4 }}
+    {{- include "nebuladb.labels" . | nindent 4 }}
+data:
+  default.conf.template: |
+{{ .Files.Get "files/showcase/default.conf.template" | indent 4 }}
+{{- end -}}

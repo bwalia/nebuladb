@@ -40,10 +40,12 @@ NebulaDB is currently in-memory single-node; rolling alongside a
 second writer would split state. Once snapshot-and-restore ships,
 the strategy flips to `RollingUpdate`.
 
-**Liveness must use `/healthz/live`**, not `/healthz`. During WAL /
-snapshot recovery `/healthz` returns 503; probing it as liveness
-OOM-loops or kill-loops a healthy recovering primary (seen on prod
-with a multi-million-doc corpus).
+**Liveness and readiness must use `/healthz/live`**, not `/healthz`.
+During WAL / snapshot recovery `/healthz` returns 503. Probing it as
+**liveness** kill-loops a healthy recovering primary (multi-million-doc
+corpus). Probing it as **readiness** removes the pod from Service
+Endpoints so showcase nginx sees connection refused / timeouts → **502/504**
+instead of the boot stub's 503 failover (prod 2026-09-24).
 
 ## Key values
 

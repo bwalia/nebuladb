@@ -74,6 +74,13 @@ spec:
               port: 80
             initialDelaySeconds: 2
             periodSeconds: 5
+          volumeMounts:
+            # Override the image-baked template so nginx failover /
+            # timeout fixes apply on helm upgrade without a rebuild.
+            - name: nginx-template
+              mountPath: /etc/nginx/templates/default.conf.template
+              subPath: default.conf.template
+              readOnly: true
         {{- if .Values.showcase.mcp.enabled }}
         # MCP adapter for the MCP tab. Loopback-only: nginx in this pod is
         # its sole client, which also satisfies rmcp's Host allow-list.
@@ -101,6 +108,10 @@ spec:
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
         {{- end }}
+      volumes:
+        - name: nginx-template
+          configMap:
+            name: {{ include "nebuladb.fullname" . }}-showcase-nginx
 ---
 apiVersion: v1
 kind: Service

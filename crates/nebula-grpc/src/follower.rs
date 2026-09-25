@@ -397,7 +397,11 @@ pub fn spawn_with_store(
                     backoff = Duration::from_millis(100);
                 }
                 Err(e) => {
-                    warn!(error = %e, "follower stream error; backing off");
+                    // Include Display in the message: CapturingSubscriber
+                    // drops structured fields on stderr, so `error = %e`
+                    // alone left operators with no cause (prod follower
+                    // 2026-09-24 stream loop).
+                    warn!("follower stream error; backing off: {e}");
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(5));
                 }

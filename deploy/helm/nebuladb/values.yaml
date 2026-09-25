@@ -72,8 +72,13 @@ server:
   # Recovery time scales with corpus size, so no fixed budget is safe;
   # only a liveness signal that is independent of recovery is.
   #
-  # Readiness stays on /healthz: it keeps a recovering or not-yet-able
-  # pod out of the Service, which is cheap and reversible.
+  # Readiness uses /healthz/live (not /healthz). With HA the showcase
+  # nginx pool must be able to *connect* to a recovering leader so it
+  # sees the boot stub's 503 and fails over to the follower. Readiness
+  # on /healthz removed recovering pods from Endpoints → connection
+  # refused / connect timeouts → nginx 502/504 instead of clean 503
+  # failover (seen 2026-09-24 ~18:10Z on showcase.nebuladb.net).
+  # Removing a dead process is still covered by liveness on /healthz/live.
   startupProbe:
     httpGet:
       path: /healthz/live
@@ -93,16 +98,14 @@ server:
     periodSeconds: 30
     timeoutSeconds: 15
     failureThreshold: 8
-  # Readiness is the fast signal — pull a slow node out of the Service
-  # quickly, since that is cheap and reversible.
   readinessProbe:
     httpGet:
-      path: /healthz
+      path: /healthz/live
       port: 8080
     initialDelaySeconds: 5
-    periodSeconds: 15
-    timeoutSeconds: 10
-    failureThreshold: 4
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
 
   nodeSelector: {}
   tolerations: []
@@ -349,7 +352,7 @@ ha:
       failureThreshold: 5
     readinessProbe:
       httpGet:
-        path: /healthz
+        path: /healthz/live
         port: 8080
       initialDelaySeconds: 15
       periodSeconds: 10
