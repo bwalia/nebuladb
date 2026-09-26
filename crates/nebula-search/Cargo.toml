@@ -1,0 +1,29 @@
+[package]
+name = "nebula-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Unified enterprise search abstraction + Azure AI Search compatibility"
+
+[dependencies]
+nebula-core = { path = "../nebula-core" }
+nebula-index = { path = "../nebula-index" }
+nebula-rerank = { path = "../nebula-rerank" }
+
+async-trait.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+serde_yaml = "0.9"
+
+[dev-dependencies]
+nebula-embed = { path = "../nebula-embed" }
+nebula-chunk = { path = "../nebula-chunk" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = "3"

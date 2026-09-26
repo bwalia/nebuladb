@@ -15,6 +15,7 @@ members = [
     "crates/nebula-raft",
     "crates/nebula-cdc",
     "crates/nebula-index",
+    "crates/nebula-search",
     "crates/nebula-sql",
     "crates/nebula-grpc",
     "crates/nebula-pgwire",

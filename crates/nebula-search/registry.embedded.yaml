@@ -1,0 +1,109 @@
+version: "1.0"
+products:
+  - id: azure_ai_search
+    name: Azure AI Search
+    capabilities:
+      - id: azure_search.indexes
+        name: Create / get / list indexes
+        status: compatible
+        notes: Mapped to NebulaDB buckets + IndexDefinition registry.
+      - id: azure_search.docs_index
+        name: Document upload / delete batch
+        status: translated
+        notes: "@search.action upload|delete → TextIndex upsert/delete."
+      - id: azure_search.docs_search
+        name: Document search (keyword / vector / hybrid / semantic)
+        status: translated
+        notes: Unified SearchRequest over HNSW + BM25 + optional rerank.
+      - id: azure_search.filter_odata_lite
+        name: OData filter eq/ne/search.in/and
+        status: translated
+        notes: Applied post-retrieval on document metadata.
+      - id: azure_search.filter_odata_full
+        name: Full OData (or/gt/geo/collections)
+        status: unsupported
+        notes: Returns structured unsupported error with this capability id.
+      - id: azure_search.facets
+        name: Facets
+        status: partial
+        notes: Computed over result window, not full corpus.
+      - id: azure_search.orderby
+        name: Orderby
+        status: unsupported
+        notes: Warning emitted; ranking follows retrieval scores.
+      - id: azure_search.semantic_ranker
+        name: Semantic ranker
+        status: adapter_based
+        notes: Approximated via hybrid + optional HttpReranker.
+      - id: azure_search.external
+        name: External Azure AI Search backend
+        status: external
+        notes: Requires NEBULA_AZURE_SEARCH_ENDPOINT + API_KEY.
+  - id: aws_ai_search
+    name: AWS enterprise search (generic)
+    capabilities:
+      - id: aws_search.unified_api
+        name: Unified SearchRequest/Response
+        status: compatible
+        notes: Same abstraction; AWS-shaped routes deferred.
+  - id: openai
+    name: OpenAI / OpenAI-compatible
+    capabilities:
+      - id: openai.embeddings
+        name: Embeddings
+        status: compatible
+        notes: NEBULA_OPENAI_BASE_URL.
+      - id: openai.chat
+        name: Chat completions
+        status: compatible
+  - id: anthropic
+    name: Anthropic
+    capabilities:
+      - id: anthropic.messages
+        name: Messages API
+        status: native
+  - id: gemini
+    name: Google Gemini
+    capabilities:
+      - id: gemini.generate
+        name: Generate content
+        status: native
+  - id: ollama
+    name: Ollama
+    capabilities:
+      - id: ollama.chat
+        name: Local chat / embed
+        status: compatible
+  - id: mcp
+    name: Model Context Protocol
+    capabilities:
+      - id: mcp.tools
+        name: MCP tools over NebulaDB REST
+        status: native
+  - id: postgresql
+    name: PostgreSQL wire protocol
+    capabilities:
+      - id: pgwire.sql
+        name: SQL via pgwire
+        status: native
+  - id: kiro
+    name: AWS Kiro
+    capabilities:
+      - id: kiro.project
+        name: .kiro project scaffolding
+        status: unsupported
+        notes: Planned in a later platform phase.
+  - id: snowflake
+    name: Snowflake
+    capabilities:
+      - id: snowflake.pipeline
+        name: Snowflake source/destination pipelines
+        status: unsupported
+        notes: Planned in a later platform phase.
+  - id: bedrock
+    name: AWS Bedrock
+    capabilities:
+      - id: bedrock.invoke
+        name: Bedrock model invoke
+        status: unsupported
+        notes: Planned; use OpenAI-compat gateways today.
