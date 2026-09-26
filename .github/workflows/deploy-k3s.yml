@@ -201,7 +201,19 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          helm dependency build ./deploy/helm/nebuladb || true
+          # Bitnami CDN occasionally RSTs; retry, and prefer a vendored
+          # charts/*.tgz when present so upgrade does not hard-depend on
+          # charts.bitnami.com being reachable from the runner.
+          for attempt in 1 2 3 4 5; do
+            if helm dependency build ./deploy/helm/nebuladb; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "helm dependency build failed after ${attempt} attempts" >&2
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           helm upgrade --install nebuladb ./deploy/helm/nebuladb \
             -f ./deploy/helm/nebuladb/values-"${TARGET_ENV}".yaml \
             --set server.image.tag="$TAG" \

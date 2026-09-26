@@ -8,10 +8,13 @@ dist/
 .env
 # package-lock.json is committed so Docker builds reproducibly.
 
-# Helm: subchart artifacts are fetched by CI / helm dep update, not
-# committed. Chart.lock pins versions and *is* worth committing.
-deploy/helm/**/charts/
+# Helm: prefer vendored Bitnami redis under charts/ (CDN flakes in CI).
+# Parent dir must be un-ignored before the redis tarball can be tracked.
+deploy/helm/**/charts/**
+!deploy/helm/**/charts/
+!deploy/helm/**/charts/redis-*.tgz
 deploy/helm/**/*.tgz
+!deploy/helm/**/charts/redis-*.tgz
 
 # Output of scripts/reconcile.sh when run from cron / systemd timer.
 .reconcile.log
