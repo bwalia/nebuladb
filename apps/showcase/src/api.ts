@@ -370,6 +370,70 @@ export const api = {
       }),
     }),
 
+  azureSearch: (
+    index: string,
+    body: {
+      search: string;
+      top?: number;
+      queryType?: string;
+      filter?: string;
+      explain?: boolean;
+      backend?: "native" | "azure";
+    }
+  ) =>
+    request<Record<string, unknown>>(
+      `/api/v1/azure-search/indexes/${encodeURIComponent(index)}/docs/search`,
+      {
+        method: "POST",
+        headers: body.backend
+          ? { "X-Nebula-Search-Backend": body.backend }
+          : undefined,
+        body: JSON.stringify({
+          search: body.search,
+          top: body.top ?? 10,
+          queryType: body.queryType ?? "semantic",
+          ...(body.filter ? { filter: body.filter } : {}),
+          ...(body.explain ? { explain: true } : {}),
+        }),
+      }
+    ),
+
+  listIndexes: () =>
+    request<{ value: unknown[] }>("/api/v1/azure-search/indexes"),
+
+  compat: (product?: string) =>
+    request<unknown>(
+      product ? `/api/v1/compat/${encodeURIComponent(product)}` : "/api/v1/compat"
+    ),
+
+  companiesHouseStatus: () =>
+    request<{ configured: boolean; fixture_available: boolean; hint: string }>(
+      "/api/v1/companies-house/status"
+    ),
+
+  companiesHouseSearch: (q: string) =>
+    request<{
+      items?: unknown[];
+      fixture?: boolean;
+      message?: string;
+      total_results?: number;
+    }>(`/api/v1/companies-house/search?q=${encodeURIComponent(q)}`),
+
+  companiesHouseCompany: (number: string) =>
+    request<Record<string, unknown>>(
+      `/api/v1/companies-house/company/${encodeURIComponent(number)}?include_extras=true`
+    ),
+
+  companiesHouseIngest: (number: string, bucket = "companies_house") =>
+    request<{
+      upserted?: string[];
+      company?: Record<string, unknown>;
+      fixture?: boolean;
+    }>(`/api/v1/companies-house/company/${encodeURIComponent(number)}/ingest`, {
+      method: "POST",
+      body: JSON.stringify({ upsert: true, bucket }),
+    }),
+
   sql: (sql: string, explain = false) =>
     request<SqlResponse>("/api/v1/query", {
       method: "POST",

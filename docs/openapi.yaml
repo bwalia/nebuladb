@@ -147,6 +147,87 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "502": { $ref: "#/components/responses/Upstream" }
 
+  /api/v1/azure-search/indexes:
+    get:
+      summary: List Azure-compatible index definitions
+      responses:
+        "200":
+          description: Index list
+  /api/v1/azure-search/indexes/{name}:
+    put:
+      summary: Create or update an index definition
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+      responses:
+        "201": { description: Created }
+    get:
+      summary: Get an index definition
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Index }
+    delete:
+      summary: Delete an index definition
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted }
+  /api/v1/azure-search/indexes/{name}/docs/search:
+    post:
+      summary: Azure-shaped document search (translated onto NebulaDB)
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: header, name: X-Nebula-Search-Backend, schema: { type: string, enum: [native, azure] } }
+      responses:
+        "200": { description: Azure-shaped search response }
+  /api/v1/azure-search/indexes/{name}/docs/index:
+    post:
+      summary: Azure-shaped document upload/delete batch
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Batch result }
+
+  /api/v1/compat:
+    get:
+      summary: Compatibility registry (all products)
+      responses:
+        "200": { description: Registry }
+  /api/v1/compat/{product}:
+    get:
+      summary: Compatibility registry for one product
+      parameters:
+        - { in: path, name: product, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Product capabilities }
+
+  /api/v1/companies-house/status:
+    get:
+      summary: Whether the Companies House API key is configured
+      responses:
+        "200": { description: Status }
+  /api/v1/companies-house/search:
+    get:
+      summary: Search UK companies (proxied; fixture if no key)
+      parameters:
+        - { in: query, name: q, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Search results }
+  /api/v1/companies-house/company/{number}:
+    get:
+      summary: Company profile (+ officers/PSC/filings)
+      parameters:
+        - { in: path, name: number, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Company }
+  /api/v1/companies-house/company/{number}/ingest:
+    post:
+      summary: Fetch company context and upsert into a RAG bucket
+      parameters:
+        - { in: path, name: number, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Ingested docs }
+
   /api/v1/query:
     post:
       summary: Execute a SQL query with NebulaDB AI extensions

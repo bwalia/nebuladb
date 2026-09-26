@@ -74,6 +74,47 @@ pub fn build_router(state: AppState) -> Router {
         .route("/rag/answer", post(rag_answer))
         .route("/query", post(sql_query))
         .route("/query/explain", post(sql_explain))
+        // Unified / Azure AI Search–compatible surface
+        .route(
+            "/azure-search/indexes",
+            get(crate::search_routes::list_indexes),
+        )
+        .route(
+            "/azure-search/indexes/:name",
+            get(crate::search_routes::get_index)
+                .put(crate::search_routes::put_index)
+                .delete(crate::search_routes::delete_index),
+        )
+        .route(
+            "/azure-search/indexes/:name/docs/index",
+            post(crate::search_routes::index_docs),
+        )
+        .route(
+            "/azure-search/indexes/:name/docs/search",
+            post(crate::search_routes::search_docs),
+        )
+        .route("/compat", get(crate::search_routes::compat_all))
+        .route(
+            "/compat/:product",
+            get(crate::search_routes::compat_product),
+        )
+        // UK Companies House showcase proxy
+        .route(
+            "/companies-house/status",
+            get(crate::companies_house::ch_status),
+        )
+        .route(
+            "/companies-house/search",
+            get(crate::companies_house::ch_search),
+        )
+        .route(
+            "/companies-house/company/:number",
+            get(crate::companies_house::ch_company),
+        )
+        .route(
+            "/companies-house/company/:number/ingest",
+            post(crate::companies_house::ch_ingest_for_rag),
+        )
         .route("/admin/buckets", get(admin_buckets))
         .route("/admin/audit", get(admin_audit))
         .route("/admin/stats", get(admin_stats))
@@ -119,6 +160,31 @@ pub fn build_router(state: AppState) -> Router {
             StatusCode::REQUEST_TIMEOUT,
             t,
         ))
+    } else {
+        api_normal
+    };
+
+    // Optional Azure-shaped `/indexes` alias (same handlers as azure-search).
+    let api_normal = if std::env::var("NEBULA_AZURE_SEARCH_ALIAS_INDEXES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        api_normal
+            .route("/indexes", get(crate::search_routes::list_indexes))
+            .route(
+                "/indexes/:name",
+                get(crate::search_routes::get_index)
+                    .put(crate::search_routes::put_index)
+                    .delete(crate::search_routes::delete_index),
+            )
+            .route(
+                "/indexes/:name/docs/index",
+                post(crate::search_routes::index_docs),
+            )
+            .route(
+                "/indexes/:name/docs/search",
+                post(crate::search_routes::search_docs),
+            )
     } else {
         api_normal
     };
@@ -940,6 +1006,7 @@ struct SearchResponse {
 
 async fn vector_search(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<VectorSearchRequest>,
 ) -> Result<Json<SearchResponse>, ApiError> {
     let top_k = validate_top_k(req.top_k, s.config.max_top_k)?;
@@ -950,74 +1017,44 @@ async fn vector_search(
             s.index.dim()
         )));
     }
-    let started = std::time::Instant::now();
-    // search_vector_blocking moves the HNSW traversal onto tokio's
-    // blocking pool. Calling the synchronous variant from an async
-    // handler pins a worker for the duration of the search; a burst
-    // of concurrent searches then starves /healthz and wedges the
-    // runtime — the symptom that motivated this change.
-    let hits = std::sync::Arc::clone(&s.index)
-        .search_vector_blocking(req.vector, req.bucket, top_k, req.ef)
-        .await?;
+    let unified = nebula_search::SearchRequest::from_legacy_vector(
+        req.vector,
+        top_k,
+        req.bucket,
+        req.ef,
+    );
+    let resp = crate::search_routes::run_unified_search(&s, unified, &headers).await?;
     s.metrics.inc_vector_search();
     Ok(Json(SearchResponse {
-        hits,
-        took_ms: started.elapsed().as_millis() as u64,
+        hits: resp.to_legacy_hits(),
+        took_ms: resp.took_ms,
         explain: None,
     }))
 }
 
 async fn ai_search(
     State(s): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<AiSearchRequest>,
 ) -> Result<Json<SearchResponse>, ApiError> {
     if req.query.trim().is_empty() {
         return Err(ApiError::BadRequest("query must be non-empty".into()));
     }
     let top_k = validate_top_k(req.top_k, s.config.max_top_k)?;
-    let started = std::time::Instant::now();
-    if req.explain {
-        let weights = req.hybrid.then(|| s.hybrid_weights.resolve(req.bucket.as_deref()));
-        let (hits, trace) = std::sync::Arc::clone(&s.index)
-            .search_text_explained(req.query.clone(), req.bucket.clone(), top_k, req.ef, weights)
-            .await?;
-        s.metrics.inc_semantic_search();
-        let mut ex = Explain::new(ExplainKind::Search, true);
-        ex.absorb(trace);
-        let mode = match weights {
-            Some((v, b)) => format!("Hybrid search (vector × {v} + BM25 × {b})"),
-            None => "Vector search".to_string(),
-        };
-        let scope = req.bucket.as_deref().map_or(String::new(), |b| format!(" in bucket '{b}'"));
-        ex.finish(
-            format!(
-                "{mode} for '{}'{scope} returned {} of the {top_k} requested hits.",
-                req.query,
-                hits.len()
-            ),
-            started.elapsed(),
-        );
-        return Ok(Json(SearchResponse {
-            hits,
-            took_ms: started.elapsed().as_millis() as u64,
-            explain: Some(ex),
-        }));
-    }
-    let hits = if req.hybrid {
-        let weights = s.hybrid_weights.resolve(req.bucket.as_deref());
-        std::sync::Arc::clone(&s.index)
-            .search_text_hybrid_blocking(req.query, req.bucket, top_k, req.ef, weights)
-            .await?
-    } else {
-        std::sync::Arc::clone(&s.index)
-            .search_text_blocking(req.query, req.bucket, top_k, req.ef)
-            .await?
-    };
+    let unified = nebula_search::SearchRequest::from_legacy_ai(
+        req.query,
+        top_k,
+        req.bucket,
+        req.ef,
+        req.hybrid,
+        req.explain,
+    );
+    let resp = crate::search_routes::run_unified_search(&s, unified, &headers).await?;
     s.metrics.inc_semantic_search();
     Ok(Json(SearchResponse {
-        hits,
-        took_ms: started.elapsed().as_millis() as u64,
-        explain: None,
+        hits: resp.to_legacy_hits(),
+        took_ms: resp.took_ms,
+        explain: resp.explain,
     }))
 }
 

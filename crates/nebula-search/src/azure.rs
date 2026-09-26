@@ -287,7 +287,7 @@ fn azure_value_to_def(v: &Value) -> IndexDefinition {
 }
 
 fn azure_search_to_response(v: &Value, took_ms: u64) -> SearchResponse {
-    let hits = v
+    let hits: Vec<SearchHit> = v
         .get("value")
         .and_then(|x| x.as_array())
         .map(|arr| {

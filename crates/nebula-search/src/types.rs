@@ -243,7 +243,7 @@ pub struct SearchResponse {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub answers: Vec<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", skip_deserializing)]
     pub explain: Option<nebula_index::explain::Explain>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,

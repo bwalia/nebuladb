@@ -170,6 +170,24 @@ pub struct VectorSearchParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct AzureSearchParams {
+    /// Index / bucket name to search.
+    pub index: String,
+    /// Free-text `search` string (Azure shape).
+    pub search: String,
+    #[serde(default)]
+    pub top: Option<u32>,
+    /// OData-lite filter (`eq` / `ne` / `and` / `search.in`).
+    #[serde(default)]
+    pub filter: Option<String>,
+    /// `simple` | `full` | `semantic` (semantic ≈ hybrid + optional rerank).
+    #[serde(default)]
+    pub query_type: Option<String>,
+    #[serde(default)]
+    pub explain: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct RagParams {
     /// The question to answer using retrieval-augmented generation.
     pub query: String,
@@ -328,6 +346,51 @@ impl NebulaMcp {
             body["ef"] = json!(ef);
         }
         render(c.post("/vector/search", &body).await)
+    }
+
+    #[tool(
+        description = "Azure AI Search–compatible document search over a NebulaDB index \
+                       (translated onto HNSW + BM25). Supports hybrid/semantic queryType, \
+                       OData-lite filters, and optional explain.",
+        annotations(read_only_hint = true)
+    )]
+    async fn azure_search(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<AzureSearchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let c = self.client_for(&parts);
+        let mut body = json!({
+            "search": p.search,
+            "top": p.top.unwrap_or(10),
+        });
+        if let Some(f) = p.filter {
+            body["filter"] = json!(f);
+        }
+        if let Some(qt) = p.query_type {
+            body["queryType"] = json!(qt);
+        }
+        if p.explain.unwrap_or(false) {
+            body["explain"] = json!(true);
+        }
+        let index = seg(&p.index);
+        render(
+            c.post(&format!("/azure-search/indexes/{index}/docs/search"), &body)
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "List NebulaDB indexes (Azure AI Search–compatible index definitions \
+                       plus buckets that already have documents).",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_indexes(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let c = self.client_for(&parts);
+        render(c.get("/azure-search/indexes").await)
     }
 
     // ---- RAG ----

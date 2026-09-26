@@ -20,6 +20,7 @@ nebula-rerank = { path = "../nebula-rerank" }
 nebula-cache = { path = "../nebula-cache" }
 nebula-redis-cache = { path = "../nebula-redis-cache" }
 nebula-index = { path = "../nebula-index" }
+nebula-search = { path = "../nebula-search" }
 nebula-wal = { path = "../nebula-wal" }
 nebula-sql = { path = "../nebula-sql" }
 nebula-grpc = { path = "../nebula-grpc" }

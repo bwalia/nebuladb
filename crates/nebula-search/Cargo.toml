@@ -25,5 +25,6 @@ serde_yaml = "0.9"
 [dev-dependencies]
 nebula-embed = { path = "../nebula-embed" }
 nebula-chunk = { path = "../nebula-chunk" }
+nebula-vector = { path = "../nebula-vector" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile = "3"

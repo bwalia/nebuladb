@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use thiserror::Error;
 
 use crate::types::{
-    IndexActionResult, IndexBatch, IndexBatchResult, IndexDefinition, SearchRequest, SearchResponse,
+    IndexBatch, IndexBatchResult, IndexDefinition, SearchRequest, SearchResponse,
 };
 
 #[derive(Debug, Error)]

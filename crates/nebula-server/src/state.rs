@@ -355,6 +355,12 @@ pub struct AppState {
     /// the `top_keys` request param so a non-default introspection
     /// call can't poison the UI's cache.
     pub bucket_stats_cache: Arc<tokio::sync::Mutex<Option<BucketStatsCacheEntry>>>,
+    /// Unified enterprise search (native + optional Azure backend).
+    pub search: Arc<nebula_search::DualSearchBackend>,
+    /// Compatibility registry (Azure AI Search, MCP, …).
+    pub compat_registry: Arc<nebula_search::CompatRegistry>,
+    /// UK Companies House API proxy for the showcase demo.
+    pub companies_house: crate::companies_house::CompaniesHouseClient,
 }
 
 /// One cached `/admin/buckets` response. See
@@ -377,6 +383,24 @@ impl AppState {
         let llm: Arc<dyn LlmClient> = Arc::new(MockLlm::default());
         let sql = Arc::new(SqlEngine::new(Arc::clone(&index)).with_llm(Arc::clone(&llm)));
         let ai_gateway = Arc::new(crate::ai::AiGateway::from_env(Arc::clone(&llm)));
+        let hybrid_weights = Arc::new(HybridWeights::default());
+        let reranker: Arc<dyn Reranker> = Arc::new(NoopReranker);
+        let weights_fn: nebula_search::WeightFn = {
+            let hw = Arc::clone(&hybrid_weights);
+            Arc::new(move |bucket: Option<&str>| hw.resolve(bucket))
+        };
+        let search = crate::search_routes::build_search_backend(
+            Arc::clone(&index),
+            nebula_search::IndexRegistry::new(),
+            weights_fn,
+            Arc::clone(&reranker),
+        );
+        let compat_registry = Arc::new(
+            std::fs::read_to_string("docs/compat/registry.yaml")
+                .ok()
+                .and_then(|s| nebula_search::CompatRegistry::from_yaml(&s).ok())
+                .unwrap_or_else(nebula_search::embedded_registry),
+        );
         Self {
             index,
             llm,
@@ -401,15 +425,18 @@ impl AppState {
             raft: None,
             snapshot_scheduler_enabled: false,
             durability_cache: Arc::new(DurabilityMetricsCache::default()),
-            reranker: Arc::new(NoopReranker),
+            reranker,
             query_expander: Arc::new(NoopQueryExpander),
-            hybrid_weights: Arc::new(HybridWeights::default()),
+            hybrid_weights,
             ai_gateway,
             ai_traces: Arc::new(crate::ai::TraceStore::default()),
             resource: Arc::new(nebula_resource::ResourceManager::new(
                 nebula_resource::Thresholds::default(),
             )),
             bucket_stats_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            search,
+            compat_registry,
+            companies_house: crate::companies_house::CompaniesHouseClient::from_env(),
         }
     }
 
@@ -420,7 +447,8 @@ impl AppState {
 
     /// Swap in a post-retrieval reranker (e.g. an HTTP cross-encoder).
     pub fn with_reranker(mut self, reranker: Arc<dyn Reranker>) -> Self {
-        self.reranker = reranker;
+        self.reranker = Arc::clone(&reranker);
+        self.rebuild_search();
         self
     }
 
@@ -433,7 +461,20 @@ impl AppState {
     /// Set per-collection hybrid fusion weights (design 0008 §9).
     pub fn with_hybrid_weights(mut self, weights: Arc<HybridWeights>) -> Self {
         self.hybrid_weights = weights;
+        self.rebuild_search();
         self
+    }
+
+    fn rebuild_search(&mut self) {
+        let hw = Arc::clone(&self.hybrid_weights);
+        let weights_fn: nebula_search::WeightFn =
+            Arc::new(move |bucket: Option<&str>| hw.resolve(bucket));
+        self.search = crate::search_routes::build_search_backend(
+            Arc::clone(&self.index),
+            self.search.registry.clone(),
+            weights_fn,
+            Arc::clone(&self.reranker),
+        );
     }
 
     /// Wire in a shared durability-metrics cache (the one the

@@ -35,8 +35,12 @@ impl FilterExpr {
     /// Return true when `metadata` (JSON object) satisfies every predicate.
     pub fn matches(&self, metadata: &serde_json::Value) -> bool {
         self.preds.iter().all(|p| match p {
-            FilterPred::Eq { field, value } => meta_str(metadata, field).as_deref() == Some(value.as_str()),
-            FilterPred::Ne { field, value } => meta_str(metadata, field).as_deref() != Some(value.as_str()),
+            FilterPred::Eq { field, value } => {
+                meta_str(metadata, field).as_deref() == Some(value.as_str())
+            }
+            FilterPred::Ne { field, value } => {
+                meta_str(metadata, field).as_deref() != Some(value.as_str())
+            }
             FilterPred::In { field, values } => meta_str(metadata, field)
                 .map(|v| values.iter().any(|x| x == &v))
                 .unwrap_or(false),
@@ -60,7 +64,6 @@ pub fn parse_filter(input: &str) -> Result<FilterExpr, FilterError> {
         return Ok(FilterExpr::default());
     }
     let lower = s.to_ascii_lowercase();
-    // Reject operators we do not translate yet.
     for op in [" or ", " gt ", " ge ", " lt ", " le ", " not ", " any(", " all("] {
         if lower.contains(op) {
             return Err(FilterError::Unsupported(format!(
@@ -78,32 +81,17 @@ pub fn parse_filter(input: &str) -> Result<FilterExpr, FilterError> {
 
 fn split_and(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
-    let mut start = 0;
-    let lower: Vec<char> = s.chars().collect();
-    let bytes: Vec<(usize, char)> = s.char_indices().collect();
-    let mut i = 0;
-    while i < bytes.len() {
-        // look for " and " case-insensitive
-        if i + 4 < bytes.len() {
-            let slice: String = lower[i..i + 5].iter().collect::<String>().to_ascii_lowercase();
-            // Actually use string slice on original
-        }
-        i += 1;
-    }
-    // Simpler: split on case-insensitive " and "
     let mut rest = s;
     while let Some(idx) = find_and(rest) {
         out.push(&rest[..idx]);
-        rest = &rest[idx + 5..]; // len(" and ")
+        rest = &rest[idx + 5..];
     }
     out.push(rest);
-    let _ = start;
     out
 }
 
 fn find_and(s: &str) -> Option<usize> {
-    let lower = s.to_ascii_lowercase();
-    lower.find(" and ")
+    s.to_ascii_lowercase().find(" and ")
 }
 
 fn parse_pred(s: &str) -> Result<FilterPred, FilterError> {
@@ -112,13 +100,11 @@ fn parse_pred(s: &str) -> Result<FilterPred, FilterError> {
         return Err(FilterError::Invalid("empty predicate".into()));
     }
 
-    // search.in(field, 'a,b,c')
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("search.in(") {
         return parse_search_in(trimmed);
     }
 
-    // field eq 'value' | field ne value
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
     if parts.len() < 3 {
         return Err(FilterError::Unsupported(format!(
@@ -137,7 +123,6 @@ fn parse_pred(s: &str) -> Result<FilterPred, FilterError> {
 }
 
 fn parse_search_in(s: &str) -> Result<FilterPred, FilterError> {
-    // search.in(field, 'a,b') or search.in(field, 'a,b', ',')
     let open = s
         .find('(')
         .ok_or_else(|| FilterError::Invalid("search.in missing (".into()))?;
@@ -147,7 +132,9 @@ fn parse_search_in(s: &str) -> Result<FilterPred, FilterError> {
     let inner = &s[open + 1..close];
     let mut args = split_csv_args(inner);
     if args.len() < 2 {
-        return Err(FilterError::Invalid("search.in needs field and list".into()));
+        return Err(FilterError::Invalid(
+            "search.in needs field and list".into(),
+        ));
     }
     let field = args.remove(0).trim().to_string();
     let list = strip_quotes(args[0].trim());

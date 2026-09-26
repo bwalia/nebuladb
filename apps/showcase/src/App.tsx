@@ -14,6 +14,8 @@ import { McpTab } from "./tabs/McpTab";
 import { AgentsTab } from "./tabs/AgentsTab";
 import { ClusterTab } from "./tabs/ClusterTab";
 import { RebalanceTab } from "./tabs/RebalanceTab";
+import { EnterpriseSearchTab } from "./tabs/EnterpriseSearchTab";
+import { CompaniesHouseTab } from "./tabs/CompaniesHouseTab";
 
 type TabId =
   | "executive"
@@ -21,6 +23,8 @@ type TabId =
   | "documents"
   | "sql"
   | "search"
+  | "enterprise"
+  | "companies"
   | "rag"
   | "hybrid"
   | "agents"
@@ -44,6 +48,8 @@ const NAV: NavItem[] = [
   { id: "documents", label: "Documents", hint: "Ingest + chunk + embed", icon: "❏", group: "data" },
   { id: "sql", label: "SQL", hint: "Query workbench", icon: "⌘", group: "data" },
   { id: "search", label: "Semantic search", hint: "Vector retrieval", icon: "✷", group: "ai" },
+  { id: "enterprise", label: "Enterprise search", hint: "Azure-compatible hybrid search", icon: "⧉", group: "ai" },
+  { id: "companies", label: "Companies House", hint: "UK CH search + RAG chat", icon: "⌂", group: "ai" },
   { id: "rag", label: "RAG chat", hint: "Streaming answers", icon: "❯", group: "ai" },
   { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query", icon: "⟡", group: "ai" },
   { id: "agents", label: "AI agents", hint: "Tool-calling agents over MCP", icon: "⬡", group: "ai" },
@@ -149,6 +155,8 @@ export function App() {
               {tab === "documents" && <DocumentsTab />}
               {tab === "sql" && <SqlTab />}
               {tab === "search" && <SearchTab />}
+              {tab === "enterprise" && <EnterpriseSearchTab />}
+              {tab === "companies" && <CompaniesHouseTab />}
               {tab === "rag" && <RagTab />}
               {tab === "hybrid" && <HybridTab />}
               {tab === "agents" && <AgentsTab />}

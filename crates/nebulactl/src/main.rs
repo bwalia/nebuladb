@@ -47,6 +47,11 @@ enum Cmd {
         #[command(subcommand)]
         op: RestoreOp,
     },
+    /// Enterprise / Azure-compatible search helpers.
+    Search {
+        #[command(subcommand)]
+        op: SearchOp,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -101,6 +106,22 @@ enum BackupOp {
 }
 
 #[derive(Subcommand, Debug)]
+enum SearchOp {
+    /// Migrate an index's documents between native NebulaDB and Azure AI Search.
+    Migrate {
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        index: String,
+        /// Max docs to export from the native side (admin export).
+        #[arg(long, default_value = "10000")]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum RestoreOp {
     /// Trigger a restore.
     Start {
@@ -135,6 +156,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Cmd::Backup { op } => run_backup(client, op).await,
         Cmd::Restore { op } => run_restore(client, op).await,
+        Cmd::Search { op } => run_search(client, op).await,
     }
 }
 
@@ -168,6 +190,58 @@ impl Client {
         let text = resp.text().await?;
         if !status.is_success() {
             bail!("HTTP {status}: {text}");
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    async fn post_with_header(
+        &self,
+        path: &str,
+        body: &Value,
+        header: (&str, &str),
+    ) -> Result<Value> {
+        let mut req = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .header(header.0, header.1)
+            .json(body);
+        if let Some(t) = &self.token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            bail!("HTTP {status}: {text}");
+        }
+        if text.trim().is_empty() {
+            return Ok(Value::Null);
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    async fn put_with_header(
+        &self,
+        path: &str,
+        body: &Value,
+        header: (&str, &str),
+    ) -> Result<Value> {
+        let mut req = self
+            .http
+            .put(format!("{}{path}", self.base))
+            .header(header.0, header.1)
+            .json(body);
+        if let Some(t) = &self.token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            bail!("HTTP {status}: {text}");
+        }
+        if text.trim().is_empty() {
+            return Ok(Value::Null);
         }
         Ok(serde_json::from_str(&text)?)
     }
@@ -303,6 +377,136 @@ async fn run_restore(client: Client, op: RestoreOp) -> Result<()> {
                 .await?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
             Ok(())
+        }
+    }
+}
+
+async fn run_search(client: Client, op: SearchOp) -> Result<()> {
+    match op {
+        SearchOp::Migrate {
+            from,
+            to,
+            index,
+            limit,
+        } => {
+            let from = from.to_ascii_lowercase();
+            let to = to.to_ascii_lowercase();
+            match (from.as_str(), to.as_str()) {
+                ("native", "azure") => {
+                    // Ensure Azure-side index exists (via dual backend).
+                    let def = serde_json::json!({
+                        "name": index,
+                        "fields": [
+                            {"name": "id", "type": "Edm.String", "key": true, "searchable": false, "filterable": true, "retrievable": true},
+                            {"name": "content", "type": "Edm.String", "searchable": true, "retrievable": true}
+                        ],
+                        "backend": "azure"
+                    });
+                    let _ = client
+                        .put_with_header(
+                            &format!("/api/v1/azure-search/indexes/{index}"),
+                            &def,
+                            ("X-Nebula-Search-Backend", "azure"),
+                        )
+                        .await?;
+
+                    let exported = client
+                        .get(&format!("/api/v1/admin/bucket/{index}/export"))
+                        .await?;
+                    let docs = exported
+                        .get("docs")
+                        .and_then(|d| d.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut batch = Vec::new();
+                    for doc in docs.into_iter().take(limit) {
+                        let id = doc
+                            .get("external_id")
+                            .or_else(|| doc.get("id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if id.is_empty() {
+                            continue;
+                        }
+                        let text = doc
+                            .get("text")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        batch.push(serde_json::json!({
+                            "@search.action": "upload",
+                            "id": id,
+                            "content": text,
+                        }));
+                    }
+                    let body = serde_json::json!({ "value": batch });
+                    let resp = client
+                        .post_with_header(
+                            &format!("/api/v1/azure-search/indexes/{index}/docs/index"),
+                            &body,
+                            ("X-Nebula-Search-Backend", "azure"),
+                        )
+                        .await?;
+                    println!(
+                        "migrated {} docs native → azure index `{index}`",
+                        batch.len()
+                    );
+                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    Ok(())
+                }
+                ("azure", "native") => {
+                    // Pull via Azure search (*) then upsert into native.
+                    let body = serde_json::json!({
+                        "search": "*",
+                        "top": limit,
+                    });
+                    let resp = client
+                        .post_with_header(
+                            &format!("/api/v1/azure-search/indexes/{index}/docs/search"),
+                            &body,
+                            ("X-Nebula-Search-Backend", "azure"),
+                        )
+                        .await?;
+                    let items = resp
+                        .get("value")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut uploaded = 0usize;
+                    let mut batch = Vec::new();
+                    for doc in items {
+                        let id = doc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let content = doc
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if id.is_empty() {
+                            continue;
+                        }
+                        batch.push(serde_json::json!({
+                            "@search.action": "upload",
+                            "id": id,
+                            "content": content,
+                        }));
+                        uploaded += 1;
+                    }
+                    let body = serde_json::json!({ "value": batch });
+                    let result = client
+                        .post(
+                            &format!("/api/v1/azure-search/indexes/{index}/docs/index"),
+                            &body,
+                        )
+                        .await?;
+                    println!(
+                        "migrated {uploaded} docs azure → native index `{index}`"
+                    );
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                    Ok(())
+                }
+                _ => bail!("unsupported migrate direction: {from} → {to} (use native↔azure)"),
+            }
         }
     }
 }
