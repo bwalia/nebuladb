@@ -127,6 +127,11 @@ server:
     # Present on that host alongside llama3:latest. The server's own
     # default is "llama3"; pinned here so a model change is a chart change.
     NEBULA_LLM_MODEL: "llama3.1:8b"
+    # Idle-byte timeout on the LLM stream (binary default 60s). Large
+    # RAG prompts (e.g. companies_house records) take ~55s of prompt
+    # eval on llama3.1:8b before the first token, so 60s tripped as
+    # "error sending request". Raise if first-token latency grows.
+    NEBULA_LLM_READ_TIMEOUT_SECS: "180"
 
     # Embedder: chart default targets LAN Ollama nomic-embed-text @ 768.
     # Live rings (int/test/acc/prod) still have 384-d snapshots — each
