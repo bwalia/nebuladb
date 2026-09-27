@@ -276,11 +276,14 @@ pub async fn compat_product(
         .ok_or_else(|| ApiError::NotFound(format!("compat product `{product}`")))
 }
 
+/// Per-bucket (bm25, vector) hybrid weight resolver.
+pub type HybridWeightsFn = Arc<dyn Fn(Option<&str>) -> (f32, f32) + Send + Sync>;
+
 /// Build the dual search backend for AppState.
 pub fn build_search_backend(
     index: Arc<nebula_index::TextIndex>,
     registry: nebula_search::IndexRegistry,
-    weights: Arc<dyn Fn(Option<&str>) -> (f32, f32) + Send + Sync>,
+    weights: HybridWeightsFn,
     reranker: Arc<dyn nebula_rerank::Reranker>,
 ) -> Arc<DualSearchBackend> {
     let native = Arc::new(
