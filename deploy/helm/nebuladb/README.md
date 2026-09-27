@@ -89,7 +89,8 @@ server:
     NEBULA_API_KEYS: nebula-api-keys
     # Optional showcase demos / cloud adapters (also via the same Secret):
     # NEBULA_COMPANIES_HOUSE_API_KEY, NEBULA_AZURE_SEARCH_ENDPOINT,
-    # NEBULA_AZURE_SEARCH_API_KEY
+    # NEBULA_AZURE_SEARCH_API_KEY, NEBULA_LLM_OLLAMA_TOKEN (JWT for
+    # https://ollama.workstation.co.uk)
     NEBULA_JWT_SECRET: nebula-jwt
 ```
 

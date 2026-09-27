@@ -540,9 +540,22 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(OpenAiChatLlm::new(cfg)?)
     } else if let Ok(base) = std::env::var("NEBULA_LLM_OLLAMA_URL") {
         let model = std::env::var("NEBULA_LLM_MODEL").unwrap_or_else(|_| "llama3".into());
+        let bearer_token = std::env::var("NEBULA_LLM_OLLAMA_TOKEN")
+            .or_else(|_| std::env::var("NEBULA_LLM_OLLAMA_JWT"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if bearer_token.is_none() {
+            tracing::warn!(
+                "NEBULA_LLM_OLLAMA_URL is set but NEBULA_LLM_OLLAMA_TOKEN \
+                 (or NEBULA_LLM_OLLAMA_JWT) is empty — authenticated gateways \
+                 like https://ollama.workstation.co.uk will return 403"
+            );
+        }
         let cfg = OllamaConfig {
             base_url: base,
             model,
+            bearer_token,
             timeout: connect_timeout,
             read_timeout,
         };

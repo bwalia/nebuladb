@@ -25,9 +25,13 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
-    /// e.g. `http://localhost:11434`.
+    /// e.g. `http://localhost:11434` or `https://ollama.workstation.co.uk`.
     pub base_url: String,
     pub model: String,
+    /// Optional bearer JWT for authenticated Ollama gateways (e.g.
+    /// wslproxy in front of `ollama.workstation.co.uk`). Sent as
+    /// `Authorization: Bearer <token>` on every request when set.
+    pub bearer_token: Option<String>,
     /// **Connect** timeout for the initial TCP/TLS handshake. Does
     /// NOT cap the streaming body — see the field below.
     ///
@@ -53,6 +57,7 @@ impl Default for OllamaConfig {
         Self {
             base_url: "http://localhost:11434".into(),
             model: "llama3".into(),
+            bearer_token: None,
             // 10s is plenty to dial localhost; raise via env if you
             // point at a remote Ollama over a slow link.
             timeout: Duration::from_secs(10),
@@ -85,6 +90,13 @@ impl OllamaLlm {
         let mut builder = reqwest::Client::builder().connect_timeout(config.timeout);
         if let Some(rt) = config.read_timeout {
             builder = builder.read_timeout(rt);
+        }
+        if let Some(token) = config.bearer_token.as_deref().filter(|t| !t.is_empty()) {
+            let mut headers = reqwest::header::HeaderMap::new();
+            let value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|e| LlmError::Decode(format!("invalid Ollama bearer token: {e}")))?;
+            headers.insert(reqwest::header::AUTHORIZATION, value);
+            builder = builder.default_headers(headers);
         }
         let http = builder.build()?;
         let model_label = format!("ollama/{}", config.model);
@@ -299,6 +311,7 @@ mod tests {
         let cfg = OllamaConfig {
             base_url: format!("http://{addr}"),
             model: "test".into(),
+            bearer_token: None,
             // Connect-only timeout: 2 seconds. The body lasts ~7.5s.
             // With the old code (`timeout(2s)` on ClientBuilder), the
             // stream gets cut around 2s. The fix keeps the body uncapped.

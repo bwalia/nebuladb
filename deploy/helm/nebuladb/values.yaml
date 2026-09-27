@@ -118,8 +118,10 @@ server:
     # LLM provider for /ai/rag and /rag/answer. Leave BOTH blank and the
     # server falls back to MockLlm, which echoes the prompt back as the
     # answer — prod shipped that echo to users because these were empty.
-    # Ollama on the LAN; reachable from every ring's pods (verified).
-    NEBULA_LLM_OLLAMA_URL: "http://192.168.1.177:11434"
+    # Public authenticated Ollama gateway (wslproxy). JWT must live in
+    # the app Secret as NEBULA_LLM_OLLAMA_TOKEN (or NEBULA_LLM_OLLAMA_JWT)
+    # — never in this ConfigMap.
+    NEBULA_LLM_OLLAMA_URL: "https://ollama.workstation.co.uk"
     # Present on that host alongside llama3:latest. The server's own
     # default is "llama3"; pinned here so a model change is a chart change.
     NEBULA_LLM_MODEL: "llama3.1:8b"
@@ -309,6 +311,8 @@ serviceMonitor:
 # with any of these keys (all optional — unset => that feature is off):
 #     NEBULA_JWT_SECRET, NEBULA_API_KEYS, NEBULA_OPENAI_API_KEY,
 #     NEBULA_COMPANIES_HOUSE_API_KEY (or COMPANIES_HOUSE_API_KEY),
+#     NEBULA_LLM_OLLAMA_TOKEN (or NEBULA_LLM_OLLAMA_JWT) — bearer for
+#       https://ollama.workstation.co.uk,
 #     NEBULA_AZURE_SEARCH_ENDPOINT, NEBULA_AZURE_SEARCH_API_KEY,
 #     NEBULA_AZURE_SEARCH_API_VERSION
 externalSecret:

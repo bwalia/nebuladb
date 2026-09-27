@@ -188,6 +188,7 @@ Every knob is an environment variable; none are required.
 | `NEBULA_OPENAI_API_KEY`    | *(unset → MockEmbedder)*        | Use OpenAI-compat embeddings            |
 | `NEBULA_OPENAI_BASE_URL`   | `https://api.openai.com/v1`     | Works with vLLM, Ollama `/v1`, Azure    |
 | `NEBULA_LLM_OLLAMA_URL`    | *(unset → MockLlm)*             | Ollama base URL for RAG                 |
+| `NEBULA_LLM_OLLAMA_TOKEN`  | *(unset)*                       | Bearer JWT for authenticated Ollama gateways (`NEBULA_LLM_OLLAMA_JWT` alias) |
 | `NEBULA_LLM_OPENAI_KEY`    | *(unset)*                       | Overrides Ollama; OpenAI chat for RAG   |
 | `NEBULA_CHUNK_CHARS`       | `500`                           | Chunker window                          |
 | `NEBULA_CHUNK_OVERLAP`     | `50`                            | Chunker overlap                         |

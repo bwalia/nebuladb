@@ -140,9 +140,16 @@ impl AiGateway {
         if let Ok(base) = std::env::var("NEBULA_AI_OLLAMA_URL") {
             let model =
                 std::env::var("NEBULA_AI_OLLAMA_MODEL").unwrap_or_else(|_| "llama3.1:8b".into());
+            let bearer_token = std::env::var("NEBULA_AI_OLLAMA_TOKEN")
+                .or_else(|_| std::env::var("NEBULA_LLM_OLLAMA_TOKEN"))
+                .or_else(|_| std::env::var("NEBULA_LLM_OLLAMA_JWT"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
             let cfg = OllamaConfig {
                 base_url: base,
                 model,
+                bearer_token,
                 timeout: Duration::from_secs(10),
                 read_timeout: Some(Duration::from_secs(120)),
             };
