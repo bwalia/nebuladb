@@ -11,27 +11,42 @@
 //!
 //! We iterate the byte stream, buffer until newlines, and emit one
 //! [`LlmChunk::Delta`] per non-empty `response`, terminating on `done`.
+//!
+//! Authenticated gateways (wslproxy in front of
+//! `https://ollama.workstation.co.uk`) expect an `x-api-key` header
+//! carrying a short-lived HS256 JWT. `OllamaConfig::api_key` is the
+//! shared signing secret (or a pre-minted JWT). A fresh token is minted
+//! on every request so it never outlives `exp`.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use base64::Engine;
 use futures::stream::{BoxStream, StreamExt};
 use futures::TryStreamExt;
-use serde::Deserialize;
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     GenerateOptions, LlmChunk, LlmClient, LlmError, ModelCapabilities, ModelInfo, Prompt, Result,
 };
+
+/// Default JWT lifetime — short enough that a leaked token is useless,
+/// long enough for a slow generate + stream.
+const OLLAMA_JWT_TTL_SECS: u64 = 600;
 
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
     /// e.g. `http://localhost:11434` or `https://ollama.workstation.co.uk`.
     pub base_url: String,
     pub model: String,
-    /// Optional bearer JWT for authenticated Ollama gateways (e.g.
-    /// wslproxy in front of `ollama.workstation.co.uk`). Sent as
-    /// `Authorization: Bearer <token>` on every request when set.
-    pub bearer_token: Option<String>,
+    /// Shared HMAC secret used to mint the gateway `x-api-key` JWT, or
+    /// a pre-minted JWT (three base64url segments). Empty / `None` ⇒
+    /// no auth header (local unauthenticated Ollama).
+    ///
+    /// Kept as `bearer_token` in older call sites via the alias below —
+    /// the wire format is `x-api-key`, not `Authorization: Bearer`.
+    pub api_key: Option<String>,
     /// **Connect** timeout for the initial TCP/TLS handshake. Does
     /// NOT cap the streaming body — see the field below.
     ///
@@ -57,7 +72,7 @@ impl Default for OllamaConfig {
         Self {
             base_url: "http://localhost:11434".into(),
             model: "llama3".into(),
-            bearer_token: None,
+            api_key: None,
             // 10s is plenty to dial localhost; raise via env if you
             // point at a remote Ollama over a slow link.
             timeout: Duration::from_secs(10),
@@ -67,6 +82,14 @@ impl Default for OllamaConfig {
             // deliberately slow mock.
             read_timeout: Some(Duration::from_secs(60)),
         }
+    }
+}
+
+impl OllamaConfig {
+    /// Back-compat setter used by call sites that still say `bearer_token`.
+    pub fn with_bearer_token(mut self, token: Option<String>) -> Self {
+        self.api_key = token;
+        self
     }
 }
 
@@ -87,16 +110,13 @@ impl OllamaLlm {
         // the dial, `read_timeout` for byte-idle, leave the body
         // duration uncapped. See the comment on
         // `OllamaConfig::read_timeout` for the rationale.
+        //
+        // Auth is attached per-request (fresh JWT) — not as default
+        // headers — so a long-lived client never presents an expired
+        // token.
         let mut builder = reqwest::Client::builder().connect_timeout(config.timeout);
         if let Some(rt) = config.read_timeout {
             builder = builder.read_timeout(rt);
-        }
-        if let Some(token) = config.bearer_token.as_deref().filter(|t| !t.is_empty()) {
-            let mut headers = reqwest::header::HeaderMap::new();
-            let value = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
-                .map_err(|e| LlmError::Decode(format!("invalid Ollama bearer token: {e}")))?;
-            headers.insert(reqwest::header::AUTHORIZATION, value);
-            builder = builder.default_headers(headers);
         }
         let http = builder.build()?;
         let model_label = format!("ollama/{}", config.model);
@@ -106,6 +126,79 @@ impl OllamaLlm {
             model_label,
         })
     }
+
+    /// Build the `x-api-key` value for one outbound request.
+    fn auth_header_value(&self) -> Result<Option<String>> {
+        let Some(raw) = self.config.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(None);
+        };
+        if looks_like_jwt(raw) {
+            return Ok(Some(raw.to_string()));
+        }
+        Ok(Some(mint_ollama_jwt(raw)?))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OllamaJwtClaims {
+    app: String,
+    iat: u64,
+    exp: u64,
+}
+
+/// Mint an HS256 JWT for the wslproxy Ollama gateway.
+///
+/// `secret` may be either the plaintext HMAC passphrase or the
+/// Base64 form stored in the gateway rule's `jwt_token_validation_key`
+/// (gateway Base64-decodes before verify). We accept both.
+fn mint_ollama_jwt(secret: &str) -> Result<String> {
+    let hmac_secret = resolve_hmac_secret(secret);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| LlmError::Decode(format!("system clock before epoch: {e}")))?
+        .as_secs();
+    let claims = OllamaJwtClaims {
+        app: "nebuladb".into(),
+        iat: now,
+        exp: now.saturating_add(OLLAMA_JWT_TTL_SECS),
+    };
+    encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(hmac_secret.as_bytes()),
+    )
+    .map_err(|e| LlmError::Decode(format!("ollama jwt mint failed: {e}")))
+}
+
+fn looks_like_jwt(s: &str) -> bool {
+    let mut parts = s.split('.');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(a), Some(b), Some(c), None)
+            if !a.is_empty() && !b.is_empty() && !c.is_empty() && a.starts_with("eyJ")
+    )
+}
+
+/// If `raw` is standard Base64 of a printable passphrase, return the
+/// decoded passphrase (matches wslproxy rule storage). Otherwise use
+/// `raw` as-is (DIY Vault stores the already-decoded secret).
+fn resolve_hmac_secret(raw: &str) -> String {
+    let mut padded = raw.to_string();
+    let rem = padded.len() % 4;
+    if rem != 0 {
+        padded.push_str(&"=".repeat(4 - rem));
+    }
+    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&padded) {
+        if let Ok(decoded) = std::str::from_utf8(&bytes) {
+            let ok = !decoded.is_empty()
+                && decoded.len() < 128
+                && decoded.chars().all(|c| c.is_ascii_graphic());
+            if ok {
+                return decoded.to_string();
+            }
+        }
+    }
+    raw.to_string()
 }
 
 #[derive(serde::Serialize)]
@@ -166,7 +259,11 @@ impl LlmClient for OllamaLlm {
             system: prompt.system.as_deref(),
             stream: true,
         };
-        let resp = self.http.post(&url).json(&body).send().await?;
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(token) = self.auth_header_value()? {
+            req = req.header("x-api-key", token);
+        }
+        let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -247,6 +344,34 @@ mod tests {
         assert_eq!(c.model, "llama3");
     }
 
+    #[test]
+    fn resolve_hmac_secret_decodes_rule_style_base64() {
+        // Base64 of `m7Q9vX2pL8zR4nT6cH1aK5sW0dF3uJ9B` (no padding).
+        let b64 = "bTdROXZYMnBMOHpSNG5UNmNIMWFLNXNXMGRGM3VKOUI";
+        assert_eq!(
+            resolve_hmac_secret(b64),
+            "m7Q9vX2pL8zR4nT6cH1aK5sW0dF3uJ9B"
+        );
+        // Already-decoded vault form passes through.
+        assert_eq!(
+            resolve_hmac_secret("m7Q9vX2pL8zR4nT6cH1aK5sW0dF3uJ9B"),
+            "m7Q9vX2pL8zR4nT6cH1aK5sW0dF3uJ9B"
+        );
+    }
+
+    #[test]
+    fn mint_ollama_jwt_is_verifiable_hs256() {
+        let token = mint_ollama_jwt("test-secret").expect("mint");
+        assert!(looks_like_jwt(&token));
+        let data = jsonwebtoken::decode::<OllamaJwtClaims>(
+            &token,
+            &jsonwebtoken::DecodingKey::from_secret(b"test-secret"),
+            &jsonwebtoken::Validation::new(Algorithm::HS256),
+        )
+        .expect("verify");
+        assert_eq!(data.claims.app, "nebuladb");
+    }
+
     /// Streaming-body timeout regression guard.
     ///
     /// Stand up a mock Ollama server that emits NDJSON tokens slowly:
@@ -311,7 +436,7 @@ mod tests {
         let cfg = OllamaConfig {
             base_url: format!("http://{addr}"),
             model: "test".into(),
-            bearer_token: None,
+            api_key: None,
             // Connect-only timeout: 2 seconds. The body lasts ~7.5s.
             // With the old code (`timeout(2s)` on ClientBuilder), the
             // stream gets cut around 2s. The fix keeps the body uncapped.

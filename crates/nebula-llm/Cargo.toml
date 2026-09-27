@@ -15,6 +15,8 @@ reqwest = { workspace = true, features = ["stream"] }
 tokio = { workspace = true }
 tracing.workspace = true
 bytes.workspace = true
+jsonwebtoken.workspace = true
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
