@@ -91,9 +91,6 @@ struct AnthropicSse {
 
 #[derive(Deserialize, Default)]
 struct AnthropicDelta {
-    #[serde(rename = "type")]
-    #[serde(default)]
-    delta_type: Option<String>,
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
