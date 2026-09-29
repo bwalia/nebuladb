@@ -124,14 +124,13 @@ server:
     # this ConfigMap. Server mints a short-lived HS256 JWT and sends
     # it as `x-api-key` on every request.
     NEBULA_LLM_OLLAMA_URL: "https://ollama.workstation.co.uk"
-    # Present on that host alongside llama3:latest. The server's own
-    # default is "llama3"; pinned here so a model change is a chart change.
-    NEBULA_LLM_MODEL: "llama3.1:8b"
-    # Idle-byte timeout on the LLM stream (binary default 60s). Large
-    # RAG prompts (e.g. companies_house records) take ~55s of prompt
-    # eval on llama3.1:8b before the first token, so 60s tripped as
-    # "error sending request". Raise if first-token latency grows.
-    NEBULA_LLM_READ_TIMEOUT_SECS: "180"
+    # Fast local model on the gateway host. llama3.1:8b was ~50–110s
+    # to first token on RAG prompts; llama3.2:3b is ~1–3s for short
+    # answers and still usable for companies_house chat.
+    NEBULA_LLM_MODEL: "llama3.2:3b"
+    # Idle-byte timeout on the LLM stream (binary default 60s). Keep
+    # headroom for cold-start / larger RAG contexts on the 3b model.
+    NEBULA_LLM_READ_TIMEOUT_SECS: "90"
 
     # Embedder: chart default targets LAN Ollama nomic-embed-text @ 768.
     # Live rings (int/test/acc/prod) still have 384-d snapshots — each
