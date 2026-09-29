@@ -114,16 +114,10 @@ server:
   # Env vars forwarded to the binary. Leave any of these unset to
   # fall back to the binary's own defaults (see main README).
   env:
-    # LLM provider (RAG). Defaults to MockLlm when unset.
-    # LLM provider for /ai/rag and /rag/answer. Leave BOTH blank and the
-    # server falls back to MockLlm, which echoes the prompt back as the
-    # answer — prod shipped that echo to users because these were empty.
-    # Prefer LAN Ollama (no wslproxy JWT). The public gateway URL
-    # (https://ollama.workstation.co.uk) keeps getting its rule rewritten
-    # to an undecryptable secret:// ref by the admin API, which 403s RAG.
-    # LAN :11434 is reachable from every k3s1 pod and needs no auth.
-    # Set NEBULA_LLM_OLLAMA_TOKEN only if you switch this back to the
-    # public gateway (HMAC secret or pre-minted JWT → x-api-key).
+    # LLM for /ai/rag and /rag/answer. Leave URL blank → MockLlm echo.
+    # Chart default = LAN Ollama (int/test/acc). Prod overrides to the
+    # public gateway in values-prod.yaml — do NOT put the LAN IP in prod.
+    # Public gateway needs NEBULA_LLM_OLLAMA_TOKEN (HMAC secret → x-api-key JWT).
     NEBULA_LLM_OLLAMA_URL: "http://192.168.1.177:11434"
     # Fast local model. llama3.1:8b was ~50–110s to first token on RAG;
     # llama3.2:3b is ~1–3s for short answers.

@@ -45,11 +45,16 @@ server:
       memory: "8Gi"
 
   # Embeddings: keep mock-384 until wipe+reingest (see values-int.yaml).
+  # LLM: public gateway only in prod (no LAN IP). Token lives in
+  # nebuladb-secrets as NEBULA_LLM_OLLAMA_TOKEN (HMAC → x-api-key JWT).
   env:
     NEBULA_OPENAI_API_KEY: null
     NEBULA_OPENAI_BASE_URL: null
     NEBULA_OPENAI_MODEL: null
     NEBULA_EMBED_DIM: "384"
+    NEBULA_LLM_OLLAMA_URL: "https://ollama.workstation.co.uk"
+    NEBULA_LLM_MODEL: "llama3.2:3b"
+    NEBULA_LLM_READ_TIMEOUT_SECS: "90"
 
   persistence:
     enabled: true
