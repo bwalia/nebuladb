@@ -119,9 +119,10 @@ server:
     # public gateway in values-prod.yaml — do NOT put the LAN IP in prod.
     # Public gateway needs NEBULA_LLM_OLLAMA_TOKEN (HMAC secret → x-api-key JWT).
     NEBULA_LLM_OLLAMA_URL: "http://192.168.1.177:11434"
-    # Fast local model. llama3.1:8b was ~50–110s to first token on RAG;
-    # llama3.2:3b is ~1–3s for short answers.
-    NEBULA_LLM_MODEL: "llama3.2:3b"
+    # Prefer 3b-dash: already kept hot on the LAN host and avoids
+    # thrashing when llama3.1:8b is also resident in VRAM (plain
+    # llama3.2:3b then hangs / times out with "error sending request").
+    NEBULA_LLM_MODEL: "llama3.2:3b-dash"
     # Idle-byte timeout on the LLM stream (binary default 60s).
     NEBULA_LLM_READ_TIMEOUT_SECS: "90"
 
