@@ -118,18 +118,17 @@ server:
     # LLM provider for /ai/rag and /rag/answer. Leave BOTH blank and the
     # server falls back to MockLlm, which echoes the prompt back as the
     # answer — prod shipped that echo to users because these were empty.
-    # Public authenticated Ollama gateway (wslproxy). Signing secret
-    # (or pre-minted JWT) must live in the app Secret as
-    # NEBULA_LLM_OLLAMA_TOKEN (or NEBULA_LLM_OLLAMA_JWT) — never in
-    # this ConfigMap. Server mints a short-lived HS256 JWT and sends
-    # it as `x-api-key` on every request.
-    NEBULA_LLM_OLLAMA_URL: "https://ollama.workstation.co.uk"
-    # Fast local model on the gateway host. llama3.1:8b was ~50–110s
-    # to first token on RAG prompts; llama3.2:3b is ~1–3s for short
-    # answers and still usable for companies_house chat.
+    # Prefer LAN Ollama (no wslproxy JWT). The public gateway URL
+    # (https://ollama.workstation.co.uk) keeps getting its rule rewritten
+    # to an undecryptable secret:// ref by the admin API, which 403s RAG.
+    # LAN :11434 is reachable from every k3s1 pod and needs no auth.
+    # Set NEBULA_LLM_OLLAMA_TOKEN only if you switch this back to the
+    # public gateway (HMAC secret or pre-minted JWT → x-api-key).
+    NEBULA_LLM_OLLAMA_URL: "http://192.168.1.177:11434"
+    # Fast local model. llama3.1:8b was ~50–110s to first token on RAG;
+    # llama3.2:3b is ~1–3s for short answers.
     NEBULA_LLM_MODEL: "llama3.2:3b"
-    # Idle-byte timeout on the LLM stream (binary default 60s). Keep
-    # headroom for cold-start / larger RAG contexts on the 3b model.
+    # Idle-byte timeout on the LLM stream (binary default 60s).
     NEBULA_LLM_READ_TIMEOUT_SECS: "90"
 
     # Embedder: chart default targets LAN Ollama nomic-embed-text @ 768.
