@@ -39,6 +39,9 @@ export function CompaniesHouseTab() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [chatBusy, setChatBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Scope retrieval to one company: RAG only filters by bucket, so a
+  // shared bucket mixes every loaded company's PSC/officer chunks.
+  const ragBucket = selected ? `${bucket}_${selected}` : bucket;
 
   useEffect(() => {
     void api.companiesHouseStatus().then((s) => {
@@ -69,6 +72,7 @@ export function CompaniesHouseTab() {
 
   const select = async (number: string) => {
     setSelected(number);
+    setTurns([]);
     setErr(null);
     setBusy(true);
     try {
@@ -88,10 +92,10 @@ export function CompaniesHouseTab() {
     setErr(null);
     setIngestBusy(true);
     try {
-      const r = await api.companiesHouseIngest(selected, bucket);
+      const r = await api.companiesHouseIngest(selected, ragBucket);
       setCompany((r.company as Record<string, unknown>) ?? company);
       setStatusMsg(
-        `Loaded ${Array.isArray(r.upserted) ? r.upserted.length : 0} docs into bucket "${bucket}" for RAG.`
+        `Loaded ${Array.isArray(r.upserted) ? r.upserted.length : 0} docs into bucket "${ragBucket}" for RAG.`
       );
     } catch (e) {
       if (e instanceof ApiError) setErr(`${e.code}: ${e.body}`);
@@ -115,7 +119,7 @@ export function CompaniesHouseTab() {
     try {
       for await (const frame of sseStream(
         "/api/v1/ai/rag",
-        { query, top_k: 6, stream: true, bucket, hybrid: true },
+        { query, top_k: 6, stream: true, bucket: ragBucket, hybrid: true },
         ctrl.signal
       )) {
         if (frame.event === "answer_delta") {
@@ -138,7 +142,7 @@ export function CompaniesHouseTab() {
       setChatBusy(false);
       abortRef.current = null;
     }
-  }, [input, turns.length, bucket]);
+  }, [input, turns.length, ragBucket]);
 
   const name =
     (company?.company_name as string) ||
@@ -225,7 +229,7 @@ export function CompaniesHouseTab() {
 
       <Panel
         title="Chat about this company"
-        subtitle={`Grounded on bucket "${bucket}" after Load into RAG`}
+        subtitle={`Grounded on bucket "${ragBucket}" after Load into RAG`}
       >
         <div className="space-y-3 mb-3 max-h-80 overflow-auto">
           {turns.map((t, i) => (
