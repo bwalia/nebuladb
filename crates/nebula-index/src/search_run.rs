@@ -23,6 +23,16 @@ use crate::{min_max_normalize, Hit, IndexError, Result, TextIndex};
 /// warns that recall is suffering.
 const TOMBSTONE_BEAM_WARN_PCT: usize = 25;
 
+/// Buckets at or below this many docs are searched exhaustively rather
+/// than by post-filtering HNSW. A bucket that is a tiny share of a large
+/// corpus (4 docs among 3M) never lands in the global top-k, so the
+/// filter would return nothing; scanning a few thousand quantized
+/// vectors is sub-millisecond and exact.
+const EXACT_SCAN_MAX: usize = 4096;
+
+/// Ceiling on the post-filter over-fetch for buckets too large to scan.
+const MAX_FILTERED_FETCH: usize = 4096;
+
 pub(crate) struct VectorRun {
     pub hits: Vec<Hit>,
     /// Results the caller asked for.
@@ -39,6 +49,9 @@ pub(crate) struct VectorRun {
     missing: usize,
     /// Candidates dropped by the bucket filter.
     other_bucket: usize,
+    /// `Some(n)`: the bucket's `n` docs were scanned exactly instead of
+    /// walking the graph, and `stats` is empty.
+    exact_scan: Option<usize>,
     hnsw_took: Duration,
     assemble_took: Duration,
 }
@@ -95,15 +108,21 @@ fn flat_stage_note(stage: &str, scores: &[f32], weight: f32) -> Option<Note> {
     })
 }
 
-fn bucket_fetch(bucket: Option<&str>, k: usize) -> usize {
-    // Over-fetch when filtering because results are post-filtered. 4x is
-    // a rule-of-thumb; a real system would adapt based on the bucket's
-    // share of the corpus.
-    if bucket.is_some() {
-        k.saturating_mul(4).max(32)
-    } else {
-        k
-    }
+/// Candidates to request before a post-filter. `bucket_len` is the
+/// filtered bucket's live doc count (`None` = no filter). Over-fetches
+/// by twice the bucket's inverse share of the corpus so ~2k matches are
+/// expected among the candidates, floored at the 4x rule-of-thumb and
+/// capped so a mid-sized bucket can't make every search walk the graph
+/// with a huge beam.
+fn bucket_fetch(bucket_len: Option<usize>, total: usize, k: usize) -> usize {
+    let Some(len) = bucket_len else {
+        return k;
+    };
+    let floor = k.saturating_mul(4).max(32);
+    let share = total / len.max(1);
+    k.saturating_mul(share)
+        .saturating_mul(2)
+        .clamp(floor, MAX_FILTERED_FETCH.max(floor))
 }
 
 impl TextIndex {
@@ -114,16 +133,26 @@ impl TextIndex {
         k: usize,
         ef: Option<usize>,
     ) -> Result<VectorRun> {
-        let fetch = bucket_fetch(bucket, k);
-
         // Lock order discipline: `inner` before `hnsw`, everywhere.
         // Writers take `inner.write()` then drive `hnsw` under it;
         // readers take `inner.read()` then `hnsw.search` under it.
         // Mixing the order would expose us to an AB-BA deadlock
         // under `parking_lot::RwLock`'s write-priority contention.
         let g = self.inner.read();
+        let bucket_ids = bucket.map(|b| g.by_bucket.get(b));
+        let bucket_len = bucket_ids.map(|ids| ids.map_or(0, |s| s.len()));
         let started = Instant::now();
-        let (raw, stats) = self.hnsw.search_with_stats(vector, fetch, ef)?;
+        let (raw, stats, fetch, exact_scan) = match (bucket_ids, bucket_len) {
+            (Some(ids), Some(len)) if len <= EXACT_SCAN_MAX => {
+                let raw = self.hnsw.search_among(vector, ids.into_iter().flatten().copied(), k)?;
+                (raw, HnswSearchStats::default(), len, Some(len))
+            }
+            _ => {
+                let fetch = bucket_fetch(bucket_len, g.docs.len(), k);
+                let (raw, stats) = self.hnsw.search_with_stats(vector, fetch, ef)?;
+                (raw, stats, fetch, None)
+            }
+        };
         let hnsw_took = started.elapsed();
 
         let started = Instant::now();
@@ -161,6 +190,7 @@ impl TextIndex {
             examined,
             missing,
             other_bucket,
+            exact_scan,
             hnsw_took,
             assemble_took: started.elapsed(),
         })
@@ -170,7 +200,8 @@ impl TextIndex {
         let g = self.inner.read();
         // Over-fetch when bucket-filtering, same rationale as the
         // vector path: BM25 ranks the whole corpus and we post-filter.
-        let fetch = bucket_fetch(bucket, k);
+        let bucket_len = bucket.map(|b| g.by_bucket.get(b).map_or(0, |s| s.len()));
+        let fetch = bucket_fetch(bucket_len, g.docs.len(), k);
         let started = Instant::now();
         let (raw, matched) = g.bm25.search_counted(query, fetch);
         let mut hits = Vec::with_capacity(raw.len().min(k));
@@ -552,6 +583,26 @@ impl TextIndex {
 }
 
 fn vector_stages(run: &VectorRun, bucket: Option<&str>, hybrid: bool, trace: &mut SearchTrace) {
+    if let (Some(n), Some(b)) = (run.exact_scan, bucket) {
+        trace.stages.push(
+            Stage::new(
+                "bucket_scan",
+                "Exact bucket scan",
+                format!(
+                    "Bucket '{b}' holds {n} documents (at most {EXACT_SCAN_MAX}), so every one \
+                     was distance-computed directly instead of walking the HNSW graph and \
+                     post-filtering; kept the {} closest.",
+                    run.hits.len()
+                ),
+            )
+            .rows(Some(n), Some(run.hits.len()))
+            .took(run.hnsw_took + run.assemble_took)
+            .attr("bucket", b)
+            .attr("scanned", n)
+            .attr("requested", run.k),
+        );
+        return;
+    }
     let s = &run.stats;
     let live_nodes = s.nodes_total.saturating_sub(s.tombstones_total);
     let mut detail = format!(

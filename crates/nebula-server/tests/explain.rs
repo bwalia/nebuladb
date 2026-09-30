@@ -62,7 +62,7 @@ async fn search_explain_is_opt_in() {
     let v: Value = serde_json::from_str(&body).unwrap();
     let ex = &v["explain"];
     assert_eq!(ex["kind"], "search");
-    assert_eq!(stage_names(ex), ["embed", "hnsw", "bucket_filter", "bm25", "bucket_filter", "fuse"]);
+    assert_eq!(stage_names(ex), ["embed", "bucket_scan", "bm25", "bucket_filter", "fuse"]);
     assert_eq!(ex["hits"].as_array().unwrap().len(), v["hits"].as_array().unwrap().len());
     assert!(ex["hits"][0]["bm25"]["weight"].is_number());
     assert!(ex["summary"].as_str().unwrap().starts_with("Hybrid search"));

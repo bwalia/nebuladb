@@ -59,7 +59,7 @@ export interface SqlResponse {
 /** One executed (or, for plan-only EXPLAIN, planned) pipeline stage. */
 export interface ExplainStage {
   /** Stable id: "parse" | "plan" | "cache" | "embed" | "hnsw" | "bm25" |
-   *  "fuse" | "bucket_filter" | "filter" | "sort" | "limit" | "project" |
+   *  "fuse" | "bucket_filter" | "bucket_scan" | "filter" | "sort" | "limit" | "project" |
    *  "aggregate" | "join" | "expand" | "merge" | "rerank" | "prompt" |
    *  "llm". Unknown names render generically. */
   name: string;

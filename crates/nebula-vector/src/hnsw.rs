@@ -665,6 +665,47 @@ impl Hnsw {
         Some(out)
     }
 
+    /// Exact k-NN restricted to `ids`: distance-computes every live
+    /// node in the set with the same quantized metric the graph walk
+    /// uses, so scores are comparable with [`Self::search`]. For
+    /// filters too selective for post-filtered HNSW (a small bucket in
+    /// a large corpus); cost is linear in the size of `ids`.
+    pub fn search_among(
+        &self,
+        query: &[f32],
+        ids: impl IntoIterator<Item = Id>,
+        k: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if query.len() != self.dim {
+            return Err(NebulaError::DimensionMismatch {
+                expected: self.dim,
+                actual: query.len(),
+            });
+        }
+        let g = self.inner.read();
+        let mut results: Vec<SearchResult> = ids
+            .into_iter()
+            .filter_map(|id| {
+                let node = *g.by_external.get(&id)?;
+                if g.tombstones.contains(&node) {
+                    return None;
+                }
+                let (code, scale) = code_at(&g, node as usize, self.dim);
+                Some(SearchResult {
+                    id,
+                    distance: self.metric.distance_code(query, code, scale),
+                })
+            })
+            .collect();
+        results.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(Ordering::Greater)
+        });
+        results.truncate(k);
+        Ok(results)
+    }
+
     /// k-NN search. `ef` overrides the configured `ef_search`; pass
     /// `None` to use the default. `ef` is clamped to `>= k`.
     pub fn search(&self, query: &[f32], k: usize, ef: Option<usize>) -> Result<Vec<SearchResult>> {

@@ -146,12 +146,14 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
     // restored `docs` text (design 0008 §6). Same principle as vectors
     // living only in the HNSW arena: we don't persist derivable state.
     let mut bm25 = Bm25Index::new(Bm25Params::default());
+    let mut by_bucket: AHashMap<String, AHashSet<Id>> = AHashMap::new();
     for d in state.docs {
         let metadata: serde_json::Value = serde_json::from_str(&d.metadata_json)
             .unwrap_or(serde_json::Value::Null);
         let id = Id(d.internal_id);
         by_key.insert((d.bucket.clone(), d.external_id.clone()), id);
         bm25.add(id.0, &d.text);
+        by_bucket.entry(d.bucket.clone()).or_default().insert(id);
         // Vectors live in the HNSW snapshot, which is the authority
         // for the vector arena — `Document` no longer carries a copy.
         docs.insert(
@@ -178,6 +180,7 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
         docs,
         parents,
         bm25,
+        by_bucket,
         next_id: state.next_id,
     }
 }
@@ -205,6 +208,11 @@ struct Inner {
     /// (design 0008 §6), exactly as the HNSW arena is the authority for
     /// vectors and this is the authority for nothing persistent.
     bm25: Bm25Index,
+    /// Bucket → internal ids of its live docs. Kept in lock-step with
+    /// `docs` so a bucket-filtered search can scan a small bucket
+    /// exactly instead of post-filtering a global HNSW top-k, which a
+    /// bucket that is a tiny share of the corpus never makes it into.
+    by_bucket: AHashMap<String, AHashSet<Id>>,
     next_id: u64,
 }
 
@@ -215,7 +223,10 @@ impl Inner {
     /// silently fall behind the doc map.
     fn insert_doc(&mut self, id: Id, doc: Document) {
         self.bm25.add(id.0, &doc.text);
-        self.docs.insert(id, Arc::new(doc));
+        self.by_bucket.entry(doc.bucket.clone()).or_default().insert(id);
+        if let Some(prev) = self.docs.insert(id, Arc::new(doc)) {
+            self.unlink_bucket(&prev.bucket, id);
+        }
     }
 
     /// Remove a document by internal id from both `docs` and the BM25
@@ -223,6 +234,9 @@ impl Inner {
     /// `HashMap::remove`, so callers keep their existing control flow.
     fn remove_doc(&mut self, id: Id) -> Option<Arc<Document>> {
         let doc = self.docs.remove(&id);
+        if let Some(d) = &doc {
+            self.unlink_bucket(&d.bucket, id);
+        }
         match &doc {
             // `insert_doc` indexed exactly `doc.text`, so the targeted
             // removal finds every posting it created.
@@ -230,6 +244,20 @@ impl Inner {
             None => self.bm25.remove(id.0),
         }
         doc
+    }
+
+    /// Drop `id` from `bucket`'s id set, removing the set once empty.
+    /// A no-op when `id` was re-inserted under the same bucket.
+    fn unlink_bucket(&mut self, bucket: &str, id: Id) {
+        if self.docs.get(&id).is_some_and(|d| d.bucket == bucket) {
+            return;
+        }
+        if let Some(ids) = self.by_bucket.get_mut(bucket) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.by_bucket.remove(bucket);
+            }
+        }
     }
 }
 
@@ -276,6 +304,7 @@ impl TextIndex {
                 docs: AHashMap::new(),
                 parents: AHashMap::new(),
                 bm25: Bm25Index::new(Bm25Params::default()),
+                by_bucket: AHashMap::new(),
                 next_id: 1,
             }),
             wal: None,
@@ -379,6 +408,7 @@ impl TextIndex {
                         docs: AHashMap::new(),
                         parents: AHashMap::new(),
                         bm25: Bm25Index::new(Bm25Params::default()),
+                        by_bucket: AHashMap::new(),
                         next_id: 1,
                     };
                     // No snapshot yet: every WAL record is fresh.
@@ -1725,7 +1755,8 @@ mod tests {
         let ids = |h: &[Hit]| h.iter().map(|x| (x.id.clone(), x.score)).collect::<Vec<_>>();
         assert_eq!(ids(&hits), ids(&plain));
         let names: Vec<_> = trace.stages.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["embed", "hnsw", "bucket_filter"]);
+        // A 4-doc bucket is scanned exactly rather than post-filtered.
+        assert_eq!(names, vec!["embed", "bucket_scan"]);
         assert_eq!(trace.hits.len(), hits.len());
         assert!(
             trace.notes.iter().any(|n| n.message.contains("pseudo-random")),
@@ -1740,7 +1771,7 @@ mod tests {
             .unwrap();
         assert_eq!(ids(&hits), ids(&plain));
         let names: Vec<_> = trace.stages.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["embed", "hnsw", "bucket_filter", "bm25", "bucket_filter", "fuse"]);
+        assert_eq!(names, vec!["embed", "bucket_scan", "bm25", "bucket_filter", "fuse"]);
         assert!(trace.notes.iter().any(|n| n.message.contains("'in' is not in the index vocabulary")));
     }
 
@@ -2309,5 +2340,42 @@ mod tests {
         // Spread → endpoints at 0 and 1.
         let n = min_max_normalize([0.0, 5.0, 10.0].into_iter());
         assert_eq!(n, vec![0.0, 0.5, 1.0]);
+    }
+
+    /// A bucket that is a tiny share of the corpus must still be
+    /// searchable: post-filtering the global HNSW top-k finds none of
+    /// its docs, so small buckets are scanned exactly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tiny_bucket_in_large_corpus_is_found() {
+        let idx = Arc::new(make_index());
+        let rows: Vec<(String, String, serde_json::Value)> = (0..3000)
+            .map(|i| (format!("n{i}"), format!("noise document number {i} about topic {}", i % 97), serde_json::json!({})))
+            .collect();
+        idx.upsert_text_bulk("big", &rows).await.unwrap();
+        for (id, text) in [
+            ("psc", "Persons with significant control: three shareholders"),
+            ("officers", "Officers: three directors"),
+            ("profile", "Company profile, registered office"),
+        ] {
+            idx.upsert_text("tiny", id, text, serde_json::json!({})).await.unwrap();
+        }
+
+        let hits = idx.search_text("who are the shareholders", Some("tiny"), 6, None).await.unwrap();
+        assert_eq!(hits.len(), 3);
+        assert!(hits.iter().all(|h| h.bucket == "tiny"));
+        assert!(hits.windows(2).all(|w| w[0].score <= w[1].score));
+        let bm = idx.search_bm25("shareholders", Some("tiny"), 6);
+        assert_eq!(bm.first().map(|h| h.id.as_str()), Some("psc"));
+
+        // The per-bucket id set follows deletes and replacements.
+        idx.delete("tiny", "officers").unwrap();
+        idx.upsert_text("tiny", "psc", "Persons with significant control: updated", serde_json::json!({}))
+            .await
+            .unwrap();
+        let hits = idx.search_text("shareholders", Some("tiny"), 6, None).await.unwrap();
+        let mut ids: Vec<_> = hits.iter().map(|h| h.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["profile", "psc"]);
+        assert!(idx.search_text("x", Some("missing"), 6, None).await.unwrap().is_empty());
     }
 }

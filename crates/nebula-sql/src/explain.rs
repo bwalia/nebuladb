@@ -445,8 +445,9 @@ fn scan_plan_stages(p: &Plan, side: &str, ex: &mut Explain) {
         "bucket_filter",
         &prefixed(side, "Bucket filter"),
         format!(
-            "Keep candidates from bucket '{}'. The index over-fetches 4× (at least 32) to leave \
-             room for this post-filter.",
+            "Keep candidates from bucket '{}'. A bucket of at most 4096 docs is scanned exactly \
+             instead; larger ones are over-fetched in proportion to their share of the corpus \
+             to leave room for this post-filter.",
             p.bucket
         ),
     ));
