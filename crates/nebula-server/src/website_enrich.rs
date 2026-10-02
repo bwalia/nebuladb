@@ -167,6 +167,18 @@ fn name_tokens(name: &str) -> Vec<String> {
         .collect()
 }
 
+/// Score for a name token against a hostname. Exact DNS-label equality only —
+/// substring matches like `workstationspecialist` for token `workstation` are
+/// rejected (they beat the real apex in Firecrawl rankings otherwise).
+fn token_label_score(host_core: &str, token: &str) -> i32 {
+    host_core
+        .split('.')
+        .filter(|label| *label == token)
+        .map(|label| 20 + label.len() as i32)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Higher = better official-site candidate. Prefer hostnames that contain
 /// company-name tokens over directory aggregators.
 fn score_candidate(url: &str, company_name: &str) -> i32 {
@@ -180,10 +192,7 @@ fn score_candidate(url: &str, company_name: &str) -> i32 {
     let mut score = 0i32;
     let host_core = host.strip_prefix("www.").unwrap_or(host.as_str());
     for t in &tokens {
-        if host_core.contains(t.as_str()) {
-            // Longer token matches dominate (workstation >> solutions).
-            score += 10 + t.len() as i32;
-        }
+        score += token_label_score(host_core, t);
     }
     // Prefer registrable apex over env subdomains (int.workstation.co.uk).
     // .co.uk / .org.uk are multi-label public suffixes — do not treat them
@@ -198,6 +207,27 @@ fn score_candidate(url: &str, company_name: &str) -> i32 {
         score -= 50;
     }
     score
+}
+
+/// Likely official domains from the company name (longest token first).
+fn guessed_domains(company_name: &str) -> Vec<String> {
+    let mut tokens = name_tokens(company_name);
+    tokens.sort_by(|a, b| b.len().cmp(&a.len()));
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for t in tokens.into_iter().take(2) {
+        for host in [
+            format!("{t}.co.uk"),
+            format!("www.{t}.co.uk"),
+            format!("{t}.com"),
+            format!("www.{t}.com"),
+        ] {
+            if seen.insert(host.clone()) {
+                out.push(format!("https://{host}"));
+            }
+        }
+    }
+    out
 }
 
 /// True when `host` has a label before the registrable domain (e.g. int.x.co.uk).
@@ -693,6 +723,13 @@ pub async fn research_company_website(
         // often returns company directories (e.g. kronaxis) ahead of the real site.
         let mut all = Vec::new();
         let mut seen_url = HashSet::new();
+        // Seed with {token}.co.uk guesses so the real apex isn't drowned out
+        // by similarly-named third-party sites Firecrawl ranks higher.
+        for guess in guessed_domains(name) {
+            if seen_url.insert(guess.clone()) {
+                all.push(guess);
+            }
+        }
         for q in &queries {
             for cand in firecrawl_search(&http, &api_key, q).await {
                 if seen_url.insert(cand.clone()) {
@@ -727,6 +764,11 @@ pub async fn research_company_website(
     if let Some(cfg) = GoogleCseConfig::from_env() {
         let mut all = Vec::new();
         let mut seen_url = HashSet::new();
+        for guess in guessed_domains(name) {
+            if seen_url.insert(guess.clone()) {
+                all.push(guess);
+            }
+        }
         for q in &queries {
             for cand in google_cse_candidates(&http, &cfg, q).await {
                 if seen_url.insert(cand.clone()) {
@@ -746,6 +788,11 @@ pub async fn research_company_website(
 
     let mut all = Vec::new();
     let mut seen_url = HashSet::new();
+    for guess in guessed_domains(name) {
+        if seen_url.insert(guess.clone()) {
+            all.push(guess);
+        }
+    }
     for q in &queries {
         for cand in ddg_candidates(&http, q).await {
             if seen_url.insert(cand.clone()) {
@@ -818,14 +865,19 @@ mod tests {
         let cands = vec![
             "https://kronaxis.co.uk/company/13588697".into(),
             "https://endole.co.uk/company/11641870".into(),
+            "https://www.workstationspecialist.com/".into(),
             "https://int.workstation.co.uk/es/docs/license".into(),
             "https://www.workstation.co.uk/en/docs/license/".into(),
             "https://random-blog.example/post/workstation".into(),
         ];
         let best = pick_best_url(&cands, name).unwrap();
         assert!(
-            best.contains("www.workstation.co.uk") || best == "https://workstation.co.uk",
+            best.contains("workstation.co.uk") && !best.contains("specialist"),
             "expected public workstation.co.uk apex, got {best}"
+        );
+        assert!(
+            score_candidate("https://www.workstationspecialist.com/", name) < 10,
+            "substring host must not pass the name-token threshold"
         );
         // Directory-only results must not be accepted.
         assert!(pick_best_url(
