@@ -83,10 +83,24 @@ fn junk_host(host: &str) -> bool {
         "youtube.",
         "companies-house",
         "company-information.service.gov",
+        "find-and-update.company-information",
         "endole.",
         "creditsafe.",
         "duedil.",
         "beauhurst.",
+        "kronaxis.",
+        "opencorporates.",
+        "companycheck.",
+        "checkcompany.",
+        "rooplex.",
+        "thegazette.",
+        "northdata.",
+        "archive.org",
+        "dnb.com",
+        "bloomberg.",
+        "crunchbase.",
+        "glassdoor.",
+        "indeed.",
         "yell.com",
         "thomsonlocal",
         "gumtree",
@@ -99,6 +113,125 @@ fn junk_host(host: &str) -> bool {
     ]
     .iter()
     .any(|j| h.contains(j))
+}
+
+/// Directory / filing-site URL shapes (even on unknown hosts).
+fn is_directory_url(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    let path = u
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.find('/').map(|i| &rest[i..]))
+        .unwrap_or("");
+    if path.contains("/company-information/") || path.contains("/filing-history") {
+        return true;
+    }
+    // e.g. …/company/13588697 or …/companies/gb/11641870 — numeric company ids.
+    for marker in ["/company/", "/companies/"] {
+        if let Some(rest) = path.split(marker).nth(1) {
+            // Skip country segments like "gb/" then read the id token.
+            let token = rest
+                .split('/')
+                .find(|seg| !seg.is_empty() && *seg != "gb" && *seg != "uk")
+                .unwrap_or("");
+            if token.len() >= 6 && token.chars().all(|c| c.is_ascii_digit()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Significant tokens from a UK company name for hostname matching.
+fn name_tokens(name: &str) -> Vec<String> {
+    const STOP: &[&str] = &[
+        "ltd",
+        "limited",
+        "plc",
+        "llp",
+        "uk",
+        "the",
+        "and",
+        "of",
+        "co",
+        "company",
+        "group",
+        "holdings",
+        "services",
+        "international",
+    ];
+    name.split(|c: char| !c.is_ascii_alphanumeric())
+        .map(|s| s.to_ascii_lowercase())
+        .filter(|s| s.len() >= 4)
+        .filter(|s| !STOP.contains(&s.as_str()))
+        .collect()
+}
+
+/// Higher = better official-site candidate. Prefer hostnames that contain
+/// company-name tokens over directory aggregators.
+fn score_candidate(url: &str, company_name: &str) -> i32 {
+    let Some(host) = host_of(url) else {
+        return i32::MIN;
+    };
+    if junk_host(&host) || is_directory_url(url) {
+        return i32::MIN;
+    }
+    let tokens = name_tokens(company_name);
+    let mut score = 0i32;
+    let host_core = host.strip_prefix("www.").unwrap_or(host.as_str());
+    for t in &tokens {
+        if host_core.contains(t.as_str()) {
+            // Longer token matches dominate (workstation >> solutions).
+            score += 10 + t.len() as i32;
+        }
+    }
+    // Prefer registrable apex over env subdomains (int.workstation.co.uk).
+    // .co.uk / .org.uk are multi-label public suffixes — do not treat them
+    // as "has a subdomain".
+    if has_subdomain(host_core) {
+        score -= 15;
+    }
+    // Prefer short paths (homepage) over deep articles.
+    let path_depth = url.matches('/').count().saturating_sub(2); // after scheme://
+    score -= path_depth as i32;
+    if url.ends_with(".pdf") {
+        score -= 50;
+    }
+    score
+}
+
+/// True when `host` has a label before the registrable domain (e.g. int.x.co.uk).
+fn has_subdomain(host_core: &str) -> bool {
+    const MULTI: &[&str] = &[".co.uk", ".org.uk", ".ac.uk", ".gov.uk", ".me.uk", ".net.uk"];
+    for s in MULTI {
+        if let Some(rest) = host_core.strip_suffix(s) {
+            return rest.contains('.');
+        }
+    }
+    // workstation.com -> false; int.workstation.com -> true
+    host_core.matches('.').count() >= 2
+}
+
+fn pick_best_url(candidates: &[String], company_name: &str) -> Option<String> {
+    let mut ranked: Vec<(i32, &String)> = candidates
+        .iter()
+        .map(|u| (score_candidate(u, company_name), u))
+        .filter(|(s, _)| *s > i32::MIN / 2)
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    // Require at least one name-token hit in the hostname when we have tokens,
+    // otherwise first non-junk is accepted (rare short names).
+    let tokens = name_tokens(company_name);
+    if !tokens.is_empty() {
+        if let Some((s, u)) = ranked.iter().find(|(s, _)| *s >= 10) {
+            let _ = s;
+            return Some((*u).clone());
+        }
+        // No hostname matched the company name — refuse directory noise rather
+        // than return kronaxis/endole-style false positives.
+        return None;
+    }
+    ranked.into_iter().next().map(|(_, u)| u.clone())
 }
 
 fn free_mail_host(host: &str) -> bool {
@@ -485,32 +618,56 @@ async fn enrich_email_from_site(
     extract_emails(&combined).into_iter().next()
 }
 
-async fn first_live_candidate(
+async fn first_live_ranked(
     http: &Client,
     candidates: Vec<String>,
+    company_name: &str,
     seen_hosts: &mut HashSet<String>,
     source: &str,
 ) -> Option<WebsiteHit> {
-    for cand in candidates {
+    // Rank all candidates first so directory junk never wins by order.
+    let mut ranked: Vec<(i32, String)> = candidates
+        .into_iter()
+        .filter_map(|u| {
+            let s = score_candidate(&u, company_name);
+            if s > i32::MIN / 2 {
+                Some((s, u))
+            } else {
+                None
+            }
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    let tokens = name_tokens(company_name);
+    for (score, cand) in ranked {
+        if !tokens.is_empty() && score < 10 {
+            // No hostname name-token match — stop rather than pick noise.
+            break;
+        }
         let Some(host) = host_of(&cand) else {
             continue;
         };
-        if junk_host(&host) || !seen_hosts.insert(host) {
+        if !seen_hosts.insert(host) {
             continue;
         }
         if website_live(http, &cand).await {
-            return Some(WebsiteHit::with_url(cand, source));
+            // Prefer the site origin once we know the host is live.
+            let url = origin_of(&cand).unwrap_or(cand);
+            return Some(WebsiteHit::with_url(url, source));
         }
     }
     None
 }
 
-fn research_queries(name: &str, locality: Option<&str>) -> [String; 3] {
+fn research_queries(name: &str, locality: Option<&str>) -> [String; 4] {
     let loc = locality.unwrap_or("UK");
+    // Bias search away from company-directory aggregators Firecrawl often surfaces.
+    let exclude = "-site:kronaxis.co.uk -site:endole.co.uk -site:opencorporates.com -site:companycheck.co.uk -site:find-and-update.company-information.service.gov.uk";
     [
-        format!("\"{name}\" {loc} official website"),
-        format!("\"{name}\" {loc} website"),
-        format!("{name} UK company website"),
+        format!("\"{name}\" {loc} official website {exclude}"),
+        format!("\"{name}\" {loc} website {exclude}"),
+        format!("{name} UK company website {exclude}"),
+        format!("\"{name}\" site:.co.uk {exclude}"),
     ]
 }
 
@@ -532,53 +689,77 @@ pub async fn research_company_website(
     let mut seen_hosts = HashSet::new();
 
     if let Some(api_key) = firecrawl_api_key() {
+        // Collect across queries, then rank — first-result order from Firecrawl
+        // often returns company directories (e.g. kronaxis) ahead of the real site.
+        let mut all = Vec::new();
+        let mut seen_url = HashSet::new();
         for q in &queries {
-            let cands = firecrawl_search(&http, &api_key, q).await;
-            for cand in cands {
-                let Some(host) = host_of(&cand) else {
-                    continue;
-                };
-                if junk_host(&host) || !seen_hosts.insert(host.clone()) {
-                    continue;
-                }
-                // Firecrawl search already found it; skip separate HEAD when
-                // scrape succeeds. Still accept URL if scrape fails but live.
-                let email = enrich_email_from_site(&http, &api_key, &cand).await;
-                if email.is_some() || website_live(&http, &cand).await {
-                    return Some(WebsiteHit {
-                        url: cand,
-                        source: "firecrawl".into(),
-                        email,
-                    });
+            for cand in firecrawl_search(&http, &api_key, q).await {
+                if seen_url.insert(cand.clone()) {
+                    all.push(cand);
                 }
             }
+        }
+        if let Some(best) = pick_best_url(&all, name) {
+            let host = host_of(&best).unwrap_or_default();
+            if !host.is_empty() {
+                seen_hosts.insert(host);
+            }
+            let url = origin_of(&best).unwrap_or_else(|| best.clone());
+            let email = enrich_email_from_site(&http, &api_key, &url).await;
+            if email.is_some() || website_live(&http, &url).await {
+                return Some(WebsiteHit {
+                    url,
+                    source: "firecrawl".into(),
+                    email,
+                });
+            }
+        }
+        // Fall through: try live-probe of remaining ranked non-junk URLs.
+        if let Some(mut hit) =
+            first_live_ranked(&http, all, name, &mut seen_hosts, "firecrawl").await
+        {
+            hit.email = enrich_email_from_site(&http, &api_key, &hit.url).await;
+            return Some(hit);
         }
     }
 
     if let Some(cfg) = GoogleCseConfig::from_env() {
+        let mut all = Vec::new();
+        let mut seen_url = HashSet::new();
         for q in &queries {
-            let cands = google_cse_candidates(&http, &cfg, q).await;
-            if let Some(mut hit) =
-                first_live_candidate(&http, cands, &mut seen_hosts, "google_cse").await
-            {
-                if let Some(api_key) = firecrawl_api_key() {
-                    hit.email = enrich_email_from_site(&http, &api_key, &hit.url).await;
+            for cand in google_cse_candidates(&http, &cfg, q).await {
+                if seen_url.insert(cand.clone()) {
+                    all.push(cand);
                 }
-                return Some(hit);
             }
         }
-    }
-
-    for q in &queries {
-        let cands = ddg_candidates(&http, q).await;
         if let Some(mut hit) =
-            first_live_candidate(&http, cands, &mut seen_hosts, "web_search").await
+            first_live_ranked(&http, all, name, &mut seen_hosts, "google_cse").await
         {
             if let Some(api_key) = firecrawl_api_key() {
                 hit.email = enrich_email_from_site(&http, &api_key, &hit.url).await;
             }
             return Some(hit);
         }
+    }
+
+    let mut all = Vec::new();
+    let mut seen_url = HashSet::new();
+    for q in &queries {
+        for cand in ddg_candidates(&http, q).await {
+            if seen_url.insert(cand.clone()) {
+                all.push(cand);
+            }
+        }
+    }
+    if let Some(mut hit) =
+        first_live_ranked(&http, all, name, &mut seen_hosts, "web_search").await
+    {
+        if let Some(api_key) = firecrawl_api_key() {
+            hit.email = enrich_email_from_site(&http, &api_key, &hit.url).await;
+        }
+        return Some(hit);
     }
     None
 }
@@ -612,10 +793,57 @@ mod tests {
     #[test]
     fn junk_filters_directory_sites() {
         assert!(junk_host("www.endole.co.uk"));
+        assert!(junk_host("kronaxis.co.uk"));
         assert!(junk_host(
             "find-and-update.company-information.service.gov.uk"
         ));
         assert!(!junk_host("workstation.co.uk"));
+    }
+
+    #[test]
+    fn directory_url_shapes_rejected() {
+        assert!(is_directory_url(
+            "https://kronaxis.co.uk/company/13588697"
+        ));
+        assert!(is_directory_url(
+            "https://opencorporates.com/companies/gb/11641870"
+        ));
+        assert!(!is_directory_url("https://workstation.co.uk/"));
+        assert!(!is_directory_url("https://workstation.co.uk/about"));
+    }
+
+    #[test]
+    fn prefers_name_matching_host_over_directory() {
+        let name = "WORKSTATION SOLUTIONS LTD";
+        let cands = vec![
+            "https://kronaxis.co.uk/company/13588697".into(),
+            "https://endole.co.uk/company/11641870".into(),
+            "https://int.workstation.co.uk/es/docs/license".into(),
+            "https://www.workstation.co.uk/en/docs/license/".into(),
+            "https://random-blog.example/post/workstation".into(),
+        ];
+        let best = pick_best_url(&cands, name).unwrap();
+        assert!(
+            best.contains("www.workstation.co.uk") || best == "https://workstation.co.uk",
+            "expected public workstation.co.uk apex, got {best}"
+        );
+        // Directory-only results must not be accepted.
+        assert!(pick_best_url(
+            &[
+                "https://kronaxis.co.uk/company/13588697".into(),
+                "https://endole.co.uk/company/11641870".into(),
+            ],
+            name
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn name_tokens_drop_legal_suffix() {
+        let t = name_tokens("WORKSTATION SOLUTIONS LTD");
+        assert!(t.contains(&"workstation".into()));
+        assert!(t.contains(&"solutions".into()));
+        assert!(!t.iter().any(|x| x == "ltd"));
     }
 
     #[test]
