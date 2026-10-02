@@ -17,6 +17,7 @@ interface SourceInfo {
   source?: string;
   kind?: string;
   url?: string | null;
+  email?: string | null;
   found?: boolean;
 }
 
@@ -47,7 +48,12 @@ export function CompaniesHouseTab() {
   const [err, setErr] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [sources, setSources] = useState<SourceInfo[]>([]);
-  const [website, setWebsite] = useState<{ url: string; source: string } | null>(null);
+  const [website, setWebsite] = useState<{
+    url: string;
+    source: string;
+    email?: string | null;
+  } | null>(null);
+  const [firecrawl, setFirecrawl] = useState<boolean | null>(null);
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [chatBusy, setChatBusy] = useState(false);
@@ -59,9 +65,14 @@ export function CompaniesHouseTab() {
   useEffect(() => {
     void api.companiesHouseStatus().then((s) => {
       setConfigured(s.configured);
+      setFirecrawl(Boolean(s.firecrawl));
       if (!s.configured) {
         setStatusMsg(
           "No Companies House API key on the server — using fixture data. Set NEBULA_COMPANIES_HOUSE_API_KEY (see docs/companies-house-demo.md)."
+        );
+      } else if (!s.firecrawl) {
+        setStatusMsg(
+          "Companies House configured. Website/email enrichment works best with NEBULA_FIRECRAWL_API_KEY (Firecrawl) — without it, fallback search is unreliable."
         );
       }
     }).catch(() => setConfigured(false));
@@ -112,12 +123,13 @@ export function CompaniesHouseTab() {
       setSources(Array.isArray(r.sources) ? (r.sources as SourceInfo[]) : []);
       setWebsite(
         r.website && typeof r.website === "object" && "url" in r.website
-          ? (r.website as { url: string; source: string })
+          ? (r.website as { url: string; source: string; email?: string | null })
           : null
       );
       const n = Array.isArray(r.upserted) ? r.upserted.length : 0;
-      const webNote = r.website
-        ? ` Website: ${(r.website as { url: string }).url}.`
+      const w = r.website as { url?: string; email?: string | null } | null | undefined;
+      const webNote = w?.url
+        ? ` Website: ${w.url}${w.email ? ` · email: ${w.email}` : ""}.`
         : " Website not found (CH does not publish websites).";
       setStatusMsg(
         `Loaded ${n} docs into bucket "${ragBucket}" for RAG.${webNote} Sources are listed below for the LLM.`
@@ -246,6 +258,10 @@ export function CompaniesHouseTab() {
                 value={website.url.replace(/^https?:\/\//, "")}
               />
             )}
+            {website?.email && <Stat label="email" value={website.email} />}
+            {firecrawl !== null && (
+              <Stat label="enrichment" value={firecrawl ? "firecrawl" : "fallback"} />
+            )}
             <label className="block">
               <span className="block text-xs font-medium mb-1">RAG bucket</span>
               <input
@@ -262,15 +278,15 @@ export function CompaniesHouseTab() {
             <div className="mb-3 text-xs border border-gray-200 dark:border-edge rounded p-3">
               <div className="font-medium mb-1">Sources for the LLM</div>
               <p className="opacity-70 mb-2">
-                Companies House covers register facts only. Website and similar fields come from
-                secondary enrichment (web search); richer firmographics can be plugged in via MCP
-                (CompanyEnrich / Apollo) later.
+                Companies House covers register facts only. Website and email come from Firecrawl
+                (search + scrape) when configured; they are not on the UK register.
               </p>
               <ul className="space-y-1">
                 {sources.map((s) => (
                   <li key={s.id} className="font-mono flex flex-wrap gap-x-2 gap-y-0.5">
                     <span className="opacity-60">{s.source}/{s.kind}</span>
                     <span>{s.id}</span>
+                    {s.email ? <span>{s.email}</span> : null}
                     {s.url ? (
                       <a
                         className="text-accent underline"

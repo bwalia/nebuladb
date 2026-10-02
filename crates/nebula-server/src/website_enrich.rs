@@ -1,27 +1,42 @@
-//! Public-website lookup for company enrichment.
+//! Public-website (+ email) lookup for company enrichment.
 //!
-//! Companies House does **not** publish websites. When RAG needs one we
-//! research a likely official site, preferencing **Google Custom Search
-//! JSON API** when configured (`NEBULA_GOOGLE_CSE_API_KEY` +
-//! `NEBULA_GOOGLE_CSE_ID`), then falling back to DuckDuckGo HTML search
-//! + a cheap liveness probe.
+//! Companies House does **not** publish websites or contact emails. When
+//! RAG needs them we research via:
 //!
-//! For richer firmographics (domain, LinkedIn, headcount) operators can
-//! also plug an external MCP such as CompanyEnrich or Apollo alongside
-//! NebulaDB's Companies House tools.
+//! 1. **Firecrawl** (preferred) — LLM-native search + scrape API when
+//!    `NEBULA_FIRECRAWL_API_KEY` / `FIRECRAWL_API_KEY` is set.
+//! 2. **Google Custom Search JSON API** when CSE key + cx are set.
+//! 3. **DuckDuckGo HTML** scrape + liveness probe as last resort.
+//!
+//! Agents can also attach Firecrawl's hosted MCP
+//! (`https://mcp.firecrawl.dev/v2/mcp`) for ad-hoc crawl beyond ingest.
 
 use std::collections::HashSet;
 use std::time::Duration;
 
 use reqwest::Client;
-use serde_json::Value;
+use serde_json::{json, Value};
+
+const FIRECRAWL_BASE: &str = "https://api.firecrawl.dev/v2";
 
 /// Result of a website research attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebsiteHit {
     pub url: String,
-    /// How it was found: `google_cse`, `web_search`, `fixture`, …
+    /// How it was found: `firecrawl`, `google_cse`, `web_search`, `fixture`, …
     pub source: String,
+    /// Public contact email scraped from the site, if any.
+    pub email: Option<String>,
+}
+
+impl WebsiteHit {
+    fn with_url(url: String, source: &str) -> Self {
+        Self {
+            url,
+            source: source.into(),
+            email: None,
+        }
+    }
 }
 
 /// Google Custom Search credentials from the environment (if both set).
@@ -48,6 +63,14 @@ impl GoogleCseConfig {
     }
 }
 
+fn firecrawl_api_key() -> Option<String> {
+    std::env::var("NEBULA_FIRECRAWL_API_KEY")
+        .or_else(|_| std::env::var("FIRECRAWL_API_KEY"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn junk_host(host: &str) -> bool {
     let h = host.to_ascii_lowercase();
     [
@@ -72,6 +95,26 @@ fn junk_host(host: &str) -> bool {
         "google.",
         "bing.",
         "duckduckgo.",
+        "firecrawl.",
+    ]
+    .iter()
+    .any(|j| h.contains(j))
+}
+
+fn free_mail_host(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    [
+        "gmail.",
+        "yahoo.",
+        "hotmail.",
+        "outlook.",
+        "icloud.",
+        "aol.",
+        "mail.com",
+        "protonmail.",
+        "googlemail.",
+        "live.com",
+        "msn.com",
     ]
     .iter()
     .any(|j| h.contains(j))
@@ -148,6 +191,70 @@ fn host_of(raw: &str) -> Option<String> {
     }
 }
 
+fn origin_of(raw: &str) -> Option<String> {
+    let u = normalize_url(raw)?;
+    let host = host_of(&u)?;
+    let scheme = if u.starts_with("http://") {
+        "http"
+    } else {
+        "https"
+    };
+    Some(format!("{scheme}://{host}"))
+}
+
+/// Pull plausible business emails from page text / markdown.
+fn extract_emails(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'@' && i > 0 {
+            let mut start = i;
+            while start > 0 {
+                let c = bytes[start - 1] as char;
+                if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '%' || c == '+' || c == '-'
+                {
+                    start -= 1;
+                } else {
+                    break;
+                }
+            }
+            let mut end = i + 1;
+            while end < bytes.len() {
+                let c = bytes[end] as char;
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            if start < i && end > i + 1 {
+                let email = String::from_utf8_lossy(&bytes[start..end])
+                    .to_ascii_lowercase()
+                    .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '@' && c != '.' && c != '_' && c != '%' && c != '+' && c != '-')
+                    .to_string();
+                if email.contains('@') && email.contains('.') {
+                    let domain = email.split('@').nth(1).unwrap_or("");
+                    if !domain.is_empty()
+                        && !free_mail_host(domain)
+                        && !email.contains("example.")
+                        && !email.ends_with(".png")
+                        && !email.ends_with(".jpg")
+                        && seen.insert(email.clone())
+                    {
+                        out.push(email);
+                    }
+                }
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
 async fn website_live(http: &Client, raw: &str) -> bool {
     let Some(u) = normalize_url(raw) else {
         return false;
@@ -215,8 +322,6 @@ async fn ddg_candidates(http: &Client, query: &str) -> Vec<String> {
     extract_hrefs(&html)
 }
 
-/// Google Custom Search JSON API → result link URLs.
-/// https://developers.google.com/custom-search/v1/overview
 async fn google_cse_candidates(http: &Client, cfg: &GoogleCseConfig, query: &str) -> Vec<String> {
     let u = format!(
         "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num=10",
@@ -260,6 +365,126 @@ async fn google_cse_candidates(http: &Client, cfg: &GoogleCseConfig, query: &str
     out
 }
 
+async fn firecrawl_search(http: &Client, api_key: &str, query: &str) -> Vec<String> {
+    let body = json!({
+        "query": query,
+        "limit": 5,
+        "country": "GB",
+        "sources": [{"type": "web"}],
+    });
+    let Ok(res) = http
+        .post(format!("{FIRECRAWL_BASE}/search"))
+        .bearer_auth(api_key)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    else {
+        tracing::warn!("firecrawl search request failed to send");
+        return Vec::new();
+    };
+    let status = res.status();
+    let Ok(text) = res.text().await else {
+        return Vec::new();
+    };
+    if !status.is_success() {
+        tracing::warn!(%status, body = %text.chars().take(240).collect::<String>(), "firecrawl search non-2xx");
+        return Vec::new();
+    }
+    let Ok(json): Result<Value, _> = serde_json::from_str(&text) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    // v2: data.web[].url ; tolerate legacy data[] shape
+    let items = json
+        .pointer("/data/web")
+        .and_then(|v| v.as_array())
+        .or_else(|| json.get("data").and_then(|v| v.as_array()));
+    if let Some(items) = items {
+        for item in items {
+            if let Some(link) = item.get("url").and_then(|v| v.as_str()) {
+                if let Some(n) = normalize_url(link) {
+                    if seen.insert(n.clone()) {
+                        out.push(n);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+async fn firecrawl_scrape_markdown(http: &Client, api_key: &str, url: &str) -> Option<String> {
+    let body = json!({
+        "url": url,
+        "formats": ["markdown"],
+        "onlyMainContent": true,
+    });
+    let Ok(res) = http
+        .post(format!("{FIRECRAWL_BASE}/scrape"))
+        .bearer_auth(api_key)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    else {
+        return None;
+    };
+    if !res.status().is_success() {
+        return None;
+    }
+    let Ok(json): Result<Value, _> = res.json().await else {
+        return None;
+    };
+    json.pointer("/data/markdown")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+async fn enrich_email_from_site(
+    http: &Client,
+    api_key: &str,
+    site_url: &str,
+) -> Option<String> {
+    let mut texts = Vec::new();
+    if let Some(md) = firecrawl_scrape_markdown(http, api_key, site_url).await {
+        // Prefer a contact page link if the homepage mentions one.
+        let contact_hint = md
+            .lines()
+            .find(|l| {
+                let lo = l.to_ascii_lowercase();
+                lo.contains("contact") && (lo.contains("http") || lo.contains("]("))
+            })
+            .and_then(|l| {
+                // markdown link ](url)
+                if let Some(i) = l.find("](http") {
+                    let rest = &l[i + 2..];
+                    let end = rest.find(')').unwrap_or(rest.len());
+                    normalize_url(&rest[..end])
+                } else {
+                    None
+                }
+            });
+        texts.push(md);
+        if let Some(contact) = contact_hint {
+            if let Some(md2) = firecrawl_scrape_markdown(http, api_key, &contact).await {
+                texts.push(md2);
+            }
+        } else if let Some(origin) = origin_of(site_url) {
+            for path in ["/contact", "/contact-us", "/about/contact"] {
+                let u = format!("{origin}{path}");
+                if let Some(md2) = firecrawl_scrape_markdown(http, api_key, &u).await {
+                    texts.push(md2);
+                    break;
+                }
+            }
+        }
+    }
+    let combined = texts.join("\n");
+    extract_emails(&combined).into_iter().next()
+}
+
 async fn first_live_candidate(
     http: &Client,
     candidates: Vec<String>,
@@ -274,10 +499,7 @@ async fn first_live_candidate(
             continue;
         }
         if website_live(http, &cand).await {
-            return Some(WebsiteHit {
-                url: cand,
-                source: source.into(),
-            });
+            return Some(WebsiteHit::with_url(cand, source));
         }
     }
     None
@@ -292,18 +514,16 @@ fn research_queries(name: &str, locality: Option<&str>) -> [String; 3] {
     ]
 }
 
-/// Research a likely public website for a UK company.
+/// Research a likely public website (and contact email) for a UK company.
 ///
-/// Prefer Google Custom Search when `NEBULA_GOOGLE_CSE_API_KEY` +
-/// `NEBULA_GOOGLE_CSE_ID` are set; otherwise (or if Google returns nothing
-/// usable) fall back to DuckDuckGo HTML. Returns `None` when nothing live
-/// and non-junk is found.
+/// Prefer Firecrawl when `NEBULA_FIRECRAWL_API_KEY` is set; else Google CSE;
+/// else DuckDuckGo HTML. Returns `None` when nothing live and non-junk is found.
 pub async fn research_company_website(
     name: &str,
     locality: Option<&str>,
 ) -> Option<WebsiteHit> {
     let http = Client::builder()
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(45))
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()
         .ok()?;
@@ -311,12 +531,39 @@ pub async fn research_company_website(
     let queries = research_queries(name, locality);
     let mut seen_hosts = HashSet::new();
 
+    if let Some(api_key) = firecrawl_api_key() {
+        for q in &queries {
+            let cands = firecrawl_search(&http, &api_key, q).await;
+            for cand in cands {
+                let Some(host) = host_of(&cand) else {
+                    continue;
+                };
+                if junk_host(&host) || !seen_hosts.insert(host.clone()) {
+                    continue;
+                }
+                // Firecrawl search already found it; skip separate HEAD when
+                // scrape succeeds. Still accept URL if scrape fails but live.
+                let email = enrich_email_from_site(&http, &api_key, &cand).await;
+                if email.is_some() || website_live(&http, &cand).await {
+                    return Some(WebsiteHit {
+                        url: cand,
+                        source: "firecrawl".into(),
+                        email,
+                    });
+                }
+            }
+        }
+    }
+
     if let Some(cfg) = GoogleCseConfig::from_env() {
         for q in &queries {
             let cands = google_cse_candidates(&http, &cfg, q).await;
-            if let Some(hit) =
+            if let Some(mut hit) =
                 first_live_candidate(&http, cands, &mut seen_hosts, "google_cse").await
             {
+                if let Some(api_key) = firecrawl_api_key() {
+                    hit.email = enrich_email_from_site(&http, &api_key, &hit.url).await;
+                }
                 return Some(hit);
             }
         }
@@ -324,7 +571,12 @@ pub async fn research_company_website(
 
     for q in &queries {
         let cands = ddg_candidates(&http, q).await;
-        if let Some(hit) = first_live_candidate(&http, cands, &mut seen_hosts, "web_search").await {
+        if let Some(mut hit) =
+            first_live_candidate(&http, cands, &mut seen_hosts, "web_search").await
+        {
+            if let Some(api_key) = firecrawl_api_key() {
+                hit.email = enrich_email_from_site(&http, &api_key, &hit.url).await;
+            }
             return Some(hit);
         }
     }
@@ -341,6 +593,11 @@ pub fn enrich_website_enabled() -> bool {
         }
         Err(_) => true,
     }
+}
+
+/// True when Firecrawl API key is present.
+pub fn firecrawl_configured() -> bool {
+    firecrawl_api_key().is_some()
 }
 
 /// True when Google Custom Search credentials are present.
@@ -377,9 +634,15 @@ mod tests {
     }
 
     #[test]
-    fn google_cse_from_env_needs_both() {
-        // Ensure parsing doesn't panic when unset in the unit-test process.
-        // Presence is env-dependent; we only assert the type round-trip shape.
+    fn extract_business_email_skips_gmail() {
+        let text = "Contact us at info@workstation.co.uk or hello@gmail.com thanks";
+        let emails = extract_emails(text);
+        assert_eq!(emails, vec!["info@workstation.co.uk".to_string()]);
+    }
+
+    #[test]
+    fn firecrawl_from_env_does_not_panic() {
+        let _ = firecrawl_api_key();
         let _ = GoogleCseConfig::from_env();
     }
 }

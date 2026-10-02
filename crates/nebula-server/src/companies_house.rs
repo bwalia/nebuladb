@@ -253,9 +253,9 @@ pub fn company_to_rag_docs(company: &Value) -> Vec<(String, String, Value)> {
     docs
 }
 
-/// Append secondary-source docs (website enrichment + source catalogue)
+/// Append secondary-source docs (website / email enrichment + source catalogue)
 /// the LLM should consider before answering. Companies House does not
-/// publish websites — `website` is researched separately when provided.
+/// publish websites or emails — researched separately when provided.
 pub fn append_enrichment_docs(
     company: &Value,
     website: Option<&WebsiteHit>,
@@ -280,9 +280,8 @@ pub fn append_enrichment_docs(
         ),
         None => format!(
             "Website for {name} ({number}): not available on the Companies House register, and no \
-             live official site was confirmed via web search. Do not invent a URL; say it is unknown \
-             or suggest checking an external enrichment MCP (CompanyEnrich, Apollo) / the company's \
-             own materials."
+             live official site was confirmed via web enrichment (Firecrawl / search). Do not invent \
+             a URL; say it is unknown."
         ),
     };
     docs.push((
@@ -297,6 +296,28 @@ pub fn append_enrichment_docs(
         }),
     ));
 
+    if let Some(w) = website {
+        if let Some(email) = w.email.as_deref() {
+            docs.push((
+                format!("{number}-contact"),
+                format!(
+                    "Public contact email for {name} ({number}): {email}. Scraped from {url} via \
+                     {} (not from Companies House — the UK register does not publish emails).",
+                    w.source,
+                    url = w.url
+                ),
+                json!({
+                    "source": w.source,
+                    "kind": "email",
+                    "company_number": number,
+                    "email": email,
+                    "url": w.url,
+                    "found": true,
+                }),
+            ));
+        }
+    }
+
     let mut catalogue = format!(
         "Sources the assistant should use for {name} ({number}), in preference order:\n\
          1. companies_house / profile — status, type, incorporation date, registered office, SIC codes.\n\
@@ -304,19 +325,30 @@ pub fn append_enrichment_docs(
          3. companies_house / psc — persons with significant control.\n\
          4. companies_house / filings — recent filing history descriptions.\n"
     );
+    let mut n = 5u8;
     if let Some(w) = website {
         catalogue.push_str(&format!(
-            "5. web_enrichment / website — public site {url} (source={src}). Use this for questions \
-             about the company website; it is NOT on Companies House.\n",
-            url = w.url,
-            src = w.source
+            "{n}. {src} / website — public site {url}. Use for website questions; NOT on Companies House.\n",
+            src = w.source,
+            url = w.url
         ));
+        n += 1;
+        if let Some(email) = w.email.as_deref() {
+            catalogue.push_str(&format!(
+                "{n}. {src} / email — contact {email} (from {url}). NOT on Companies House.\n",
+                src = w.source,
+                url = w.url
+            ));
+            n += 1;
+        }
     } else {
         catalogue.push_str(
             "5. web_enrichment / website — not found. Companies House has no website field; say \
              unknown rather than guessing.\n",
         );
+        n = 6;
     }
+    let _ = n;
     catalogue.push_str(
         "Only answer from these sources. If a fact is missing, say so and name which source was checked.",
     );
@@ -349,8 +381,9 @@ pub async fn ch_status(State(s): State<AppState>) -> impl IntoResponse {
         "configured": s.companies_house.configured(),
         "fixture_available": true,
         "enrich_website": website_enrich::enrich_website_enabled(),
+        "firecrawl": website_enrich::firecrawl_configured(),
         "google_cse": website_enrich::google_cse_configured(),
-        "hint": "Set NEBULA_COMPANIES_HOUSE_API_KEY (or COMPANIES_HOUSE_API_KEY) on nebula-server. Get a key at https://developer.company-information.service.gov.uk/. For website enrichment prefer NEBULA_GOOGLE_CSE_API_KEY + NEBULA_GOOGLE_CSE_ID (Custom Search JSON API)."
+        "hint": "Set NEBULA_COMPANIES_HOUSE_API_KEY on nebula-server. For website+email enrichment set NEBULA_FIRECRAWL_API_KEY (https://www.firecrawl.dev/). Optional: NEBULA_GOOGLE_CSE_API_KEY + NEBULA_GOOGLE_CSE_ID."
     }))
 }
 
@@ -513,6 +546,7 @@ pub async fn ch_ingest_for_rag(
             Some(WebsiteHit {
                 url: "https://workstation.co.uk".into(),
                 source: "fixture".into(),
+                email: Some("info@workstation.co.uk".into()),
             })
         } else {
             website_enrich::research_company_website(name, company_locality(&company)).await
@@ -541,6 +575,7 @@ pub async fn ch_ingest_for_rag(
                 "source": meta.get("source"),
                 "kind": meta.get("kind"),
                 "url": meta.get("url"),
+                "email": meta.get("email"),
                 "found": meta.get("found"),
             })
         })
@@ -556,7 +591,11 @@ pub async fn ch_ingest_for_rag(
         })).collect::<Vec<_>>(),
         "upserted": upserted,
         "sources": sources,
-        "website": website.as_ref().map(|w| json!({"url": w.url, "source": w.source})),
+        "website": website.as_ref().map(|w| json!({
+            "url": w.url,
+            "source": w.source,
+            "email": w.email,
+        })),
         "enrich_website": do_enrich,
         "fixture": company.get("fixture").and_then(|v| v.as_bool()).unwrap_or(false),
         "company": company,

@@ -407,9 +407,14 @@ export const api = {
     ),
 
   companiesHouseStatus: () =>
-    request<{ configured: boolean; fixture_available: boolean; hint: string }>(
-      "/api/v1/companies-house/status"
-    ),
+    request<{
+      configured: boolean;
+      fixture_available: boolean;
+      hint: string;
+      enrich_website?: boolean;
+      firecrawl?: boolean;
+      google_cse?: boolean;
+    }>("/api/v1/companies-house/status"),
 
   companiesHouseSearch: (q: string) =>
     request<{
@@ -434,9 +439,10 @@ export const api = {
         source?: string;
         kind?: string;
         url?: string | null;
+        email?: string | null;
         found?: boolean;
       }>;
-      website?: { url: string; source: string } | null;
+      website?: { url: string; source: string; email?: string | null } | null;
       enrich_website?: boolean;
     }>(`/api/v1/companies-house/company/${encodeURIComponent(number)}/ingest`, {
       method: "POST",

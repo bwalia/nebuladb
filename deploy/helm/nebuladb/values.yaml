@@ -311,8 +311,10 @@ serviceMonitor:
 # with any of these keys (all optional — unset => that feature is off):
 #     NEBULA_JWT_SECRET, NEBULA_API_KEYS, NEBULA_OPENAI_API_KEY,
 #     NEBULA_COMPANIES_HOUSE_API_KEY (or COMPANIES_HOUSE_API_KEY),
-#     NEBULA_GOOGLE_CSE_API_KEY + NEBULA_GOOGLE_CSE_ID — Google Custom
-#       Search JSON API for Companies House website enrichment,
+#     NEBULA_FIRECRAWL_API_KEY — Firecrawl search+scrape for CH website
+#       and email enrichment (preferred; https://www.firecrawl.dev/),
+#     NEBULA_GOOGLE_CSE_API_KEY + NEBULA_GOOGLE_CSE_ID — optional Google
+#       Custom Search fallback (whole-web CSE closed to new engines),
 #     NEBULA_LLM_OLLAMA_TOKEN (or NEBULA_LLM_OLLAMA_JWT) — HMAC secret
 #       (or pre-minted JWT) for https://ollama.workstation.co.uk
 #       (`x-api-key` header),
