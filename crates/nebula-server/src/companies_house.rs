@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 use crate::error::ApiError;
 use crate::state::AppState;
+use crate::website_enrich::{self, WebsiteHit};
 
 const CH_BASE: &str = "https://api.company-information.service.gov.uk";
 
@@ -252,6 +253,97 @@ pub fn company_to_rag_docs(company: &Value) -> Vec<(String, String, Value)> {
     docs
 }
 
+/// Append secondary-source docs (website enrichment + source catalogue)
+/// the LLM should consider before answering. Companies House does not
+/// publish websites — `website` is researched separately when provided.
+pub fn append_enrichment_docs(
+    company: &Value,
+    website: Option<&WebsiteHit>,
+) -> Vec<(String, String, Value)> {
+    let number = company
+        .get("company_number")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let name = company
+        .get("company_name")
+        .or_else(|| company.get("title"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(number);
+
+    let mut docs = Vec::new();
+
+    let website_line = match website {
+        Some(w) => format!(
+            "Public website for {name} ({number}): {}. Found via {} (not from Companies House — \
+             the UK register does not publish company websites).",
+            w.url, w.source
+        ),
+        None => format!(
+            "Website for {name} ({number}): not available on the Companies House register, and no \
+             live official site was confirmed via web search. Do not invent a URL; say it is unknown \
+             or suggest checking an external enrichment MCP (CompanyEnrich, Apollo) / the company's \
+             own materials."
+        ),
+    };
+    docs.push((
+        format!("{number}-website"),
+        website_line,
+        json!({
+            "source": website.map(|w| w.source.as_str()).unwrap_or("web_enrichment"),
+            "kind": "website",
+            "company_number": number,
+            "url": website.map(|w| w.url.as_str()),
+            "found": website.is_some(),
+        }),
+    ));
+
+    let mut catalogue = format!(
+        "Sources the assistant should use for {name} ({number}), in preference order:\n\
+         1. companies_house / profile — status, type, incorporation date, registered office, SIC codes.\n\
+         2. companies_house / officers — directors, secretaries, and other officers.\n\
+         3. companies_house / psc — persons with significant control.\n\
+         4. companies_house / filings — recent filing history descriptions.\n"
+    );
+    if let Some(w) = website {
+        catalogue.push_str(&format!(
+            "5. web_enrichment / website — public site {url} (source={src}). Use this for questions \
+             about the company website; it is NOT on Companies House.\n",
+            url = w.url,
+            src = w.source
+        ));
+    } else {
+        catalogue.push_str(
+            "5. web_enrichment / website — not found. Companies House has no website field; say \
+             unknown rather than guessing.\n",
+        );
+    }
+    catalogue.push_str(
+        "Only answer from these sources. If a fact is missing, say so and name which source was checked.",
+    );
+    docs.push((
+        format!("{number}-sources"),
+        catalogue,
+        json!({
+            "source": "nebula",
+            "kind": "sources_catalogue",
+            "company_number": number,
+        }),
+    ));
+
+    docs
+}
+
+fn company_locality(company: &Value) -> Option<&str> {
+    company
+        .pointer("/registered_office_address/locality")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            company
+                .get("address_snippet")
+                .and_then(|v| v.as_str())
+        })
+}
+
 pub async fn ch_status(State(s): State<AppState>) -> impl IntoResponse {
     Json(json!({
         "configured": s.companies_house.configured(),
@@ -349,6 +441,11 @@ pub struct IngestBody {
     pub upsert: bool,
     #[serde(default = "default_bucket")]
     pub bucket: String,
+    /// Research a public website (CH does not publish one) and upsert it
+    /// plus a sources catalogue for the LLM. Default true; disable with
+    /// `false` or `NEBULA_CH_ENRICH_WEBSITE=0`.
+    #[serde(default = "default_true")]
+    pub enrich_website: bool,
 }
 
 fn default_bucket() -> String {
@@ -398,7 +495,31 @@ pub async fn ch_ingest_for_rag(
         fixture_company(&number)
     };
 
-    let docs = company_to_rag_docs(&company);
+    let mut docs = company_to_rag_docs(&company);
+
+    let do_enrich = body.enrich_website && website_enrich::enrich_website_enabled();
+    let website = if do_enrich {
+        let name = company
+            .get("company_name")
+            .or_else(|| company.get("title"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(number.as_str());
+        // Fixture shortcut for the showcase demo company when offline.
+        if company.get("fixture").and_then(|v| v.as_bool()).unwrap_or(false)
+            && number == "11641870"
+        {
+            Some(WebsiteHit {
+                url: "https://workstation.co.uk".into(),
+                source: "fixture".into(),
+            })
+        } else {
+            website_enrich::research_company_website(name, company_locality(&company)).await
+        }
+    } else {
+        None
+    };
+    docs.extend(append_enrichment_docs(&company, website.as_ref()));
+
     let mut upserted = Vec::new();
     if body.upsert {
         for (id, text, meta) in &docs {
@@ -410,6 +531,19 @@ pub async fn ch_ingest_for_rag(
         }
     }
 
+    let sources: Vec<Value> = docs
+        .iter()
+        .map(|(id, _text, meta)| {
+            json!({
+                "id": id,
+                "source": meta.get("source"),
+                "kind": meta.get("kind"),
+                "url": meta.get("url"),
+                "found": meta.get("found"),
+            })
+        })
+        .collect();
+
     Ok(Json(json!({
         "company_number": number,
         "bucket": body.bucket,
@@ -419,6 +553,9 @@ pub async fn ch_ingest_for_rag(
             "metadata": meta,
         })).collect::<Vec<_>>(),
         "upserted": upserted,
+        "sources": sources,
+        "website": website.as_ref().map(|w| json!({"url": w.url, "source": w.source})),
+        "enrich_website": do_enrich,
         "fixture": company.get("fixture").and_then(|v| v.as_bool()).unwrap_or(false),
         "company": company,
     })))

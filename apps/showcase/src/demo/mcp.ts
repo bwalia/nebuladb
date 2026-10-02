@@ -100,6 +100,42 @@ export const MCP_TOOLS: McpTool[] = [
     run: (a) => api.ragJson(str(a.query), num(a.top_k, 5)),
   },
   {
+    name: "companies_house_search",
+    summary: "Search the UK Companies House register",
+    description:
+      "Looks up companies by name or number on the public register. Does not return websites — Companies House does not publish them.",
+    permission: "read",
+    category: "retrieval",
+    backing: "GET /api/v1/companies-house/search",
+    params: [
+      { name: "q", type: "string", required: true, description: "Company name or number" },
+    ],
+    run: (a) => api.companiesHouseSearch(str(a.q)),
+  },
+  {
+    name: "companies_house_ingest",
+    summary: "Load a company into RAG with web enrichment",
+    description:
+      "Upserts Companies House profile/officers/PSC/filings plus a researched public website and a sources catalogue for the LLM. Then use ai_answer / answer_question with bucket companies_house_<number>.",
+    permission: "write",
+    category: "data",
+    backing: "POST /api/v1/companies-house/company/{number}/ingest",
+    params: [
+      { name: "company_number", type: "string", required: true, description: "e.g. 11641870" },
+      {
+        name: "bucket",
+        type: "string",
+        required: false,
+        description: "RAG bucket (default companies_house_<number>)",
+      },
+    ],
+    run: (a) => {
+      const number = str(a.company_number);
+      const bucket = str(a.bucket) || `companies_house_${number}`;
+      return api.companiesHouseIngest(number, bucket);
+    },
+  },
+  {
     name: "execute_sql",
     summary: "Run a read-only SQL statement",
     description:

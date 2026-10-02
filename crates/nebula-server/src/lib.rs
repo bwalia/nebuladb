@@ -19,6 +19,7 @@ pub mod backup_routes;
 pub mod build_info;
 pub mod cluster;
 pub mod companies_house;
+pub mod website_enrich;
 pub mod cross_region_status;
 pub mod error;
 pub mod home_region;

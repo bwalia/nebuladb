@@ -429,9 +429,18 @@ export const api = {
       upserted?: string[];
       company?: Record<string, unknown>;
       fixture?: boolean;
+      sources?: Array<{
+        id?: string;
+        source?: string;
+        kind?: string;
+        url?: string | null;
+        found?: boolean;
+      }>;
+      website?: { url: string; source: string } | null;
+      enrich_website?: boolean;
     }>(`/api/v1/companies-house/company/${encodeURIComponent(number)}/ingest`, {
       method: "POST",
-      body: JSON.stringify({ upsert: true, bucket }),
+      body: JSON.stringify({ upsert: true, bucket, enrich_website: true }),
     }),
 
   sql: (sql: string, explain = false) =>

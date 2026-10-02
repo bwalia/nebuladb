@@ -203,6 +203,28 @@ pub struct RagParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompaniesHouseSearchParams {
+    /// Company name or number to search on the UK register.
+    pub q: String,
+    /// Page size (default 20).
+    #[serde(default)]
+    pub items_per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompaniesHouseIngestParams {
+    /// Companies House company number (e.g. `11641870`).
+    pub company_number: String,
+    /// RAG bucket. Defaults to `companies_house_<number>` so companies never mix.
+    #[serde(default)]
+    pub bucket: Option<String>,
+    /// Research a public website (CH does not publish one) and upsert a
+    /// sources catalogue for the LLM. Default true.
+    #[serde(default)]
+    pub enrich_website: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct RememberParams {
     /// The fact, preference, or event to remember, written as a
     /// self-contained sentence ("User prefers TypeScript over JS").
@@ -418,6 +440,66 @@ impl NebulaMcp {
             body["hybrid"] = json!(h);
         }
         render(c.post("/rag/answer", &body).await)
+    }
+
+    // ---- Companies House + enrichment ----
+
+    #[tool(
+        description = "Search the UK Companies House register by company name or number. \
+                       Returns register hits (title, number, status, address). Does not include \
+                       websites — Companies House does not publish them.",
+        annotations(read_only_hint = true)
+    )]
+    async fn companies_house_search(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<CompaniesHouseSearchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let c = self.client_for(&parts);
+        let items = p.items_per_page.unwrap_or(20);
+        let path = format!(
+            "/companies-house/search?q={}&items_per_page={items}",
+            seg(&p.q)
+        );
+        render(c.get(&path).await)
+    }
+
+    #[tool(
+        description = "Load a UK company into NebulaDB for RAG: Companies House profile, officers, \
+                       PSC, and filings, plus a researched public website (CH has no website field) \
+                       and a sources catalogue the LLM should prefer. Returns upserted doc ids, \
+                       `sources`, and `website` when found. Then call answer_question with bucket \
+                       `companies_house_<number>` (or the bucket you passed).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn companies_house_ingest(
+        &self,
+        Extension(parts): Extension<Parts>,
+        Parameters(p): Parameters<CompaniesHouseIngestParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let c = self.client_for(&parts);
+        let bucket = p
+            .bucket
+            .unwrap_or_else(|| format!("companies_house_{}", p.company_number));
+        let body = json!({
+            "upsert": true,
+            "bucket": bucket,
+            "enrich_website": p.enrich_website.unwrap_or(true),
+        });
+        render(
+            c.post(
+                &format!(
+                    "/companies-house/company/{}/ingest",
+                    seg(&p.company_number)
+                ),
+                &body,
+            )
+            .await,
+        )
     }
 
     // ---- Agent memory ----
@@ -827,6 +909,7 @@ mod tests {
         // Clients (and the showcase MCP tab) gate on these hints, so a new
         // tool must state them and a write must never claim read-only.
         let writes = [
+            "companies_house_ingest",
             "create_snapshot",
             "delete_document",
             "insert_document",

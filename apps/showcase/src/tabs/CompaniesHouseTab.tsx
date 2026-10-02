@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../api";
+import { api, ApiError, type Hit } from "../api";
 import { sseStream } from "../sse";
 import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
 
@@ -12,9 +12,18 @@ interface ChHit {
   address_snippet?: string;
 }
 
+interface SourceInfo {
+  id?: string;
+  source?: string;
+  kind?: string;
+  url?: string | null;
+  found?: boolean;
+}
+
 interface Turn {
   query: string;
   answer: string;
+  context: Hit[];
   done: boolean;
   error?: string;
 }
@@ -22,6 +31,8 @@ interface Turn {
 /**
  * UK Companies House → select company → chat with live CH RAG context.
  * API key stays on the server (`NEBULA_COMPANIES_HOUSE_API_KEY`).
+ * Load into RAG also researches a public website (CH does not publish
+ * websites) and upserts a sources catalogue for the LLM.
  */
 export function CompaniesHouseTab() {
   const [q, setQ] = useState("Nebula");
@@ -35,6 +46,8 @@ export function CompaniesHouseTab() {
   const [ingestBusy, setIngestBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [sources, setSources] = useState<SourceInfo[]>([]);
+  const [website, setWebsite] = useState<{ url: string; source: string } | null>(null);
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [chatBusy, setChatBusy] = useState(false);
@@ -73,6 +86,8 @@ export function CompaniesHouseTab() {
   const select = async (number: string) => {
     setSelected(number);
     setTurns([]);
+    setSources([]);
+    setWebsite(null);
     setErr(null);
     setBusy(true);
     try {
@@ -94,8 +109,18 @@ export function CompaniesHouseTab() {
     try {
       const r = await api.companiesHouseIngest(selected, ragBucket);
       setCompany((r.company as Record<string, unknown>) ?? company);
+      setSources(Array.isArray(r.sources) ? (r.sources as SourceInfo[]) : []);
+      setWebsite(
+        r.website && typeof r.website === "object" && "url" in r.website
+          ? (r.website as { url: string; source: string })
+          : null
+      );
+      const n = Array.isArray(r.upserted) ? r.upserted.length : 0;
+      const webNote = r.website
+        ? ` Website: ${(r.website as { url: string }).url}.`
+        : " Website not found (CH does not publish websites).";
       setStatusMsg(
-        `Loaded ${Array.isArray(r.upserted) ? r.upserted.length : 0} docs into bucket "${ragBucket}" for RAG.`
+        `Loaded ${n} docs into bucket "${ragBucket}" for RAG.${webNote} Sources are listed below for the LLM.`
       );
     } catch (e) {
       if (e instanceof ApiError) setErr(`${e.code}: ${e.body}`);
@@ -111,7 +136,7 @@ export function CompaniesHouseTab() {
     setInput("");
     setChatBusy(true);
     const turnIdx = turns.length;
-    setTurns((prev) => [...prev, { query, answer: "", done: false }]);
+    setTurns((prev) => [...prev, { query, answer: "", context: [], done: false }]);
     const updater = (mut: (t: Turn) => Turn) =>
       setTurns((prev) => prev.map((t, i) => (i === turnIdx ? mut(t) : t)));
     const ctrl = new AbortController();
@@ -122,7 +147,14 @@ export function CompaniesHouseTab() {
         { query, top_k: 6, stream: true, bucket: ragBucket, hybrid: true },
         ctrl.signal
       )) {
-        if (frame.event === "answer_delta") {
+        if (frame.event === "context") {
+          try {
+            const hit = JSON.parse(frame.data) as Hit;
+            updater((t) => ({ ...t, context: [...t.context, hit] }));
+          } catch {
+            /* ignore malformed context frames */
+          }
+        } else if (frame.event === "answer_delta") {
           updater((t) => ({ ...t, answer: t.answer + frame.data }));
         } else if (frame.event === "done") {
           updater((t) => ({ ...t, done: true }));
@@ -154,7 +186,7 @@ export function CompaniesHouseTab() {
     <div className="space-y-4">
       <Panel
         title="Companies House"
-        subtitle="Search UK companies → load profile → chat with live CH context as RAG"
+        subtitle="Search UK companies → load profile + web enrichment → chat with cited sources"
       >
         {statusMsg && (
           <p className="text-sm mb-3 opacity-80 border border-gray-200 dark:border-edge rounded px-3 py-2">
@@ -208,6 +240,12 @@ export function CompaniesHouseTab() {
           <div className="flex flex-wrap gap-3 mb-3 items-end">
             <Stat label="status" value={String(company.company_status ?? "—")} />
             <Stat label="type" value={String(company.type ?? company.company_type ?? "—")} />
+            {website && (
+              <Stat
+                label="website"
+                value={website.url.replace(/^https?:\/\//, "")}
+              />
+            )}
             <label className="block">
               <span className="block text-xs font-medium mb-1">RAG bucket</span>
               <input
@@ -220,6 +258,36 @@ export function CompaniesHouseTab() {
               {ingestBusy ? <Spinner /> : "Load into RAG"}
             </button>
           </div>
+          {sources.length > 0 && (
+            <div className="mb-3 text-xs border border-gray-200 dark:border-edge rounded p-3">
+              <div className="font-medium mb-1">Sources for the LLM</div>
+              <p className="opacity-70 mb-2">
+                Companies House covers register facts only. Website and similar fields come from
+                secondary enrichment (web search); richer firmographics can be plugged in via MCP
+                (CompanyEnrich / Apollo) later.
+              </p>
+              <ul className="space-y-1">
+                {sources.map((s) => (
+                  <li key={s.id} className="font-mono flex flex-wrap gap-x-2 gap-y-0.5">
+                    <span className="opacity-60">{s.source}/{s.kind}</span>
+                    <span>{s.id}</span>
+                    {s.url ? (
+                      <a
+                        className="text-accent underline"
+                        href={String(s.url)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {String(s.url)}
+                      </a>
+                    ) : s.kind === "website" ? (
+                      <span className="opacity-50">not found</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <details>
             <summary className="text-xs cursor-pointer mb-2">company JSON</summary>
             <JsonView value={company} />
@@ -229,17 +297,11 @@ export function CompaniesHouseTab() {
 
       <Panel
         title="Chat about this company"
-        subtitle={`Grounded on bucket "${ragBucket}" after Load into RAG`}
+        subtitle={`Grounded on bucket "${ragBucket}" after Load into RAG — retrieved chunks shown before the answer`}
       >
-        <div className="space-y-3 mb-3 max-h-80 overflow-auto">
+        <div className="space-y-3 mb-3 max-h-96 overflow-auto">
           {turns.map((t, i) => (
-            <div key={i} className="text-sm border border-gray-200 dark:border-edge rounded p-3">
-              <div className="font-medium opacity-70">You: {t.query}</div>
-              <div className="mt-1 whitespace-pre-wrap">
-                {t.answer || (t.done ? "" : "…")}
-                {t.error && <span className="text-red-500"> {t.error}</span>}
-              </div>
-            </div>
+            <TurnCard key={i} turn={t} />
           ))}
         </div>
         <div className="flex gap-2">
@@ -253,7 +315,7 @@ export function CompaniesHouseTab() {
             }}
             placeholder={
               selected
-                ? "Who are the directors? What is the registered office?"
+                ? "Who are the directors? What is the company website?"
                 : "Select a company first"
             }
           />
@@ -262,6 +324,55 @@ export function CompaniesHouseTab() {
           </button>
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function TurnCard({ turn }: { turn: Turn }) {
+  const [showContext, setShowContext] = useState(true);
+  return (
+    <div className="text-sm border border-gray-200 dark:border-edge rounded p-3 space-y-2">
+      <div className="font-medium opacity-70">You: {turn.query}</div>
+      {turn.context.length > 0 && (
+        <div>
+          <button
+            type="button"
+            className="text-xs opacity-60 hover:underline"
+            onClick={() => setShowContext((v) => !v)}
+          >
+            {showContext ? "hide" : "show"} {turn.context.length} retrieved source
+            {turn.context.length === 1 ? "" : "s"}
+          </button>
+          {showContext && (
+            <ul className="mt-1 space-y-1">
+              {turn.context.map((h, j) => {
+                const meta = (h.metadata ?? {}) as Record<string, unknown>;
+                const src = String(meta.source ?? "unknown");
+                const kind = String(meta.kind ?? "");
+                return (
+                  <li
+                    key={j}
+                    className="text-xs bg-gray-50 dark:bg-carbon-900 rounded p-2 border border-gray-200 dark:border-edge"
+                  >
+                    <div className="flex justify-between gap-2 font-mono opacity-70">
+                      <span>
+                        [{j}] {src}
+                        {kind ? `/${kind}` : ""} · {h.id}
+                      </span>
+                      <span>{h.score.toFixed(3)}</span>
+                    </div>
+                    <p className="pt-1 whitespace-pre-wrap">{h.text.slice(0, 400)}</p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+      <div className="whitespace-pre-wrap">
+        {turn.answer || (turn.done ? "" : "…")}
+        {turn.error && <span className="text-red-500"> {turn.error}</span>}
+      </div>
     </div>
   );
 }

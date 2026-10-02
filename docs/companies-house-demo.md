@@ -34,9 +34,29 @@ Documented alongside `NEBULA_API_KEYS` / `NEBULA_OPENAI_API_KEY` in
 1. Open the showcase **Companies House** tab.
 2. Search by company name or number.
 3. Click a result to load the profile (+ officers / PSC / filings).
-4. Click **Load into RAG** — docs are upserted into the `companies_house`
-   bucket (or the bucket you set).
-5. Chat in the same tab; answers use that bucket via `/api/v1/ai/rag`.
+4. Click **Load into RAG** — upserts register docs **plus**:
+   - a researched public website (Companies House does **not** publish
+     websites; NebulaDB looks one up via web search and liveness-check),
+   - a **sources catalogue** telling the LLM what it may cite.
+5. Chat in the same tab; retrieved source chunks appear above the answer.
+   Answers use bucket `companies_house_<number>` via `/api/v1/ai/rag`.
+
+Disable website enrichment with `NEBULA_CH_ENRICH_WEBSITE=0` or
+`{"enrich_website": false}` on the ingest body.
+
+## MCP
+
+Nebula MCP tools (design 0012 — thin REST adapters):
+
+- `companies_house_search` — register search
+- `companies_house_ingest` — load + enrich into a per-company bucket
+- `answer_question` — RAG over that bucket
+
+For richer firmographics beyond website (LinkedIn, headcount, tech stack),
+connect an external enrichment MCP such as
+[CompanyEnrich](https://companyenrich.com/product/mcp-server) or
+[Apollo](https://github.com/pauling-ai/apollo-io-mcp-server) alongside NebulaDB;
+ingest still owns the Companies House ground truth.
 
 ## Without a key
 
