@@ -384,6 +384,16 @@ impl Bm25Index {
             .collect()
     }
 
+    /// Score document `id` for `query`. `text` must be what it was
+    /// indexed with. Returns 0 when the id is not live or no query term
+    /// appears in the document — same total [`Self::search`] would give.
+    pub fn score_doc(&self, query: &str, id: u64, text: &str) -> f32 {
+        self.explain_doc(query, id, text)
+            .into_iter()
+            .map(|t| t.contribution)
+            .sum()
+    }
+
     /// Break document `id`'s score for `query` down by term. `text` must
     /// be the text it was indexed with: term frequencies come from
     /// re-tokenizing it, which is exact (the index was built from the

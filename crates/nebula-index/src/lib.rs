@@ -142,6 +142,7 @@ fn min_max_normalize(scores: impl Iterator<Item = f32>) -> Vec<f32> {
 fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
     let mut by_key = AHashMap::with_capacity(state.docs.len());
     let mut docs = AHashMap::with_capacity(state.docs.len());
+    let mut by_bucket: AHashMap<String, AHashSet<Id>> = AHashMap::new();
     // The BM25 index isn't part of the snapshot — rebuild it from the
     // restored `docs` text (design 0008 §6). Same principle as vectors
     // living only in the HNSW arena: we don't persist derivable state.
@@ -152,6 +153,7 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
         let id = Id(d.internal_id);
         by_key.insert((d.bucket.clone(), d.external_id.clone()), id);
         bm25.add(id.0, &d.text);
+        by_bucket.entry(d.bucket.clone()).or_default().insert(id);
         // Vectors live in the HNSW snapshot, which is the authority
         // for the vector arena — `Document` no longer carries a copy.
         docs.insert(
@@ -176,6 +178,7 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
     Inner {
         by_key,
         docs,
+        by_bucket,
         parents,
         bm25,
         next_id: state.next_id,
@@ -194,6 +197,11 @@ struct Inner {
     /// millions of docs) and serialize it after releasing — instead of
     /// holding the lock for the multi-minute serialize.
     docs: AHashMap<Id, Arc<Document>>,
+    /// Bucket → live internal ids. Lets filtered search scan a small
+    /// bucket exactly instead of over-fetching global HNSW/BM25 and
+    /// hoping post-filter keeps anything (fails when one bucket owns
+    /// millions of docs and another owns four).
+    by_bucket: AHashMap<String, AHashSet<Id>>,
     /// `(bucket, parent_doc_id)` → set of chunk external ids. Lets
     /// `delete_document` find every chunk to tombstone without
     /// scanning the whole `docs` map.
@@ -209,24 +217,33 @@ struct Inner {
 }
 
 impl Inner {
-    /// Insert (or replace) a document, keeping `docs` and the BM25
-    /// index in sync. The single choke point for adding to the corpus —
-    /// every caller routes through here so the lexical index can never
-    /// silently fall behind the doc map.
+    /// Insert (or replace) a document, keeping `docs`, `by_bucket`, and
+    /// the BM25 index in sync. The single choke point for adding to the
+    /// corpus — every caller routes through here so the lexical index
+    /// and bucket membership can never silently fall behind the doc map.
     fn insert_doc(&mut self, id: Id, doc: Document) {
         self.bm25.add(id.0, &doc.text);
+        self.by_bucket.entry(doc.bucket.clone()).or_default().insert(id);
         self.docs.insert(id, Arc::new(doc));
     }
 
-    /// Remove a document by internal id from both `docs` and the BM25
-    /// index. Returns the removed `Document`, mirroring
+    /// Remove a document by internal id from `docs`, `by_bucket`, and the
+    /// BM25 index. Returns the removed `Document`, mirroring
     /// `HashMap::remove`, so callers keep their existing control flow.
     fn remove_doc(&mut self, id: Id) -> Option<Arc<Document>> {
         let doc = self.docs.remove(&id);
         match &doc {
             // `insert_doc` indexed exactly `doc.text`, so the targeted
             // removal finds every posting it created.
-            Some(d) => self.bm25.remove_text(id.0, &d.text),
+            Some(d) => {
+                self.bm25.remove_text(id.0, &d.text);
+                if let Some(set) = self.by_bucket.get_mut(&d.bucket) {
+                    set.remove(&id);
+                    if set.is_empty() {
+                        self.by_bucket.remove(&d.bucket);
+                    }
+                }
+            }
             None => self.bm25.remove(id.0),
         }
         doc
@@ -274,6 +291,7 @@ impl TextIndex {
             inner: RwLock::new(Inner {
                 by_key: AHashMap::new(),
                 docs: AHashMap::new(),
+                by_bucket: AHashMap::new(),
                 parents: AHashMap::new(),
                 bm25: Bm25Index::new(Bm25Params::default()),
                 next_id: 1,
@@ -377,6 +395,7 @@ impl TextIndex {
                     let inner = Inner {
                         by_key: AHashMap::new(),
                         docs: AHashMap::new(),
+                        by_bucket: AHashMap::new(),
                         parents: AHashMap::new(),
                         bm25: Bm25Index::new(Bm25Params::default()),
                         next_id: 1,
@@ -1535,11 +1554,10 @@ impl TextIndex {
         out
     }
 
-    /// Search by raw vector. `bucket` filters results *after* ANN, which
-    /// is simpler than filtered-ANN but means you may need a larger
-    /// `ef` to hit `k` hits when one bucket dominates the corpus. For
-    /// NebulaDB scale that's an acceptable starting point; true
-    /// pre-filtered HNSW is a future enhancement.
+    /// Search by raw vector. When `bucket` is set and that bucket is a
+    /// small share of the corpus, results are scored by an exact scan of
+    /// the bucket (via [`Inner::by_bucket`]); otherwise HNSW runs first
+    /// and the bucket filter is applied to over-fetched candidates.
     pub fn search_vector(
         &self,
         vector: &[f32],
@@ -1725,7 +1743,9 @@ mod tests {
         let ids = |h: &[Hit]| h.iter().map(|x| (x.id.clone(), x.score)).collect::<Vec<_>>();
         assert_eq!(ids(&hits), ids(&plain));
         let names: Vec<_> = trace.stages.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["embed", "hnsw", "bucket_filter"]);
+        // Small buckets use an exact scan (prod-correct for CH next to
+        // a multi-million-doc leads corpus); large ones keep HNSW + filter.
+        assert_eq!(names, vec!["embed", "bucket_scan"]);
         assert_eq!(trace.hits.len(), hits.len());
         assert!(
             trace.notes.iter().any(|n| n.message.contains("pseudo-random")),
@@ -1740,7 +1760,7 @@ mod tests {
             .unwrap();
         assert_eq!(ids(&hits), ids(&plain));
         let names: Vec<_> = trace.stages.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["embed", "hnsw", "bucket_filter", "bm25", "bucket_filter", "fuse"]);
+        assert_eq!(names, vec!["embed", "bucket_scan", "bucket_scan", "fuse"]);
         assert!(trace.notes.iter().any(|n| n.message.contains("'in' is not in the index vocabulary")));
     }
 
@@ -1792,6 +1812,52 @@ mod tests {
         idx.upsert_text("b", "1", "zero trust", serde_json::json!({})).await.unwrap();
         let hits = idx.search_text("zero trust", Some("a"), 5, None).await.unwrap();
         assert!(hits.iter().all(|h| h.bucket == "a"));
+    }
+
+    /// Reproduces the prod showcase failure: a tiny Companies House
+    /// bucket next to a huge `leads` corpus. Post-filter HNSW over-fetches
+    /// only 4×k candidates from the global graph, so the small bucket
+    /// never appears — exact bucket scan must still return its docs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn small_bucket_found_amid_large_corpus() {
+        let idx = make_index();
+        for i in 0..2_000 {
+            idx.upsert_text(
+                "leads",
+                &format!("lead-{i}"),
+                &format!("lead record {i} company filler net worth unclassified"),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        }
+        idx.upsert_text(
+            "companies_house_11641870",
+            "11641870-officers",
+            "Officers of WORKSTATION SOLUTIONS LTD (11641870): WALIA, Balinder Singh (director)",
+            serde_json::json!({"kind": "officers"}),
+        )
+        .await
+        .unwrap();
+        let hits = idx
+            .search_text(
+                "Who are the directors?",
+                Some("companies_house_11641870"),
+                3,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !hits.is_empty(),
+            "expected exact bucket scan to surface the officers doc"
+        );
+        assert!(hits.iter().all(|h| h.bucket == "companies_house_11641870"));
+        assert!(hits.iter().any(|h| h.id == "11641870-officers"));
+
+        let bm = idx.search_bm25("WALIA director", Some("companies_house_11641870"), 3);
+        assert!(!bm.is_empty());
+        assert_eq!(bm[0].id, "11641870-officers");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

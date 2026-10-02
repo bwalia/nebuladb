@@ -29,9 +29,10 @@ pub(crate) struct VectorRun {
     k: usize,
     stats: HnswSearchStats,
     /// Candidates requested from HNSW (`k`, or over-fetched when a
-    /// bucket filter follows).
+    /// bucket filter follows). For an exact bucket scan this is the
+    /// bucket's live doc count.
     fetch: usize,
-    /// Live candidates HNSW returned.
+    /// Live candidates HNSW returned (or scored in an exact scan).
     raw: usize,
     /// Candidates looked at before `k` results were collected.
     examined: usize,
@@ -41,6 +42,9 @@ pub(crate) struct VectorRun {
     other_bucket: usize,
     hnsw_took: Duration,
     assemble_took: Duration,
+    /// True when results came from scoring every doc in the bucket
+    /// instead of HNSW + post-filter.
+    exact_bucket: bool,
 }
 
 pub(crate) struct Bm25Run {
@@ -53,6 +57,7 @@ pub(crate) struct Bm25Run {
     missing: usize,
     other_bucket: usize,
     took: Duration,
+    exact_bucket: bool,
 }
 
 /// Per-document fusion inputs, kept for EXPLAIN.
@@ -97,13 +102,31 @@ fn flat_stage_note(stage: &str, scores: &[f32], weight: f32) -> Option<Note> {
 
 fn bucket_fetch(bucket: Option<&str>, k: usize) -> usize {
     // Over-fetch when filtering because results are post-filtered. 4x is
-    // a rule-of-thumb; a real system would adapt based on the bucket's
-    // share of the corpus.
+    // a rule-of-thumb used only when the bucket is large enough that an
+    // exact scan would be expensive; see [`prefer_exact_bucket`].
     if bucket.is_some() {
         k.saturating_mul(4).max(32)
     } else {
         k
     }
+}
+
+/// Prefer scoring every doc in `bucket` when post-filter HNSW/BM25 would
+/// miss them. A 4-doc Companies House bucket next to a 3M-doc `leads`
+/// corpus never appears in the top-32 ANN candidates.
+fn prefer_exact_bucket(bucket_docs: usize, corpus: usize, k: usize) -> bool {
+    if bucket_docs == 0 {
+        return true;
+    }
+    // Exact scan is cheap below this size and is always correct.
+    const ALWAYS_BELOW: usize = 16_384;
+    if bucket_docs <= ALWAYS_BELOW {
+        return true;
+    }
+    let overfetch = bucket_fetch(Some("_"), k);
+    let dilution = (corpus / bucket_docs).max(1);
+    // Expected ANN candidates needed to retain ~k in-bucket hits.
+    dilution.saturating_mul(k) > overfetch
 }
 
 impl TextIndex {
@@ -114,6 +137,15 @@ impl TextIndex {
         k: usize,
         ef: Option<usize>,
     ) -> Result<VectorRun> {
+        let g = self.inner.read();
+        let corpus = g.docs.len();
+        if let Some(b) = bucket {
+            let bucket_docs = g.by_bucket.get(b).map(|s| s.len()).unwrap_or(0);
+            if prefer_exact_bucket(bucket_docs, corpus, k) {
+                return self.run_vector_exact_bucket(&g, vector, b, k, bucket_docs);
+            }
+        }
+
         let fetch = bucket_fetch(bucket, k);
 
         // Lock order discipline: `inner` before `hnsw`, everywhere.
@@ -121,7 +153,6 @@ impl TextIndex {
         // readers take `inner.read()` then `hnsw.search` under it.
         // Mixing the order would expose us to an AB-BA deadlock
         // under `parking_lot::RwLock`'s write-priority contention.
-        let g = self.inner.read();
         let started = Instant::now();
         let (raw, stats) = self.hnsw.search_with_stats(vector, fetch, ef)?;
         let hnsw_took = started.elapsed();
@@ -163,11 +194,84 @@ impl TextIndex {
             other_bucket,
             hnsw_took,
             assemble_took: started.elapsed(),
+            exact_bucket: false,
+        })
+    }
+
+    /// Score every live vector in `bucket` against `query` (exact k-NN
+    /// within the bucket). Used when the bucket is a tiny share of the
+    /// global graph so HNSW + post-filter would return nothing.
+    fn run_vector_exact_bucket(
+        &self,
+        g: &parking_lot::RwLockReadGuard<'_, crate::Inner>,
+        query: &[f32],
+        bucket: &str,
+        k: usize,
+        bucket_docs: usize,
+    ) -> Result<VectorRun> {
+        let started = Instant::now();
+        let metric = self.hnsw.metric();
+        let ids = g.by_bucket.get(bucket).cloned().unwrap_or_default();
+        let mut scored: Vec<(nebula_core::Id, f32, &crate::Document)> =
+            Vec::with_capacity(ids.len());
+        let mut missing = 0;
+        for id in &ids {
+            let Some(doc) = g.docs.get(id) else {
+                missing += 1;
+                continue;
+            };
+            let Some(vec) = self.hnsw.get_vector(*id) else {
+                missing += 1;
+                continue;
+            };
+            scored.push((*id, metric.distance(query, &vec), doc.as_ref()));
+        }
+        let hnsw_took = started.elapsed();
+        let raw = scored.len();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        if scored.len() > k {
+            scored.truncate(k);
+        }
+        let started = Instant::now();
+        let examined = scored.len();
+        let hits: Vec<Hit> = scored
+            .into_iter()
+            .map(|(_, distance, doc)| Hit {
+                bucket: doc.bucket.clone(),
+                id: doc.external_id.clone(),
+                text: doc.text.clone(),
+                score: distance,
+                metadata: doc.metadata.clone(),
+            })
+            .collect();
+        Ok(VectorRun {
+            hits,
+            k,
+            stats: HnswSearchStats {
+                nodes_total: g.docs.len(),
+                ..HnswSearchStats::default()
+            },
+            fetch: bucket_docs,
+            raw,
+            examined,
+            missing,
+            other_bucket: 0,
+            hnsw_took,
+            assemble_took: started.elapsed(),
+            exact_bucket: true,
         })
     }
 
     pub(crate) fn run_bm25(&self, query: &str, bucket: Option<&str>, k: usize) -> Bm25Run {
         let g = self.inner.read();
+        let corpus = g.docs.len();
+        if let Some(b) = bucket {
+            let bucket_docs = g.by_bucket.get(b).map(|s| s.len()).unwrap_or(0);
+            if prefer_exact_bucket(bucket_docs, corpus, k) {
+                return Self::run_bm25_exact_bucket(&g, query, b, k, bucket_docs);
+            }
+        }
+
         // Over-fetch when bucket-filtering, same rationale as the
         // vector path: BM25 ranks the whole corpus and we post-filter.
         let fetch = bucket_fetch(bucket, k);
@@ -207,6 +311,57 @@ impl TextIndex {
             missing,
             other_bucket,
             took: started.elapsed(),
+            exact_bucket: false,
+        }
+    }
+
+    fn run_bm25_exact_bucket(
+        g: &parking_lot::RwLockReadGuard<'_, crate::Inner>,
+        query: &str,
+        bucket: &str,
+        k: usize,
+        bucket_docs: usize,
+    ) -> Bm25Run {
+        let started = Instant::now();
+        let ids = g.by_bucket.get(bucket).cloned().unwrap_or_default();
+        let mut scored: Vec<(f32, &crate::Document)> = Vec::with_capacity(ids.len());
+        let mut missing = 0;
+        for id in &ids {
+            let Some(doc) = g.docs.get(id) else {
+                missing += 1;
+                continue;
+            };
+            let score = g.bm25.score_doc(query, id.0, &doc.text);
+            if score > 0.0 {
+                scored.push((score, doc.as_ref()));
+            }
+        }
+        let matched = scored.len();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        if scored.len() > k {
+            scored.truncate(k);
+        }
+        let examined = scored.len();
+        let hits: Vec<Hit> = scored
+            .into_iter()
+            .map(|(score, doc)| Hit {
+                bucket: doc.bucket.clone(),
+                id: doc.external_id.clone(),
+                text: doc.text.clone(),
+                score,
+                metadata: doc.metadata.clone(),
+            })
+            .collect();
+        Bm25Run {
+            hits,
+            fetch: bucket_docs,
+            matched,
+            raw: matched,
+            examined,
+            missing,
+            other_bucket: 0,
+            took: started.elapsed(),
+            exact_bucket: true,
         }
     }
 
@@ -433,6 +588,45 @@ impl TextIndex {
             let g = self.inner.read();
             (g.bm25.query_terms(query), g.bm25.len())
         };
+        if run.exact_bucket {
+            let b = bucket.unwrap_or("");
+            let term_list = terms
+                .iter()
+                .map(|t| format!("'{}'", t.term))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = format!(
+                "Scored all {} documents in bucket '{b}' for terms {term_list}; {} matched at \
+                 least one term, kept top {}.",
+                run.fetch,
+                run.matched,
+                run.hits.len(),
+            );
+            trace.stages.push(
+                Stage::new("bucket_scan", "Exact bucket keyword scan", detail)
+                    .rows(Some(run.fetch), Some(run.hits.len()))
+                    .took(run.took)
+                    .attr("bucket", b)
+                    .attr("matched_docs", run.matched),
+            );
+            for t in &terms {
+                if t.df == 0 {
+                    trace.notes.push(Note::info(format!(
+                        "'{}' is not in the index vocabulary and matched nothing.",
+                        t.term
+                    )));
+                } else if n_docs > 0 && (t.df as usize) * 2 >= n_docs {
+                    trace.notes.push(Note::info(format!(
+                        "'{}' appears in {}% of documents, so its IDF is {:.3} and it barely \
+                         influences ranking.",
+                        t.term,
+                        (t.df as usize) * 100 / n_docs,
+                        t.idf
+                    )));
+                }
+            }
+            return;
+        }
         let term_list = terms
             .iter()
             .map(|t| format!("'{}' (in {} docs)", t.term, t.df))
@@ -553,6 +747,25 @@ impl TextIndex {
 
 fn vector_stages(run: &VectorRun, bucket: Option<&str>, hybrid: bool, trace: &mut SearchTrace) {
     let s = &run.stats;
+    if run.exact_bucket {
+        let b = bucket.unwrap_or("");
+        let detail = format!(
+            "Scored all {raw} live vectors in bucket '{b}' exactly (bucket is a small share of the \
+             {corpus}-doc corpus, so HNSW + post-filter would miss it) and kept the top {kept}.",
+            raw = run.raw,
+            corpus = s.nodes_total,
+            kept = run.hits.len(),
+        );
+        trace.stages.push(
+            Stage::new("bucket_scan", "Exact bucket vector scan", detail)
+                .rows(Some(run.fetch), Some(run.hits.len()))
+                .took(run.hnsw_took + run.assemble_took)
+                .attr("bucket", b)
+                .attr("scored", run.raw)
+                .attr("missing", run.missing),
+        );
+        return;
+    }
     let live_nodes = s.nodes_total.saturating_sub(s.tombstones_total);
     let mut detail = format!(
         "Walked {} graph layer{} and distance-computed {} nodes, kept the {} closest (ef={})",
