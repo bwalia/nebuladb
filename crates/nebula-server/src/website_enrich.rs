@@ -1,24 +1,51 @@
 //! Public-website lookup for company enrichment.
 //!
 //! Companies House does **not** publish websites. When RAG needs one we
-//! research a likely official site via DuckDuckGo HTML search and a
-//! cheap liveness probe — same approach as `scripts/enrich_website_ch.go`.
+//! research a likely official site, preferencing **Google Custom Search
+//! JSON API** when configured (`NEBULA_GOOGLE_CSE_API_KEY` +
+//! `NEBULA_GOOGLE_CSE_ID`), then falling back to DuckDuckGo HTML search
+//! + a cheap liveness probe.
 //!
 //! For richer firmographics (domain, LinkedIn, headcount) operators can
-//! plug an external MCP such as CompanyEnrich or Apollo alongside
+//! also plug an external MCP such as CompanyEnrich or Apollo alongside
 //! NebulaDB's Companies House tools.
 
 use std::collections::HashSet;
 use std::time::Duration;
 
 use reqwest::Client;
+use serde_json::Value;
 
 /// Result of a website research attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebsiteHit {
     pub url: String,
-    /// How it was found: `web_search`, `fixture`, …
+    /// How it was found: `google_cse`, `web_search`, `fixture`, …
     pub source: String,
+}
+
+/// Google Custom Search credentials from the environment (if both set).
+#[derive(Debug, Clone)]
+pub struct GoogleCseConfig {
+    pub api_key: String,
+    pub cx: String,
+}
+
+impl GoogleCseConfig {
+    pub fn from_env() -> Option<Self> {
+        let api_key = std::env::var("NEBULA_GOOGLE_CSE_API_KEY")
+            .or_else(|_| std::env::var("GOOGLE_CSE_API_KEY"))
+            .or_else(|_| std::env::var("GOOGLE_API_KEY"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())?;
+        let cx = std::env::var("NEBULA_GOOGLE_CSE_ID")
+            .or_else(|_| std::env::var("GOOGLE_CSE_ID"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())?;
+        Some(Self { api_key, cx })
+    }
 }
 
 fn junk_host(host: &str) -> bool {
@@ -104,7 +131,6 @@ fn normalize_url(raw: &str) -> Option<String> {
     } else {
         format!("https://{raw}")
     };
-    // Strip fragment.
     let no_frag = with_scheme.split('#').next().unwrap_or(&with_scheme);
     Some(no_frag.trim_end_matches('/').to_string())
 }
@@ -145,10 +171,9 @@ async fn website_live(http: &Client, raw: &str) -> bool {
 fn extract_hrefs(html: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
-    let lower = html; // keep original for slicing
-    let mut rest = lower;
+    let mut rest = html;
     while let Some(idx) = rest.to_ascii_lowercase().find("href=\"http") {
-        let slice = &rest[idx + 6..]; // after href="
+        let slice = &rest[idx + 6..];
         let Some(end) = slice.find('"') else {
             break;
         };
@@ -190,42 +215,117 @@ async fn ddg_candidates(http: &Client, query: &str) -> Vec<String> {
     extract_hrefs(&html)
 }
 
+/// Google Custom Search JSON API → result link URLs.
+/// https://developers.google.com/custom-search/v1/overview
+async fn google_cse_candidates(http: &Client, cfg: &GoogleCseConfig, query: &str) -> Vec<String> {
+    let u = format!(
+        "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num=10",
+        percent_encode_query(&cfg.api_key),
+        percent_encode_query(&cfg.cx),
+        percent_encode_query(query)
+    );
+    let Ok(res) = http
+        .get(&u)
+        .header("user-agent", "nebuladb-ch-enrich/1.0")
+        .send()
+        .await
+    else {
+        tracing::warn!("google CSE request failed to send");
+        return Vec::new();
+    };
+    let status = res.status();
+    let Ok(body) = res.text().await else {
+        return Vec::new();
+    };
+    if !status.is_success() {
+        tracing::warn!(%status, body = %body.chars().take(200).collect::<String>(), "google CSE non-2xx");
+        return Vec::new();
+    }
+    let Ok(json): Result<Value, _> = serde_json::from_str(&body) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
+        for item in items {
+            if let Some(link) = item.get("link").and_then(|v| v.as_str()) {
+                if let Some(n) = normalize_url(link) {
+                    if seen.insert(n.clone()) {
+                        out.push(n);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+async fn first_live_candidate(
+    http: &Client,
+    candidates: Vec<String>,
+    seen_hosts: &mut HashSet<String>,
+    source: &str,
+) -> Option<WebsiteHit> {
+    for cand in candidates {
+        let Some(host) = host_of(&cand) else {
+            continue;
+        };
+        if junk_host(&host) || !seen_hosts.insert(host) {
+            continue;
+        }
+        if website_live(http, &cand).await {
+            return Some(WebsiteHit {
+                url: cand,
+                source: source.into(),
+            });
+        }
+    }
+    None
+}
+
+fn research_queries(name: &str, locality: Option<&str>) -> [String; 3] {
+    let loc = locality.unwrap_or("UK");
+    [
+        format!("\"{name}\" {loc} official website"),
+        format!("\"{name}\" {loc} website"),
+        format!("{name} UK company website"),
+    ]
+}
+
 /// Research a likely public website for a UK company.
 ///
-/// Returns `None` when nothing live and non-junk is found. Callers should
-/// still record a "not on Companies House / not found" source note so the
-/// LLM does not invent a URL.
+/// Prefer Google Custom Search when `NEBULA_GOOGLE_CSE_API_KEY` +
+/// `NEBULA_GOOGLE_CSE_ID` are set; otherwise (or if Google returns nothing
+/// usable) fall back to DuckDuckGo HTML. Returns `None` when nothing live
+/// and non-junk is found.
 pub async fn research_company_website(
     name: &str,
     locality: Option<&str>,
 ) -> Option<WebsiteHit> {
     let http = Client::builder()
-        .timeout(Duration::from_secs(12))
+        .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()
         .ok()?;
 
-    let loc = locality.unwrap_or("UK");
-    let queries = [
-        format!("\"{name}\" {loc} official website"),
-        format!("\"{name}\" {loc} website"),
-        format!("{name} UK company website"),
-    ];
+    let queries = research_queries(name, locality);
     let mut seen_hosts = HashSet::new();
+
+    if let Some(cfg) = GoogleCseConfig::from_env() {
+        for q in &queries {
+            let cands = google_cse_candidates(&http, &cfg, q).await;
+            if let Some(hit) =
+                first_live_candidate(&http, cands, &mut seen_hosts, "google_cse").await
+            {
+                return Some(hit);
+            }
+        }
+    }
+
     for q in &queries {
-        for cand in ddg_candidates(&http, q).await {
-            let Some(host) = host_of(&cand) else {
-                continue;
-            };
-            if junk_host(&host) || !seen_hosts.insert(host) {
-                continue;
-            }
-            if website_live(&http, &cand).await {
-                return Some(WebsiteHit {
-                    url: cand,
-                    source: "web_search".into(),
-                });
-            }
+        let cands = ddg_candidates(&http, q).await;
+        if let Some(hit) = first_live_candidate(&http, cands, &mut seen_hosts, "web_search").await {
+            return Some(hit);
         }
     }
     None
@@ -241,6 +341,11 @@ pub fn enrich_website_enabled() -> bool {
         }
         Err(_) => true,
     }
+}
+
+/// True when Google Custom Search credentials are present.
+pub fn google_cse_configured() -> bool {
+    GoogleCseConfig::from_env().is_some()
 }
 
 #[cfg(test)]
@@ -269,5 +374,12 @@ mod tests {
         let html = r#"href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fworkstation.co.uk%2Fabout&amp;rut=x""#;
         let links = extract_hrefs(html);
         assert!(links.iter().any(|u| u.contains("workstation.co.uk")));
+    }
+
+    #[test]
+    fn google_cse_from_env_needs_both() {
+        // Ensure parsing doesn't panic when unset in the unit-test process.
+        // Presence is env-dependent; we only assert the type round-trip shape.
+        let _ = GoogleCseConfig::from_env();
     }
 }

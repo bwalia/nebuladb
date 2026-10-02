@@ -348,7 +348,9 @@ pub async fn ch_status(State(s): State<AppState>) -> impl IntoResponse {
     Json(json!({
         "configured": s.companies_house.configured(),
         "fixture_available": true,
-        "hint": "Set NEBULA_COMPANIES_HOUSE_API_KEY (or COMPANIES_HOUSE_API_KEY) on nebula-server. Get a key at https://developer.company-information.service.gov.uk/"
+        "enrich_website": website_enrich::enrich_website_enabled(),
+        "google_cse": website_enrich::google_cse_configured(),
+        "hint": "Set NEBULA_COMPANIES_HOUSE_API_KEY (or COMPANIES_HOUSE_API_KEY) on nebula-server. Get a key at https://developer.company-information.service.gov.uk/. For website enrichment prefer NEBULA_GOOGLE_CSE_API_KEY + NEBULA_GOOGLE_CSE_ID (Custom Search JSON API)."
     }))
 }
 
