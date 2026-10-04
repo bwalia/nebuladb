@@ -115,6 +115,28 @@ pub fn build_router(state: AppState) -> Router {
             "/companies-house/company/:number/ingest",
             post(crate::companies_house::ch_ingest_for_rag),
         )
+        // Workstation AI Shop catalogue / stock SOT / chat history
+        .route("/shop/status", get(crate::shop_catalog::shop_status))
+        .route(
+            "/shop/catalog/ingest",
+            post(crate::shop_catalog::shop_ingest_catalog),
+        )
+        .route(
+            "/shop/products/search",
+            get(crate::shop_catalog::shop_search_products),
+        )
+        .route(
+            "/shop/stock",
+            post(crate::shop_catalog::shop_upsert_stock),
+        )
+        .route(
+            "/shop/feasibility",
+            post(crate::shop_catalog::shop_feasibility),
+        )
+        .route(
+            "/shop/chats/ingest",
+            post(crate::shop_catalog::shop_ingest_chat),
+        )
         .route("/admin/buckets", get(admin_buckets))
         .route("/admin/audit", get(admin_audit))
         .route("/admin/stats", get(admin_stats))

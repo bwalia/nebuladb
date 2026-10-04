@@ -136,6 +136,67 @@ export const MCP_TOOLS: McpTool[] = [
     },
   },
   {
+    name: "shop_catalog_ingest",
+    summary: "Load Workstation shop catalogue + stock SOT into RAG",
+    description:
+      "Upserts product/options/rules into shop_catalog and qty/lead-time docs into shop_stock_levels from the embedded seed (or a posted catalogue). Use for sales-agent grounding and feasibility.",
+    permission: "write",
+    category: "data",
+    backing: "POST /api/v1/shop/catalog/ingest",
+    params: [],
+    run: () => api.shopIngestCatalog(),
+  },
+  {
+    name: "shop_search_products",
+    summary: "Hybrid search the shop catalogue bucket",
+    description: "Search products, options and rules in shop_catalog.",
+    permission: "read",
+    category: "retrieval",
+    backing: "GET /api/v1/shop/products/search",
+    params: [
+      { name: "q", type: "string", required: true, description: "e.g. Blackwell Max-Q" },
+    ],
+    run: (a) => api.shopSearchProducts(str(a.q)),
+  },
+  {
+    name: "shop_feasibility",
+    summary: "Check stock feasibility for a product configuration",
+    description:
+      "Reads shop_stock_levels SOT for the product (and selected options). Pricing/rules stay on OpsAPI when live.",
+    permission: "read",
+    category: "retrieval",
+    backing: "POST /api/v1/shop/feasibility",
+    params: [
+      { name: "product_slug", type: "string", required: true, description: "e.g. rtx-pro-6000-blackwell-workstation" },
+      { name: "qty", type: "number", required: false, description: "Systems requested (default 1)" },
+    ],
+    run: (a) =>
+      api.shopFeasibility({
+        product_slug: str(a.product_slug),
+        qty: num(a.qty, 1),
+      }),
+  },
+  {
+    name: "shop_chat_ingest",
+    summary: "Archive a shop sales-agent chat turn",
+    description:
+      "Writes a user/assistant/tool turn into shop_chats for later support-ticket analysis.",
+    permission: "write",
+    category: "data",
+    backing: "POST /api/v1/shop/chats/ingest",
+    params: [
+      { name: "session_id", type: "string", required: true, description: "Chat session id" },
+      { name: "role", type: "string", required: true, description: "user|assistant|tool|system" },
+      { name: "content", type: "string", required: true, description: "Turn text to archive" },
+    ],
+    run: (a) =>
+      api.shopIngestChat({
+        session_id: str(a.session_id),
+        role: str(a.role),
+        content: str(a.content),
+      }),
+  },
+  {
     name: "execute_sql",
     summary: "Run a read-only SQL statement",
     description:

@@ -449,6 +449,105 @@ export const api = {
       body: JSON.stringify({ upsert: true, bucket, enrich_website: true }),
     }),
 
+  shopStatus: () =>
+    request<{
+      configured: boolean;
+      seed_embedded?: boolean;
+      seed_categories?: number;
+      seed_products?: number;
+      catalog_bucket?: string;
+      stock_bucket?: string;
+      chats_bucket?: string;
+      shop_public_url?: string;
+      note?: string;
+    }>("/api/v1/shop/status"),
+
+  shopIngestCatalog: (opts?: {
+    catalog_bucket?: string;
+    stock_bucket?: string;
+    catalog?: unknown;
+  }) =>
+    request<{
+      catalog_bucket: string;
+      stock_bucket: string;
+      catalog_docs: number;
+      stock_docs: number;
+      upserted?: string[];
+      sources?: Array<{
+        id?: string;
+        kind?: string;
+        slug?: string;
+        sku?: string;
+        qty_available?: number;
+      }>;
+      shop_public_url?: string;
+    }>("/api/v1/shop/catalog/ingest", {
+      method: "POST",
+      body: JSON.stringify({
+        upsert: true,
+        catalog_bucket: opts?.catalog_bucket ?? "shop_catalog",
+        stock_bucket: opts?.stock_bucket ?? "shop_stock_levels",
+        catalog: opts?.catalog,
+      }),
+    }),
+
+  shopSearchProducts: (q: string, bucket = "shop_catalog", top_k = 8) =>
+    request<{
+      bucket: string;
+      q: string;
+      hits: Array<{
+        id: string;
+        score: number;
+        text: string;
+        metadata?: Record<string, unknown>;
+      }>;
+    }>(
+      `/api/v1/shop/products/search?q=${encodeURIComponent(q)}&bucket=${encodeURIComponent(bucket)}&top_k=${top_k}`
+    ),
+
+  shopFeasibility: (body: {
+    product_slug: string;
+    qty?: number;
+    selections?: Record<string, Array<{ option: string; qty?: number }>>;
+    stock_bucket?: string;
+  }) =>
+    request<Record<string, unknown>>("/api/v1/shop/feasibility", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  shopUpsertStock: (body: {
+    sku: string;
+    qty_available: number;
+    slug?: string;
+    name?: string;
+    lead_time_days?: number;
+    allow_backorder?: boolean;
+    bucket?: string;
+    group?: string;
+    option?: string;
+  }) =>
+    request<Record<string, unknown>>("/api/v1/shop/stock", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  shopIngestChat: (body: {
+    session_id: string;
+    role: string;
+    content: string;
+    bucket?: string;
+    customer_ref?: string;
+    meta?: unknown;
+  }) =>
+    request<{ bucket: string; id: string; session_id: string }>(
+      "/api/v1/shop/chats/ingest",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    ),
+
   sql: (sql: string, explain = false) =>
     request<SqlResponse>("/api/v1/query", {
       method: "POST",

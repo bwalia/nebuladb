@@ -16,6 +16,7 @@ import { ClusterTab } from "./tabs/ClusterTab";
 import { RebalanceTab } from "./tabs/RebalanceTab";
 import { EnterpriseSearchTab } from "./tabs/EnterpriseSearchTab";
 import { CompaniesHouseTab } from "./tabs/CompaniesHouseTab";
+import { ShopCatalogTab } from "./tabs/ShopCatalogTab";
 
 type TabId =
   | "executive"
@@ -25,6 +26,7 @@ type TabId =
   | "search"
   | "enterprise"
   | "companies"
+  | "shop"
   | "rag"
   | "hybrid"
   | "agents"
@@ -50,6 +52,7 @@ const NAV: NavItem[] = [
   { id: "search", label: "Semantic search", hint: "Vector retrieval", icon: "✷", group: "ai" },
   { id: "enterprise", label: "Enterprise search", hint: "Azure-compatible hybrid search", icon: "⧉", group: "ai" },
   { id: "companies", label: "Companies House", hint: "UK CH search + RAG chat", icon: "⌂", group: "ai" },
+  { id: "shop", label: "Shop catalogue", hint: "Stock SOT + product RAG", icon: "▣", group: "ai" },
   { id: "rag", label: "RAG chat", hint: "Streaming answers", icon: "❯", group: "ai" },
   { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query", icon: "⟡", group: "ai" },
   { id: "agents", label: "AI agents", hint: "Tool-calling agents over MCP", icon: "⬡", group: "ai" },
@@ -157,6 +160,7 @@ export function App() {
               {tab === "search" && <SearchTab />}
               {tab === "enterprise" && <EnterpriseSearchTab />}
               {tab === "companies" && <CompaniesHouseTab />}
+              {tab === "shop" && <ShopCatalogTab />}
               {tab === "rag" && <RagTab />}
               {tab === "hybrid" && <HybridTab />}
               {tab === "agents" && <AgentsTab />}
