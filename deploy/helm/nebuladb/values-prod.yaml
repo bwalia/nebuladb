@@ -36,10 +36,16 @@ server:
   # ~5Gi at peak, which put the 24Gi pod within 1Gi of an OOMKill. The
   # server now uses jemalloc; 32Gi keeps headroom until its footprint is
   # measured in prod, after which this can come back down.
+  #
+  # Oct 13: 32Gi -> 48Gi. After bulk-loading ~1M Companies House register
+  # docs into `companies_house` the leader idled at 27-31Gi and peaked at
+  # 34.1Gi of 34.4Gi with no writes in flight. Raised in place on the live
+  # pod (kubectl patch --subresource resize, no restart); this keeps the
+  # next deploy from reverting it. debworker00 has ~90Gi free.
   resources:
     limits:
       cpu: "4"
-      memory: "32Gi"
+      memory: "48Gi"
     requests:
       cpu: "500m"
       memory: "8Gi"
