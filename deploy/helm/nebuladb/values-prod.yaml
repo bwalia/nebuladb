@@ -47,10 +47,14 @@ server:
   # live) the periodic snapshot (~every 23 min, ~8 min long) pushed an
   # idle leader to 43-48Gi of 51.5Gi: the snapshot peak now scales with
   # the corpus, well past the old ~5Gi estimate.
+  #
+  # Oct 15: 64Gi -> 96Gi in place to finish the full 5.17M active register
+  # (~53Gi settled + ~30Gi snapshot peak projected). debworker00 has
+  # ~125Gi allocatable.
   resources:
     limits:
       cpu: "4"
-      memory: "64Gi"
+      memory: "96Gi"
     requests:
       cpu: "500m"
       memory: "8Gi"
