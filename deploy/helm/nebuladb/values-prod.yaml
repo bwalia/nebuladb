@@ -42,10 +42,15 @@ server:
   # 34.1Gi of 34.4Gi with no writes in flight. Raised in place on the live
   # pod (kubectl patch --subresource resize, no restart); this keeps the
   # next deploy from reverting it. debworker00 has ~90Gi free.
+  #
+  # Oct 15: 48Gi -> 64Gi, again in place. At ~2.75M register docs (5.9M
+  # live) the periodic snapshot (~every 23 min, ~8 min long) pushed an
+  # idle leader to 43-48Gi of 51.5Gi: the snapshot peak now scales with
+  # the corpus, well past the old ~5Gi estimate.
   resources:
     limits:
       cpu: "4"
-      memory: "48Gi"
+      memory: "64Gi"
     requests:
       cpu: "500m"
       memory: "8Gi"
