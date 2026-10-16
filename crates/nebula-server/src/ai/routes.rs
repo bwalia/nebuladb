@@ -12,13 +12,13 @@ use futures::stream::{self, StreamExt};
 use nebula_llm::{
     build_rag_prompt, GenerateOptions, LlmChunk, Prompt, ResponseFormat, ToolSpec,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::ai::registry::{AiGateway, TaskKind};
 use crate::ai::sql_guard::validate_readonly_sql;
 use crate::ai::tools::{execute_tool, nebula_tool_specs};
-use crate::ai::traces::{AiTrace, TraceStore};
+use crate::ai::traces::AiTrace;
 use crate::error::ApiError;
 use crate::state::AppState;
 

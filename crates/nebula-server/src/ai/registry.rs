@@ -43,6 +43,9 @@ pub struct AiGateway {
     pub connect_timeout_secs: u64,
 }
 
+/// Resolved client, its model info, and the configured fallback provider name.
+pub type ResolvedClient = (Arc<dyn LlmClient>, ModelInfo, Option<String>);
+
 impl AiGateway {
     /// Boot from env + the process-default LLM (existing NEBULA_LLM_* path).
     pub fn from_env(default_llm: Arc<dyn LlmClient>) -> Self {
@@ -260,7 +263,7 @@ impl AiGateway {
         provider: Option<&str>,
         model: Option<&str>,
         task: TaskKind,
-    ) -> Result<(Arc<dyn LlmClient>, ModelInfo, Option<String>), String> {
+    ) -> Result<ResolvedClient, String> {
         let primary = self.resolve(provider, model, task)?;
         let fallback_name = primary.fallback.clone();
         Ok((

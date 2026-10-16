@@ -10,7 +10,7 @@ use futures::stream::BoxStream;
 
 use crate::openai_chat::{OpenAiChatConfig, OpenAiChatLlm};
 use crate::{
-    GenerateOptions, LlmChunk, LlmClient, LlmError, ModelCapabilities, ModelInfo, Prompt, Result,
+    GenerateOptions, LlmChunk, LlmClient, ModelCapabilities, ModelInfo, Prompt, Result,
 };
 
 #[derive(Debug, Clone)]
@@ -61,6 +61,8 @@ impl GeminiLlm {
 
 #[async_trait]
 impl LlmClient for GeminiLlm {
+    // Trait contract is the provider-qualified label, not the raw model id.
+    #[allow(clippy::misnamed_getters)]
     fn model(&self) -> &str {
         &self.model_label
     }
