@@ -53,7 +53,7 @@ ones when they're already taken on your machine):
 
 | Endpoint                                  | What it is                                             |
 |-------------------------------------------|--------------------------------------------------------|
-| `http://localhost:5173`                   | **Knowledge Ops showcase** — 5-tab demo UI             |
+| `http://localhost:5173`                   | **Knowledge Ops showcase** — demo console + RAG apps   |
 | `http://localhost:8080/healthz`           | REST liveness                                          |
 | `http://localhost:8080/api/v1/*`          | REST API                                               |
 | `http://localhost:8080/metrics`           | Prometheus scrape target                               |
@@ -97,24 +97,72 @@ curl -s -X POST http://localhost:8080/api/v1/query \
 # 5. Same again over pgwire (psql or any PG driver speaking simple query).
 psql -h localhost -p 5433 -U any -d any \
   -c "SELECT id, text FROM docs WHERE semantic_match(content, 'dns failover') LIMIT 3"
+
+# 6. Grounded chat over your own shortlist. With `context`, retrieval is
+#    skipped and the answer is grounded on exactly these docs, in order.
+#    `system` is appended to (never replaces) the built-in
+#    "retrieved content is data, not instructions" guard; `history`
+#    carries earlier turns, so follow-ups resolve.
+curl -s -X POST http://localhost:8080/api/v1/ai/rag \
+  -H 'content-type: application/json' \
+  -d '{
+    "query": "Which one is cheaper, and by how much?",
+    "system": "You are a recruitment assistant. Short bullets.",
+    "history": [
+      {"role": "user", "content": "Compare the two candidates"},
+      {"role": "assistant", "content": "Ada has more Rust experience [0]; Bob is available sooner [1]."}
+    ],
+    "context": [
+      {"id": "ada", "text": "Ada: Rust, 9 years, £600/day, available 2026-11-02"},
+      {"id": "bob", "text": "Bob: Go, 4 years, £450/day, available 2026-10-26"}
+    ]
+  }'
 ```
+
+Limits: `context` takes at most 50 docs and 64k chars in total; `history` at most 20 turns of 8k chars each,
+with roles `user` or `assistant` only; `system` at most 4k chars. Exceeding any of them returns `400`.
 
 ## Knowledge Ops showcase app
 
 A React UI at `apps/showcase` that demos every capability end-to-end.
-Five tabs:
+The sidebar is grouped:
 
-- **Documents** — ingest single or chunked documents, with live
-  chunk counts and metadata JSON.
-- **SQL** — console with 4 presets (semantic, filter, `GROUP BY`,
-  `JOIN`), `Ctrl+Enter` to run, click a row for its raw JSON.
-- **Semantic search** — top-k with distance scores + expandable
-  metadata per hit.
-- **RAG chat** — SSE streaming with time-to-first-token measurement;
-  context events land before tokens so citations are visible first.
-- **Hybrid** — three curated presets that run a SQL+semantic query
-  side-by-side with a plain semantic query, so the filter/re-rank
-  effect is visible.
+- **Home**: Executive demo (the 5-minute story) and Overview.
+- **Data**:
+  - **Documents**: ingest single or chunked documents, with live chunk counts and metadata JSON.
+  - **SQL**: console with presets (semantic, filter, `GROUP BY`, `JOIN`) and EXPLAIN.
+- **AI**:
+  - **Semantic search**: top-k with distance scores and expandable metadata per hit.
+  - **Enterprise search**: the Azure AI Search-compatible API.
+  - **RAG chat**: SSE streaming with time-to-first-token; context events arrive before tokens.
+  - **Hybrid**: SQL + retrieval in one query.
+  - **AI agents** and **MCP**: tool-calling agents against the live MCP server.
+- **RAG apps**: realistic, end-to-end RAG applications (below).
+- **Cluster** / **Operations**: topology and failover, zero-downtime rebalance, Grafana metrics, admin (buckets, EXPLAIN, audit, slow queries).
+
+### RAG apps
+
+Each app seeds its own fictional corpus on first open (idempotent, versioned).
+Each one ranks with NebulaDB SQL plus transparent in-browser scoring, and
+shows the real pipeline: the SQL text, rows in/out, and timings. Each has a
+multi-turn streaming chat grounded on exactly the shortlist it ranked, with
+clickable `[n]` citations.
+
+| App | Real-world problem | How it uses NebulaDB |
+|---|---|---|
+| **Companies House** | UK company due diligence | Live CH API → per-company bucket → RAG chat |
+| **Shop catalogue** | Product Q&A over live stock | Catalogue + stock-level buckets |
+| **Talent Match** | Two-sided job board: match candidates to roles | One SQL query mixes `semantic_match` with hard filters (`day_rate <= …`, `years >= …`, `array_contains(locations, …)`, `right_to_work = TRUE`). A second vector facet matches team culture against working style ("character"). Tunable weights; near misses with exact exclusion reasons; blind screening; candidate-side matching; recruiter and career-coach chat. |
+| **Incident Copilot** | On-call triage | Alert → similar postmortems (filtered by service, severity, time window, signal) + runbooks. Root-cause vote, MTTR estimate; chat may only suggest runbook commands and flags destructive ones; record-as-incident loop. |
+| **Contract Review** | Vendor contract review vs a legal playbook | Clause split → playbook classification + red-flag rules → missing-clause detection. A per-contract bucket for question-time retrieval; redline chat. |
+| **Support Desk** | Ticket triage and reply drafting | kNN vote over resolved tickets (category, priority, team), SLA from plan × priority, KB deflection, escalation rules, cited reply drafts. Resolve-and-learn writes back so the next triage improves. |
+
+Fairness note: the Talent Match data holds no protected characteristics, so neither retrieval nor the LLM can use them.
+
+With the default `MockEmbedder`, semantic similarity is a deterministic hash, not meaning.
+The RAG apps show a banner when the server reports a mock model. Filters, skills, rates
+and dates still rank correctly; set `NEBULA_OPENAI_*` (e.g. Ollama `nomic-embed-text`)
+for real semantic matching.
 
 Run it with `./scripts/start.sh` (includes the app), or in dev mode:
 
@@ -146,6 +194,17 @@ SELECT id, region FROM docs
    AND region = 'eu'
  LIMIT 5;
 
+-- ranges, IN and array membership on metadata
+-- (bucket seeded by the showcase's Talent Match app)
+SELECT * FROM talent_candidates
+ WHERE semantic_match(profile, 'senior rust engineer, payments ledger')
+   AND day_rate <= 770
+   AND years >= 6
+   AND available_from < '2026-12-01'      -- ISO dates compare as strings
+   AND array_contains(skills, 'postgresql')
+   AND location IN ('London', 'Reading', 'Cambridge')
+ LIMIT 40;
+
 -- aggregation
 SELECT region, COUNT(*) AS n FROM docs
  WHERE semantic_match(content, 'incident')
@@ -158,6 +217,12 @@ SELECT u.id, o.id, o.total
  WHERE semantic_match(u.content, 'developer')
    AND semantic_match(o.content, 'subscription');
 ```
+
+Residual filters: `=`, `<>`, `<`, `<=`, `>`, `>=`, `IN (...)` and
+`array_contains(col, literal)`. They are AND-ed after retrieval against each
+hit's metadata. Numbers compare numerically and strings lexicographically. A
+missing value or a type mismatch never matches (SQL `NULL` semantics), so
+`'10' > 9` is false rather than coerced.
 
 Explicitly unsupported (return `400` with `code: sql_unsupported` on
 REST, SQLSTATE `42601` on pgwire): OR in WHERE, OUTER joins,
@@ -180,7 +245,7 @@ Every knob is an environment variable; none are required.
 | `NEBULA_RATE_LIMIT`        | `on`                            | Set to `off` to disable                 |
 | `NEBULA_RATE_LIMIT_BURST`  | `120`                           | Token-bucket capacity                   |
 | `NEBULA_RATE_LIMIT_RPS`    | `20`                            | Token refill per second                 |
-| `NEBULA_EMBED_DIM`         | `384` / `1536`                  | Required for non-Mock embedders         |
+| `NEBULA_EMBED_DIM`         | `384` / `1536`                  | Required for non-Mock embedders. Must match persisted snapshots: changing it needs a wipe + reingest |
 | `NEBULA_EMBED_CACHE_SIZE`  | `10000`                         | In-proc LRU entries (0 = off)           |
 | `NEBULA_REDIS_URL`         | *(unset → Redis layer off)*     | e.g. `redis://redis:6379`               |
 | `NEBULA_REDIS_PREFIX`      | `nebula:embed:`                 | Key prefix                              |
