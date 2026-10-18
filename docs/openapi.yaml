@@ -433,6 +433,35 @@ components:
         top_k:  { type: integer, default: 5 }
         bucket: { type: string }
         stream: { type: boolean, default: false }
+        explain: { type: boolean, default: false }
+        system:
+          type: string
+          maxLength: 4000
+          description: Domain instructions appended to the grounded system guard (never replaces it).
+        history:
+          type: array
+          maxItems: 20
+          description: Earlier turns, oldest first. Each content is capped at 8000 chars.
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role: { type: string, enum: [user, assistant] }
+              content: { type: string }
+        context:
+          type: array
+          maxItems: 50
+          description: >
+            Caller-supplied grounding documents (64k chars total). When present,
+            retrieval is skipped and the answer is grounded on exactly these, in order.
+          items:
+            type: object
+            required: [id, text]
+            properties:
+              id: { type: string }
+              text: { type: string }
+              bucket: { type: string }
+              metadata: { type: object, additionalProperties: true }
 
     Hit:
       type: object
