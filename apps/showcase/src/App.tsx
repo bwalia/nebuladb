@@ -21,9 +21,11 @@ import { TalentMatchTab } from "./tabs/TalentMatchTab";
 import { IncidentCopilotTab } from "./tabs/IncidentCopilotTab";
 import { ContractReviewTab } from "./tabs/ContractReviewTab";
 import { SupportDeskTab } from "./tabs/SupportDeskTab";
+import { BlogTab } from "./tabs/BlogTab";
 
 type TabId =
   | "executive"
+  | "blog"
   | "overview"
   | "documents"
   | "sql"
@@ -54,6 +56,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { id: "executive", label: "Executive demo", hint: "The 5-minute story", icon: "★", group: "home" },
+  { id: "blog", label: "Engineering blog", hint: "Notes from running NebulaDB in production", icon: "✎", group: "home" },
   { id: "overview", label: "Overview", hint: "Cluster summary", icon: "◎", group: "home" },
   { id: "documents", label: "Documents", hint: "Ingest + chunk + embed", icon: "❏", group: "data" },
   { id: "sql", label: "SQL", hint: "Query workbench", icon: "⌘", group: "data" },
@@ -87,7 +90,10 @@ const GROUP_LABELS: Record<NavItem["group"], string> = {
 const SIDEBAR_KEY = "nebula-sidebar";
 
 export function App() {
-  const [tab, setTab] = useState<TabId>("executive");
+  // `#/blog/...` deep links (shared posts, landing-page cards) open the blog.
+  const [tab, setTab] = useState<TabId>(() =>
+    window.location.hash.startsWith("#/blog") ? "blog" : "executive"
+  );
   const [theme, setThemeState] = useState(getTheme());
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
@@ -151,7 +157,12 @@ export function App() {
           collapsed={collapsed}
           grouped={grouped}
           active={tab}
-          onSelect={(id) => setTab(id)}
+          onSelect={(id) => {
+            if (id !== "blog" && window.location.hash.startsWith("#/blog")) {
+              history.replaceState(null, "", window.location.pathname + window.location.search);
+            }
+            setTab(id);
+          }}
         />
 
         <main className="flex-1 overflow-auto px-6 py-8">
@@ -175,7 +186,16 @@ export function App() {
               </div>
             )}
             <div key={`${tab}-body`} className="animate-rise">
-              {tab === "executive" && <ExecutiveTab onNavigate={(t) => setTab(t as TabId)} />}
+              {tab === "executive" && (
+                <ExecutiveTab
+                  onNavigate={(t) => {
+                    // "blog:<slug>" opens a specific post.
+                    if (t.startsWith("blog:")) window.location.hash = `#/blog/${t.slice(5)}`;
+                    setTab((t.startsWith("blog:") ? "blog" : t) as TabId);
+                  }}
+                />
+              )}
+              {tab === "blog" && <BlogTab />}
               {tab === "overview" && <OverviewTab onNavigate={(t) => setTab(t as TabId)} />}
               {tab === "documents" && <DocumentsTab />}
               {tab === "sql" && <SqlTab />}
