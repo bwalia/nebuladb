@@ -68,7 +68,7 @@ Measured with a 5s `/healthz` probe during real prod rollouts (~8.3M docs):
 | Date | Commit | 503 window | Partial-data window |
 |---|---|---|---|
 | 2026-10-18 | `657b31c` (RAG apps) | 13:34:42 → 13:36:34 (~2 min) | 13:36:34 → 13:47:36 (~11 min, 3,150,137 docs) |
-| 2026-10-18 | `4b14085` (README) | 14:50:46 → 14:53:04 (~2.3 min) | 14:53:04 → still partial at 15:03 (3,155,683 docs); end time to follow |
+| 2026-10-18 | `4b14085` (README) | 14:50:46 → 14:53:04 (~2.3 min) | 14:53:04 → 15:03:48 (~10.7 min, 3,155,683 docs) |
 
 The partial-data phase is the known follower-replication defect (first seen
 2026-09-23): reads route to a follower that is up but has not caught up, and
