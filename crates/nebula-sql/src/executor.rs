@@ -25,7 +25,7 @@ use std::time::Instant;
 use nebula_index::explain as ix;
 
 use crate::explain::Recorder;
-use crate::plan::{Filter, OrderBy, OrderDir, OrderKey, Plan, Projection, SemanticClause};
+use crate::plan::{CmpOp, Filter, OrderBy, OrderDir, OrderKey, Plan, Projection, SemanticClause};
 use crate::plan_tree::{AggregateFn, AggregatePlan, AnswerPlan, JoinPlan, QueryPlan};
 use crate::{Result, SqlError};
 
@@ -706,6 +706,34 @@ pub(crate) fn eval_filter(f: &Filter, meta: &serde_json::Value) -> bool {
             let v = path_lookup(meta, path);
             values.iter().any(|cand| cand == v)
         }
+        Filter::Cmp { path, cmp, value } => {
+            let Some(ord) = compare_json(path_lookup(meta, path), value) else {
+                return false;
+            };
+            match cmp {
+                CmpOp::Lt => ord.is_lt(),
+                CmpOp::Lte => ord.is_le(),
+                CmpOp::Gt => ord.is_gt(),
+                CmpOp::Gte => ord.is_ge(),
+                CmpOp::Ne => ord.is_ne(),
+            }
+        }
+        Filter::Contains { path, value } => path_lookup(meta, path)
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item == value)),
+    }
+}
+
+/// Order two JSON scalars of the same kind. `None` for null/missing or
+/// a type mismatch, which the caller treats as "doesn't match" — the
+/// SQL NULL rule, and it stops `'10' > 9` from silently comparing.
+fn compare_json(a: &serde_json::Value, b: &serde_json::Value) -> Option<std::cmp::Ordering> {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x.as_f64()?.partial_cmp(&y.as_f64()?),
+        (Value::String(x), Value::String(y)) => Some(x.cmp(y)),
+        (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
+        _ => None,
     }
 }
 

@@ -23,7 +23,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use nebula_index::explain::{self as ix, Explain, ExplainKind, Stage};
-use nebula_llm::{build_rag_prompt, LlmChunk};
+use nebula_llm::{build_grounded_prompt, build_rag_prompt, HistoryTurn, LlmChunk};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -1106,6 +1106,86 @@ struct RagRequest {
     /// Also return an EXPLAIN ANALYZE of how the result was produced.
     #[serde(default)]
     explain: bool,
+    /// Domain instructions appended to (never replacing) the grounded
+    /// system guard — e.g. "You are a recruiter shortlisting...".
+    #[serde(default)]
+    system: Option<String>,
+    /// Earlier turns of this conversation, oldest first, so follow-ups
+    /// like "compare the top two" resolve against prior answers.
+    #[serde(default)]
+    history: Vec<RagTurn>,
+    /// Caller-supplied context. When present retrieval is skipped and
+    /// these documents are the grounding set — for apps that rank with
+    /// SQL filters + their own scoring and then want the LLM to reason
+    /// over exactly that shortlist.
+    #[serde(default)]
+    context: Option<Vec<RagContextDoc>>,
+}
+
+#[derive(Deserialize)]
+struct RagTurn {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct RagContextDoc {
+    id: String,
+    text: String,
+    #[serde(default)]
+    bucket: Option<String>,
+    #[serde(default)]
+    metadata: serde_json::Value,
+}
+
+// Bounds on the grounded-chat fields. Generous for real use, small
+// enough that one request can't blow the LLM context window or pin a
+// worker serialising megabytes of prompt.
+const RAG_MAX_SYSTEM_CHARS: usize = 4_000;
+const RAG_MAX_HISTORY_TURNS: usize = 20;
+const RAG_MAX_TURN_CHARS: usize = 8_000;
+const RAG_MAX_CONTEXT_DOCS: usize = 50;
+const RAG_MAX_CONTEXT_CHARS: usize = 64_000;
+
+impl RagRequest {
+    fn validate_grounding(&self) -> Result<(), ApiError> {
+        if self.system.as_ref().is_some_and(|s| s.chars().count() > RAG_MAX_SYSTEM_CHARS) {
+            return Err(ApiError::BadRequest(format!(
+                "system exceeds {RAG_MAX_SYSTEM_CHARS} chars"
+            )));
+        }
+        if self.history.len() > RAG_MAX_HISTORY_TURNS {
+            return Err(ApiError::BadRequest(format!(
+                "history exceeds {RAG_MAX_HISTORY_TURNS} turns"
+            )));
+        }
+        for t in &self.history {
+            if t.role != "user" && t.role != "assistant" {
+                return Err(ApiError::BadRequest(
+                    "history role must be \"user\" or \"assistant\"".into(),
+                ));
+            }
+            if t.content.chars().count() > RAG_MAX_TURN_CHARS {
+                return Err(ApiError::BadRequest(format!(
+                    "history turn exceeds {RAG_MAX_TURN_CHARS} chars"
+                )));
+            }
+        }
+        if let Some(docs) = &self.context {
+            if docs.len() > RAG_MAX_CONTEXT_DOCS {
+                return Err(ApiError::BadRequest(format!(
+                    "context exceeds {RAG_MAX_CONTEXT_DOCS} documents"
+                )));
+            }
+            let total: usize = docs.iter().map(|d| d.text.chars().count()).sum();
+            if total > RAG_MAX_CONTEXT_CHARS {
+                return Err(ApiError::BadRequest(format!(
+                    "context exceeds {RAG_MAX_CONTEXT_CHARS} chars in total"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -1136,12 +1216,13 @@ struct RagResponse {
 async fn ai_rag(
     State(s): State<AppState>,
     Query(qs): Query<RagQueryParams>,
-    Json(req): Json<RagRequest>,
+    Json(mut req): Json<RagRequest>,
 ) -> Result<Response, ApiError> {
     if req.query.trim().is_empty() {
         return Err(ApiError::BadRequest("query must be non-empty".into()));
     }
     let top_k = validate_top_k(req.top_k, s.config.max_top_k)?;
+    req.validate_grounding()?;
     s.metrics.inc_rag();
 
     // search_text is async only because of the embedder call;
@@ -1152,7 +1233,30 @@ async fn ai_rag(
     // (which fixed search_vector but missed the search_text leak
     // for the RAG / SQL / gRPC paths).
     let started = std::time::Instant::now();
-    let (hits, ex) = if req.explain {
+    let (hits, ex) = if let Some(docs) = req.context.take() {
+        // Caller already chose the grounding set; scores are the
+        // caller's rank order, not ANN distances, so report 0.
+        let hits: Vec<nebula_index::Hit> = docs
+            .into_iter()
+            .map(|d| nebula_index::Hit {
+                bucket: d.bucket.unwrap_or_default(),
+                id: d.id,
+                text: d.text,
+                score: 0.0,
+                metadata: d.metadata,
+            })
+            .collect();
+        let ex = req.explain.then(|| {
+            let mut ex = Explain::new(ExplainKind::Rag, true);
+            ex.notes.push(ix::Note::info(format!(
+                "Retrieval skipped: the caller supplied {} context document{}.",
+                hits.len(),
+                if hits.len() == 1 { "" } else { "s" }
+            )));
+            ex
+        });
+        (hits, ex)
+    } else if req.explain {
         let (hits, trace) = std::sync::Arc::clone(&s.index)
             .search_text_explained(req.query.clone(), req.bucket.clone(), top_k, None, None)
             .await?;
@@ -1167,7 +1271,12 @@ async fn ai_rag(
     };
     let prompt_started = std::time::Instant::now();
     let snippets: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
-    let prompt = build_rag_prompt(&req.query, &snippets);
+    let history: Vec<HistoryTurn<'_>> = req
+        .history
+        .iter()
+        .map(|t| HistoryTurn { role: &t.role, content: &t.content })
+        .collect();
+    let prompt = build_grounded_prompt(&req.query, &snippets, req.system.as_deref(), &history);
     let mut rex = ex.map(|ex| {
         RagExplain::new(ex, &prompt, snippets.len(), prompt_started.elapsed(), s.llm.model(), &req.query, started)
     });

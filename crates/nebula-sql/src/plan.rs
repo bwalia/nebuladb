@@ -31,9 +31,10 @@ pub enum SemanticClause {
 }
 
 /// A residual WHERE predicate applied after retrieval against each
-/// hit's `metadata` JSON. Intentionally tiny: equality and IN, no
-/// boolean tree. Complex predicates can be added without changing
-/// the planner shape — only this enum and the filter evaluator grow.
+/// hit's `metadata` JSON. Intentionally tiny: equality, IN, ordered
+/// comparison and array membership, no boolean tree. Complex
+/// predicates can be added without changing the planner shape — only
+/// this enum and the filter evaluator grow.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Filter {
@@ -42,6 +43,47 @@ pub enum Filter {
     Eq { path: Vec<String>, value: serde_json::Value },
     /// `metadata_path IN (literals)`.
     In { path: Vec<String>, values: Vec<serde_json::Value> },
+    /// `metadata_path <op> literal` for `<`, `<=`, `>`, `>=`, `<>`.
+    /// Numbers compare numerically, strings lexicographically (so ISO
+    /// dates like `'2026-11-01'` order correctly); a missing value or
+    /// a type mismatch never matches, as with SQL NULL.
+    Cmp { path: Vec<String>, cmp: CmpOp, value: serde_json::Value },
+    /// `array_contains(metadata_path, literal)` — the metadata value is
+    /// a JSON array holding `value` (e.g. a candidate's skill tags).
+    Contains { path: Vec<String>, value: serde_json::Value },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CmpOp {
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    Ne,
+}
+
+impl CmpOp {
+    pub fn sql(self) -> &'static str {
+        match self {
+            CmpOp::Lt => "<",
+            CmpOp::Lte => "<=",
+            CmpOp::Gt => ">",
+            CmpOp::Gte => ">=",
+            CmpOp::Ne => "<>",
+        }
+    }
+
+    /// The operator with its operands swapped: `5 < x` is `x > 5`.
+    fn flipped(self) -> Self {
+        match self {
+            CmpOp::Lt => CmpOp::Gt,
+            CmpOp::Lte => CmpOp::Gte,
+            CmpOp::Gt => CmpOp::Lt,
+            CmpOp::Gte => CmpOp::Lte,
+            CmpOp::Ne => CmpOp::Ne,
+        }
+    }
 }
 
 /// Column projection. `*` and specific fields; we don't do renames,
@@ -398,6 +440,54 @@ fn try_filter(expr: &ast::Expr) -> Result<Option<Filter>> {
             };
             Ok(Some(Filter::Eq { path: col, value: val }))
         }
+        ast::Expr::BinaryOp { op, left, right } => {
+            let Some(op) = cmp_op(op) else { return Ok(None) };
+            // Normalise to `column <op> literal`, flipping the operator
+            // when the literal is written first.
+            let (col, op, val) = match (path(left), literal(right)) {
+                (Some(p), Some(v)) => (p, op, v),
+                _ => match (path(right), literal(left)) {
+                    (Some(p), Some(v)) => (p, op.flipped(), v),
+                    _ => return Ok(None),
+                },
+            };
+            if val.is_null() {
+                return Err(SqlError::Unsupported(format!(
+                    "comparison with NULL ({} {} NULL) never matches",
+                    col.join("."),
+                    op.sql()
+                )));
+            }
+            Ok(Some(Filter::Cmp { path: col, cmp: op, value: val }))
+        }
+        ast::Expr::Function(f) if f.name.to_string().eq_ignore_ascii_case("array_contains") => {
+            let args: Vec<&ast::Expr> = match &f.args {
+                ast::FunctionArguments::List(list) => list
+                    .args
+                    .iter()
+                    .filter_map(|a| match a {
+                        ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(e)) => Some(e),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let (Some(col), Some(val)) = (
+                args.first().and_then(|e| path(e)),
+                args.get(1).and_then(|e| literal(e)),
+            ) else {
+                return Err(SqlError::TypeError(
+                    "array_contains expects (column, literal)".into(),
+                ));
+            };
+            if args.len() != 2 {
+                return Err(SqlError::TypeError(format!(
+                    "array_contains expects (column, literal); got {} args",
+                    args.len()
+                )));
+            }
+            Ok(Some(Filter::Contains { path: col, value: val }))
+        }
         ast::Expr::InList {
             expr,
             list,
@@ -416,6 +506,17 @@ fn try_filter(expr: &ast::Expr) -> Result<Option<Filter>> {
         }
         _ => Ok(None),
     }
+}
+
+fn cmp_op(op: &ast::BinaryOperator) -> Option<CmpOp> {
+    Some(match op {
+        ast::BinaryOperator::Lt => CmpOp::Lt,
+        ast::BinaryOperator::LtEq => CmpOp::Lte,
+        ast::BinaryOperator::Gt => CmpOp::Gt,
+        ast::BinaryOperator::GtEq => CmpOp::Gte,
+        ast::BinaryOperator::NotEq => CmpOp::Ne,
+        _ => return None,
+    })
 }
 
 pub(crate) fn ident_name(expr: &ast::Expr) -> Result<String> {
@@ -467,6 +568,17 @@ fn literal(expr: &ast::Expr) -> Option<serde_json::Value> {
         }
         ast::Expr::Value(ast::Value::Boolean(b)) => Some(serde_json::Value::Bool(*b)),
         ast::Expr::Value(ast::Value::Null) => Some(serde_json::Value::Null),
+        // `-5` parses as unary minus applied to `5`.
+        ast::Expr::UnaryOp { op: ast::UnaryOperator::Minus, expr } => match literal(expr)? {
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Some(serde_json::Value::Number((-i).into()))
+                } else {
+                    serde_json::Number::from_f64(-n.as_f64()?).map(serde_json::Value::Number)
+                }
+            }
+            _ => None,
+        },
         _ => None,
     }
 }

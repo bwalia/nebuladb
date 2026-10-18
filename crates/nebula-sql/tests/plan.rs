@@ -127,3 +127,25 @@ fn top_k_defaults_when_no_limit() {
     let p = plan_of("SELECT * FROM docs WHERE semantic_match(content, 'x')");
     assert!(p.top_k() >= 10);
 }
+
+#[test]
+fn plans_range_and_array_contains_filters() {
+    use nebula_sql::plan::{CmpOp, Filter};
+    let p = plan_of(
+        "SELECT * FROM candidates WHERE semantic_match(profile, 'rust') \
+         AND day_rate <= 650 AND -1 < delta AND array_contains(skills, 'rust') LIMIT 20",
+    );
+    assert_eq!(p.filters.len(), 3);
+    assert!(matches!(&p.filters[0], Filter::Cmp { cmp: CmpOp::Lte, value, .. } if value == 650));
+    assert!(matches!(&p.filters[1], Filter::Cmp { cmp: CmpOp::Gt, value, .. } if value == -1));
+    assert!(matches!(&p.filters[2], Filter::Contains { .. }));
+}
+
+#[test]
+fn rejects_comparison_with_null() {
+    let err = plan::build(
+        parser::parse("SELECT * FROM docs WHERE semantic_match(content, 'x') AND rate < NULL").unwrap(),
+    )
+    .unwrap_err();
+    assert!(matches!(err, SqlError::Unsupported(_)));
+}

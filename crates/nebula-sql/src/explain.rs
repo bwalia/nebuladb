@@ -288,7 +288,10 @@ pub(crate) fn order_sql(ob: &OrderBy) -> String {
 
 fn filter_path(f: &Filter) -> &[String] {
     match f {
-        Filter::Eq { path, .. } | Filter::In { path, .. } => path,
+        Filter::Eq { path, .. }
+        | Filter::In { path, .. }
+        | Filter::Cmp { path, .. }
+        | Filter::Contains { path, .. } => path,
     }
 }
 
@@ -300,6 +303,12 @@ pub(crate) fn predicate_sql(f: &Filter) -> String {
             path.join("."),
             values.iter().map(sql_literal).collect::<Vec<_>>().join(", ")
         ),
+        Filter::Cmp { path, cmp, value } => {
+            format!("{} {} {}", path.join("."), cmp.sql(), sql_literal(value))
+        }
+        Filter::Contains { path, value } => {
+            format!("array_contains({}, {})", path.join("."), sql_literal(value))
+        }
     }
 }
 
