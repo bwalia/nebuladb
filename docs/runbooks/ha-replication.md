@@ -80,6 +80,7 @@ Symptoms: `/admin/replication` remotes show `healthy: false` and/or `last_error`
 
 ## Prod notes
 
+- Deploying to prod: see [prod-deploy.md](prod-deploy.md) for triggers, pre-flight checks, the expected 503 and partial-data windows, and rollback.
 - Primary host: `https://showcase.nebuladb.net`
 - Initial region-b sync of the full `leads` corpus is async; prefer export/import for a cold mirror rather than relying solely on WAL replay from BEGIN on multi-million doc buckets.
 - Raft (`NEBULA_RAFT_*`) stays **off** until soak evidence exists.
