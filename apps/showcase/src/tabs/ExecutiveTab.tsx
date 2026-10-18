@@ -18,6 +18,7 @@ import { buildCluster, tickCluster, simExecSlice, type SimCluster } from "../dem
 import { SourcedStat, OriginBadge } from "../components/Provenance";
 import { UnderTheHood } from "../components/UnderTheHood";
 import { Panel, ErrorBanner } from "../components";
+import { POSTS } from "./BlogTab";
 
 const FLOW = [
   { label: "Enterprise Data", detail: "documents, tickets, runbooks, policies" },
@@ -119,6 +120,46 @@ export function ExecutiveTab({ onNavigate }: { onNavigate?: (t: string) => void 
           ].map(([id, label]) => (
             <button key={id} onClick={() => onNavigate?.(id)} className="btn-secondary !text-xs">
               {label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* From the engineering blog ---------------------------------- */}
+      <section>
+        <div className="mb-2 flex items-center gap-2">
+          <h3 className="font-display text-sm font-semibold text-gray-900 dark:text-ink">
+            From the engineering blog
+          </h3>
+          <button onClick={() => onNavigate?.("blog")} className="ml-auto text-xs text-accent hover:underline">
+            All posts →
+          </button>
+        </div>
+        <div className="grid gap-2.5 md:grid-cols-2">
+          {POSTS.map((p) => (
+            <button
+              key={p.slug}
+              onClick={() => onNavigate?.(`blog:${p.slug}`)}
+              className="instrument !p-4 text-left"
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className={`rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${
+                    p.kind === "Blog"
+                      ? "border-accent/40 bg-accent/10 text-accent"
+                      : "border-ok/40 bg-ok/10 text-ok"
+                  }`}
+                >
+                  {p.kind}
+                </span>
+                <span className="eyebrow">{p.readMins} min read</span>
+              </div>
+              <div className="mt-2 text-sm font-semibold leading-snug text-gray-900 dark:text-ink">
+                {p.title}
+              </div>
+              <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-gray-500 dark:text-muted">
+                {p.summary}
+              </p>
             </button>
           ))}
         </div>
