@@ -25,7 +25,7 @@ export const POSTS: PostMeta[] = [
     date: "2026-10-13",
     readMins: 3,
     summary:
-      "Loading the UK Companies House register pushed our prod leader to 34.1 of 34.4 GB. An in-place pod resize took it to 48Gi with zero restarts, and ingest throughput doubled.",
+      "Loading the UK Companies House register pushed our prod leader to 34.1 of 34.4 GB. An in-place pod resize took it to 48Gi with zero restarts, and ingest throughput doubled. Update: two more resizes, to 64Gi and 96Gi, carried it through all 5.17M active companies.",
   },
   {
     slug: "in-place-memory-resize-tech-note",
@@ -486,6 +486,20 @@ function BlogPost({ onOpen }: { onOpen: (slug: string) => void }) {
           We then committed the new limit to <C>values-prod.yaml</C> so the next deploy keeps it instead of
           quietly reverting it.
         </p>
+        <H3>Update, 17 October: the whole register is in</H3>
+        <p>
+          48Gi was not the end of it. At about 2.75 million documents, the leader's periodic snapshot
+          (every ~23 minutes, ~8 minutes long) was pushing an otherwise idle leader to 43–48 GB of its
+          51.5 GB ceiling: snapshot peaks grow with the corpus. We repeated the same in-place resize twice,
+          to <strong>64Gi</strong> and then <strong>96Gi</strong> (103.1 GB), and committed each value to
+          the chart.
+        </p>
+        <p>
+          With that headroom the loader finished the remaining 2.41 million companies in one 29.6-hour run
+          at a steady 22–23 docs/s. The prod bucket now holds all <strong>5,166,057 active companies</strong>.
+          The leader settles at 54–57 GB, and its restart count is still 0: the same process that started
+          on 5 October served the showcase throughout all three resizes.
+        </p>
         <Callout tone="info" title="Want the full story?">
           The long-form tech note covers where HNSW memory goes, the memory-aware loader, why we did not{" "}
           <C>helm upgrade</C>, the exact commands and checks, and the work that is still open.{" "}
@@ -513,8 +527,9 @@ const TOC = [
   ["resize", "7. The in-place resize, step by step"],
   ["persist", "8. Making it stick: Helm values and drift"],
   ["results", "9. Results"],
-  ["open", "10. What is still open"],
-  ["checklist", "11. Runbook checklist"],
+  ["finish", "10. Update: 64Gi, 96Gi and the full register"],
+  ["open", "11. What is still open"],
+  ["checklist", "12. Runbook checklist"],
 ] as const;
 
 function TechNote() {
@@ -719,16 +734,47 @@ kubectl -n prod patch pod "$POD" --subresource resize --type json -p \\
           latency was not the bottleneck here, and we are not claiming a change in it.
         </p>
 
-        <H2 id="open">10. What is still open</H2>
+        <H2 id="finish">10. Update: 64Gi, 96Gi and the full register</H2>
+        <p>
+          The 48Gi limit carried the load to about 2.75 million register documents. By then the problem
+          had moved: memory between writes was fine, but the periodic snapshot (every ~23 minutes, running
+          ~8 minutes) added a spike that grows with the corpus, and an idle leader was touching 43–48 GB of
+          51.5 GB. Our earlier estimate of ~5 GB for snapshot overhead was far too low at this size.
+        </p>
+        <p>
+          We applied the same procedure twice more: 48Gi → 64Gi on 15 October, then 64Gi → 96Gi to give
+          the final 2.4 million documents room for a projected ~53 GB settled plus ~30 GB of snapshot peak.{" "}
+          <C>debworker00</C> has about 125 GiB allocatable, so 96Gi still leaves the node headroom. Each step
+          was a single resize patch, verified the same way, and committed to <C>values-prod.yaml</C>.
+        </p>
+        <Table
+          head={["Final run", "Value"]}
+          rows={[
+            ["Documents loaded", "2,412,057 (rows 2,754,001 – 5,166,057)"],
+            ["Duration", "106,689 s ≈ 29.6 h"],
+            ["Ingest rate", "22–23 docs/s throughout"],
+            ["Loader pauses", "3, each 60–120 s, all from a briefly unreadable memory gauge"],
+            ["Leader memory, settled at the end", "54–57 GB of 103.1 GB"],
+            ["Highest loader reading", "64.3 GB (during a snapshot)"],
+            ["Leader restarts across all three resizes", "0 (same pod since 5 October)"],
+            ["companies_house bucket", "5,166,063 docs (5,166,057 register + 6 enrichment)"],
+          ]}
+        />
+        <p>
+          The loader's memory guard (pause at 78 GB, resume at 68 GB) never fired on a real reading. It
+          treats an unreadable gauge as high, which accounts for all three pauses: cautious, and cheap.
+        </p>
+
+        <H2 id="open">11. What is still open</H2>
         <ul className="list-disc space-y-1 pl-5">
           <li>
             <strong>Tombstone reclamation.</strong> HNSW deletes never free their slots, so resident memory
             only grows. Extra RAM buys headroom, not a fix; compaction is the real fix.
           </li>
           <li>
-            <strong>Footprint per doc.</strong> About 6 KB steady-state per 384-d doc means the full 5.17M
-            active register needs about 30 GB more than we have now. Quantised vectors, or keeping the
-            register as SQL rows with only a subset embedded, would change that maths.
+            <strong>Footprint per doc.</strong> The full register fits, but only with a 96Gi leader.
+            Quantised vectors, or keeping the register as SQL rows with only a subset embedded, would
+            bring that back down.
           </li>
           <li>
             <strong>Semantic quality.</strong> Prod still uses the <C>mock-384</C> embedder. Exact lookups
@@ -737,11 +783,12 @@ kubectl -n prod patch pod "$POD" --subresource resize --type json -p \\
           </li>
           <li>
             <strong>Follower sizing.</strong> If the follower is ever promoted, it has to fit the leader's
-            working set, so its limit has to follow the leader's.
+            working set, so its limit has to follow the leader's. It is still at 32Gi and has not caught
+            up with the full register.
           </li>
         </ul>
 
-        <H2 id="checklist">11. Runbook checklist</H2>
+        <H2 id="checklist">12. Runbook checklist</H2>
         <ol className="list-decimal space-y-1 pl-5">
           <li>Confirm the server version supports in-place resize (<C>kubectl version</C> ≥ 1.33; GA in our 1.36).</li>
           <li>Confirm node headroom: <C>kubectl top node &lt;node&gt;</C> has room for the new limit.</li>
