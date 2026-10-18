@@ -57,7 +57,11 @@ async fn explained_runs_return_the_same_rows() {
         assert!(ex.analyzed);
         assert!(!ex.summary.is_empty() && !ex.text.is_empty(), "{sql}");
         assert!(ex.plan.is_some());
-        assert!(ex.stages.iter().any(|s| s.name == "hnsw"), "{sql}: no retrieval stage");
+        // Small buckets exact-scan; large ones walk HNSW then bucket-filter.
+        assert!(
+            ex.stages.iter().any(|s| s.name == "hnsw" || s.name == "bucket_scan"),
+            "{sql}: no retrieval stage"
+        );
     }
 }
 
@@ -70,9 +74,10 @@ async fn scan_stages_and_per_row_filters() {
         .unwrap();
     let ex = ex.unwrap();
     let names: Vec<_> = ex.stages.iter().map(|s| s.name.as_str()).collect();
+    // The `leads` fixture is a small bucket, so retrieval is one exact scan.
     assert_eq!(
         names,
-        ["parse", "plan", "top_k", "embed", "hnsw", "bucket_filter", "filter", "sort", "limit", "project"]
+        ["parse", "plan", "top_k", "embed", "bucket_scan", "filter", "sort", "limit", "project"]
     );
     let filter = ex.stages.iter().find(|s| s.name == "filter").unwrap();
     assert_eq!(filter.rows_out, Some(out.rows.len()));

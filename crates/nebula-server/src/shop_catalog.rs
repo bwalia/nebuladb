@@ -67,9 +67,12 @@ fn as_bool(v: &Value) -> Option<bool> {
     })
 }
 
+/// One document ready to upsert: `(id, text, metadata)`.
+pub type CatalogDoc = (String, String, Value);
+
 /// Build searchable RAG docs + stock SOT docs from a catalogue JSON object
 /// shaped like `catalog.seed.json` (`categories` + `products`).
-pub fn catalog_to_docs(catalog: &Value) -> (Vec<(String, String, Value)>, Vec<(String, String, Value)>) {
+pub fn catalog_to_docs(catalog: &Value) -> (Vec<CatalogDoc>, Vec<CatalogDoc>) {
     let base = shop_public_base();
     let mut catalog_docs = Vec::new();
     let mut stock_docs = Vec::new();
