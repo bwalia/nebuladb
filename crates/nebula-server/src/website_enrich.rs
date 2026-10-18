@@ -212,7 +212,7 @@ fn score_candidate(url: &str, company_name: &str) -> i32 {
 /// Likely official domains from the company name (longest token first).
 fn guessed_domains(company_name: &str) -> Vec<String> {
     let mut tokens = name_tokens(company_name);
-    tokens.sort_by(|a, b| b.len().cmp(&a.len()));
+    tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for t in tokens.into_iter().take(2) {
@@ -248,7 +248,7 @@ fn pick_best_url(candidates: &[String], company_name: &str) -> Option<String> {
         .map(|u| (score_candidate(u, company_name), u))
         .filter(|(s, _)| *s > i32::MIN / 2)
         .collect();
-    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    ranked.sort_by_key(|r| std::cmp::Reverse(r.0));
     // Require at least one name-token hit in the hostname when we have tokens,
     // otherwise first non-junk is accepted (rare short names).
     let tokens = name_tokens(company_name);
@@ -667,7 +667,7 @@ async fn first_live_ranked(
             }
         })
         .collect();
-    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    ranked.sort_by_key(|r| std::cmp::Reverse(r.0));
     let tokens = name_tokens(company_name);
     for (score, cand) in ranked {
         if !tokens.is_empty() && score < 10 {
