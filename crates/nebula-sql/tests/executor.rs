@@ -192,3 +192,45 @@ async fn cache_returns_same_result_across_calls() {
     let (hits, _, _) = cache.snapshot();
     assert_eq!(hits, 1, "second call should be a cache hit");
 }
+
+// Multi-thread runtime required: TextIndex writes use
+// tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn range_and_array_filters_select_matching_candidates() {
+    let eng = engine_with_docs(&[
+        ("ada", "rust engineer", serde_json::json!({"rate": 600, "years": 9, "skills": ["rust", "k8s"], "start": "2026-11-01"})),
+        ("bob", "rust engineer", serde_json::json!({"rate": 750, "years": 12, "skills": ["rust"], "start": "2026-10-20"})),
+        ("cy", "rust engineer", serde_json::json!({"rate": 450, "years": 3, "skills": ["go", "k8s"], "start": "2027-01-10"})),
+        ("di", "rust engineer", serde_json::json!({"rate": "n/a", "skills": "rust"})),
+    ])
+    .await;
+
+    let ids = |sql: &'static str| {
+        let eng = &eng;
+        async move {
+            let mut ids: Vec<String> = eng.run(sql).await.unwrap().rows.into_iter().map(|r| r.id).collect();
+            ids.sort();
+            ids
+        }
+    };
+
+    assert_eq!(
+        ids("SELECT id FROM docs WHERE semantic_match(content, 'rust') AND rate <= 650 LIMIT 10").await,
+        vec!["ada", "cy"],
+        "string 'n/a' must not compare against a number"
+    );
+    assert_eq!(
+        ids("SELECT id FROM docs WHERE semantic_match(content, 'rust') AND 5 < years LIMIT 10").await,
+        vec!["ada", "bob"],
+        "literal-first comparison is flipped"
+    );
+    assert_eq!(
+        ids("SELECT id FROM docs WHERE semantic_match(content, 'rust') AND array_contains(skills, 'k8s') LIMIT 10").await,
+        vec!["ada", "cy"]
+    );
+    assert_eq!(
+        ids("SELECT id FROM docs WHERE semantic_match(content, 'rust') AND start < '2026-12-01' AND rate <> 750 LIMIT 10").await,
+        vec!["ada"],
+        "ISO dates order as strings"
+    );
+}

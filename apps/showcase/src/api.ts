@@ -635,8 +635,8 @@ export const api = {
     request<unknown>(`/api/v1/admin/bucket/${encodeURIComponent(bucket)}/export`),
 
   bulkDocs: (bucket: string, docs: Array<{ id: string; text: string; metadata?: unknown }>) =>
-    request<{ inserted: number }>(
+    request<{ bucket: string; inserted: number; requested: number }>(
       `/api/v1/bucket/${encodeURIComponent(bucket)}/docs/bulk`,
-      { method: "POST", body: JSON.stringify({ docs }) }
+      { method: "POST", body: JSON.stringify({ items: docs }) }
     ),
 };

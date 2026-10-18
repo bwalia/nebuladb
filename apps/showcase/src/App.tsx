@@ -17,6 +17,10 @@ import { RebalanceTab } from "./tabs/RebalanceTab";
 import { EnterpriseSearchTab } from "./tabs/EnterpriseSearchTab";
 import { CompaniesHouseTab } from "./tabs/CompaniesHouseTab";
 import { ShopCatalogTab } from "./tabs/ShopCatalogTab";
+import { TalentMatchTab } from "./tabs/TalentMatchTab";
+import { IncidentCopilotTab } from "./tabs/IncidentCopilotTab";
+import { ContractReviewTab } from "./tabs/ContractReviewTab";
+import { SupportDeskTab } from "./tabs/SupportDeskTab";
 
 type TabId =
   | "executive"
@@ -27,6 +31,10 @@ type TabId =
   | "enterprise"
   | "companies"
   | "shop"
+  | "talent"
+  | "incidents"
+  | "contracts"
+  | "support"
   | "rag"
   | "hybrid"
   | "agents"
@@ -41,7 +49,7 @@ interface NavItem {
   label: string;
   hint: string;
   icon: string;
-  group: "home" | "data" | "ai" | "cluster" | "ops";
+  group: "home" | "data" | "ai" | "apps" | "cluster" | "ops";
 }
 
 const NAV: NavItem[] = [
@@ -51,12 +59,16 @@ const NAV: NavItem[] = [
   { id: "sql", label: "SQL", hint: "Query workbench", icon: "⌘", group: "data" },
   { id: "search", label: "Semantic search", hint: "Vector retrieval", icon: "✷", group: "ai" },
   { id: "enterprise", label: "Enterprise search", hint: "Azure-compatible hybrid search", icon: "⧉", group: "ai" },
-  { id: "companies", label: "Companies House", hint: "UK CH search + RAG chat", icon: "⌂", group: "ai" },
-  { id: "shop", label: "Shop catalogue", hint: "Stock SOT + product RAG", icon: "▣", group: "ai" },
   { id: "rag", label: "RAG chat", hint: "Streaming answers", icon: "❯", group: "ai" },
   { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query", icon: "⟡", group: "ai" },
   { id: "agents", label: "AI agents", hint: "Tool-calling agents over MCP", icon: "⬡", group: "ai" },
   { id: "mcp", label: "MCP", hint: "Live MCP server + playground", icon: "⚯", group: "ai" },
+  { id: "companies", label: "Companies House", hint: "UK CH search + RAG chat", icon: "⌂", group: "apps" },
+  { id: "shop", label: "Shop catalogue", hint: "Stock SOT + product RAG", icon: "▣", group: "apps" },
+  { id: "talent", label: "Talent Match", hint: "Job board: SQL hard filters + multi-facet semantic matching + recruiter chat", icon: "⚑", group: "apps" },
+  { id: "incidents", label: "Incident Copilot", hint: "Alert → similar past incidents + runbooks → grounded triage chat", icon: "⚠", group: "apps" },
+  { id: "contracts", label: "Contract Review", hint: "Clause-by-clause review against a legal playbook, with redline chat", icon: "§", group: "apps" },
+  { id: "support", label: "Support Desk", hint: "Ticket triage by nearest neighbours + cited reply drafts", icon: "✉", group: "apps" },
   { id: "cluster", label: "Cluster", hint: "Topology, regions, failover", icon: "⬢", group: "cluster" },
   { id: "rebalance", label: "Rebalance", hint: "Zero-downtime node swap", icon: "⇄", group: "cluster" },
   { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },
@@ -67,6 +79,7 @@ const GROUP_LABELS: Record<NavItem["group"], string> = {
   home: "Home",
   data: "Data",
   ai: "AI",
+  apps: "RAG apps",
   cluster: "Cluster",
   ops: "Operations",
 };
@@ -152,6 +165,15 @@ export function App() {
                 <p className="mt-1 text-sm text-gray-500 dark:text-muted">{active.hint}</p>
               </div>
             )}
+            {active?.group === "apps" && health && /mock/i.test(health.model) && (
+              <div className="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-gray-700 dark:text-muted">
+                <span className="font-semibold text-warn">Mock embedder.</span> This server embeds with{" "}
+                <code>{health.model}</code> (a deterministic hash, not a language model), so semantic
+                similarity scores are noise here. Hard filters, skills, rates and dates still rank
+                correctly; point <code>NEBULA_OPENAI_*</code> at a real embedding model for meaningful
+                semantic matching.
+              </div>
+            )}
             <div key={`${tab}-body`} className="animate-rise">
               {tab === "executive" && <ExecutiveTab onNavigate={(t) => setTab(t as TabId)} />}
               {tab === "overview" && <OverviewTab onNavigate={(t) => setTab(t as TabId)} />}
@@ -161,6 +183,10 @@ export function App() {
               {tab === "enterprise" && <EnterpriseSearchTab />}
               {tab === "companies" && <CompaniesHouseTab />}
               {tab === "shop" && <ShopCatalogTab />}
+              {tab === "talent" && <TalentMatchTab />}
+              {tab === "incidents" && <IncidentCopilotTab />}
+              {tab === "contracts" && <ContractReviewTab />}
+              {tab === "support" && <SupportDeskTab />}
               {tab === "rag" && <RagTab />}
               {tab === "hybrid" && <HybridTab />}
               {tab === "agents" && <AgentsTab />}
