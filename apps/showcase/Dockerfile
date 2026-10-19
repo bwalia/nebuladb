@@ -71,6 +71,11 @@ RUN --mount=type=secret,id=proxy_ca,target=/run/secrets/proxy_ca.crt,required=fa
     done
 COPY tsconfig.json vite.config.ts tailwind.config.js postcss.config.js index.html ./
 COPY src ./src
+# Google Maps JS key for the Companies House map, inlined into the bundle by
+# Vite at build time (VITE_ prefix). Optional — without it the map shows a hint
+# instead of breaking. Pass with `--build-arg VITE_GOOGLE_MAPS_API_KEY=...`.
+ARG VITE_GOOGLE_MAPS_API_KEY=""
+ENV VITE_GOOGLE_MAPS_API_KEY=${VITE_GOOGLE_MAPS_API_KEY}
 RUN npm run build
 
 FROM nginx:1.27-alpine AS runtime
