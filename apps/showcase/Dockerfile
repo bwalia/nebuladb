@@ -76,10 +76,13 @@ RUN npm run build
 FROM nginx:1.27-alpine AS runtime
 # `envsubst` is part of gettext; used by the start script to
 # substitute `$NEBULA_SERVER` into the nginx config at boot. That's
-# how we keep the image environment-agnostic.
-RUN apk add --no-cache gettext wget
+# how we keep the image environment-agnostic. `openssl` hashes the
+# basic-auth password into the htpasswd file at boot.
+RUN apk add --no-cache gettext wget openssl
 COPY --from=build /src/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/templates/default.conf.template
+# Sourced by the nginx entrypoint before envsubst; must be executable.
+COPY --chmod=755 docker-entrypoint.d/15-showcase-auth.envsh /docker-entrypoint.d/
 # Defaults target the compose topology (leader `nebula-server` +
 # follower `nebula-follower`, Docker's embedded DNS at 127.0.0.11).
 # In standalone mode, set NEBULA_SERVER=http://host.docker.internal:8080.
@@ -97,6 +100,12 @@ ENV NEBULA_API_KEYS=""
 # service; the Helm chart runs it as a sidecar and overrides this to
 # http://127.0.0.1:8090.
 ENV NEBULA_MCP=http://nebula-mcp:8090
+# Basic auth is ON by default: every page and /api call asks for a login.
+# Supply SHOWCASE_AUTH_USERNAME + SHOWCASE_AUTH_PASSWORD, or set
+# SHOWCASE_AUTH_DISABLED=true to open it. Without credentials it fails
+# closed (all logins refused). See docker-entrypoint.d/15-showcase-auth.envsh.
+ENV SHOWCASE_AUTH_DISABLED=false
 EXPOSE 80
+# /livez is exempt from basic auth; `/` now answers 401.
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
-  CMD wget -q -O /dev/null http://localhost/ || exit 1
+  CMD wget -q -O /dev/null http://localhost/livez || exit 1

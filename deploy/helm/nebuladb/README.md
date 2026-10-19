@@ -63,6 +63,11 @@ instead of the boot stub's 503 failover (prod 2026-09-24).
 | `redis.enabled` | `false` | Bundle Bitnami Redis |
 | `externalRedisUrl` | `""` | Point at external Redis |
 | `showcase.enabled` | `true` | Deploy the React admin UI |
+| `showcase.auth.enabled` | `true` | Basic auth on the showcase (UI, `/api`, `/mcp`); `false` opens it |
+| `showcase.auth.vault.enabled` | `false` | Sync the credentials from WSLVault via ESO (`wslvault-backend`); on for int/test/acc/prod |
+| `showcase.auth.vault.key` | `nebuladb/<environment>/showcase-auth` | WSLVault path (mount `kv`) holding `SHOWCASE_AUTH_USERNAME` and `SHOWCASE_AUTH_PASSWORD` |
+| `showcase.auth.username` | `demo` | Login for the chart-generated Secret (random password, kept across upgrades) when neither Vault nor `existingSecret` is set |
+| `showcase.auth.existingSecret` | `""` | Use your own Secret (keys `SHOWCASE_AUTH_USERNAME`, `SHOWCASE_AUTH_PASSWORD`) instead |
 | `serviceMonitor.enabled` | `false` | kube-prometheus-stack scrape target |
 
 ### HA topology

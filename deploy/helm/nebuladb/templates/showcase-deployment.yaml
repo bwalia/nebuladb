@@ -59,18 +59,36 @@ spec:
             # /mcp → the nebula-mcp sidecar on the pod's loopback.
             - name: NEBULA_MCP
               value: "http://127.0.0.1:8090"
+            # Basic auth (apps/showcase/docker-entrypoint.d/15-showcase-auth.envsh).
+            # Set explicitly so a SHOWCASE_AUTH_DISABLED key in the app
+            # secret can't silently open the UI; only values can.
+            - name: SHOWCASE_AUTH_DISABLED
+              value: {{ (not .Values.showcase.auth.enabled) | quote }}
+            {{- if .Values.showcase.auth.enabled }}
+            - name: SHOWCASE_AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.showcase.authSecretName" . }}
+                  key: SHOWCASE_AUTH_USERNAME
+            - name: SHOWCASE_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.showcase.authSecretName" . }}
+                  key: SHOWCASE_AUTH_PASSWORD
+            {{- end }}
           {{- with .Values.showcase.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
+          # /livez is exempt from basic auth; `/` answers 401.
           livenessProbe:
             httpGet:
-              path: /
+              path: /livez
               port: 80
             initialDelaySeconds: 5
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /
+              path: /livez
               port: 80
             initialDelaySeconds: 2
             periodSeconds: 5

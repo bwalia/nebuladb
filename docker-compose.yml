@@ -622,8 +622,14 @@ services:
       - "${NEBULA_SHOWCASE_PORT:-5173}:80"
     environment:
       NEBULA_SERVER: "http://nebula-server:8080"
+      # Basic auth is on unless SHOWCASE_AUTH_DISABLED=true; with auth on
+      # and no credentials every login is refused (see .env.deploy.example).
+      SHOWCASE_AUTH_DISABLED: "${SHOWCASE_AUTH_DISABLED:-false}"
+      SHOWCASE_AUTH_USERNAME: "${SHOWCASE_AUTH_USERNAME:-}"
+      SHOWCASE_AUTH_PASSWORD: "${SHOWCASE_AUTH_PASSWORD:-}"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/ || exit 1"]
+      # /livez skips basic auth; `/` answers 401.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/livez || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5

@@ -1,0 +1,38 @@
+#!/bin/sh
+# HTTP basic auth for the showcase — ON unless explicitly disabled.
+#
+# The nginx image's entrypoint *sources* `*.envsh` files (so exports
+# persist) before 20-envsubst-on-templates.sh renders the config. We
+# export SHOWCASE_AUTH_BASIC for the template's `auth_basic` directive
+# and write the htpasswd file it points at.
+#
+#   SHOWCASE_AUTH_DISABLED=true   no auth (anyone who can reach it gets in)
+#   SHOWCASE_AUTH_USERNAME        login, required while auth is on
+#   SHOWCASE_AUTH_PASSWORD        password, required while auth is on
+#
+# Auth on without credentials fails closed: nginx gets an empty user
+# file and refuses every login. Better a locked demo than an open one.
+
+showcase_htpasswd=/etc/nginx/showcase.htpasswd
+: >"$showcase_htpasswd"
+
+case "$(printf '%s' "${SHOWCASE_AUTH_DISABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes|on)
+    export SHOWCASE_AUTH_BASIC=off
+    echo "showcase-auth: SHOWCASE_AUTH_DISABLED is set; the showcase is open to anyone who can reach it" >&2
+    ;;
+  *)
+    export SHOWCASE_AUTH_BASIC='"NebulaDB Showcase"'
+    case "${SHOWCASE_AUTH_USERNAME:-}" in
+      *:*) echo "showcase-auth: SHOWCASE_AUTH_USERNAME must not contain ':'" >&2; exit 1 ;;
+    esac
+    if [ -n "${SHOWCASE_AUTH_USERNAME:-}" ] && [ -n "${SHOWCASE_AUTH_PASSWORD:-}" ]; then
+      printf '%s:%s\n' "$SHOWCASE_AUTH_USERNAME" \
+        "$(printf '%s' "$SHOWCASE_AUTH_PASSWORD" | openssl passwd -apr1 -stdin)" >"$showcase_htpasswd"
+      echo "showcase-auth: basic auth on for user '$SHOWCASE_AUTH_USERNAME'" >&2
+    else
+      echo "showcase-auth: basic auth is on but SHOWCASE_AUTH_USERNAME / SHOWCASE_AUTH_PASSWORD are unset; every login will be refused (set SHOWCASE_AUTH_DISABLED=true to open it)" >&2
+    fi
+    ;;
+esac
+unset showcase_htpasswd

@@ -64,6 +64,11 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
+  # Basic auth (default on); credentials from WSLVault path
+  # nebuladb/int/showcase-auth (SHOWCASE_AUTH_USERNAME / _PASSWORD).
+  auth:
+    vault:
+      enabled: true
 
 # Claude agents example suite (MCP → NebulaDB), exposed at /examples.
 examples:
