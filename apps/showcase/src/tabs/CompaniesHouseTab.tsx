@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type Hit } from "../api";
 import { sseStream } from "../sse";
 import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
+import { CompaniesMap } from "../CompaniesMap";
 
 interface ChHit {
   company_number?: string;
@@ -10,6 +11,8 @@ interface ChHit {
   company_type?: string;
   date_of_creation?: string;
   address_snippet?: string;
+  /** Structured registered-office address; postal_code places the map pin. */
+  address?: { postal_code?: string; locality?: string };
 }
 
 interface SourceInfo {
@@ -244,6 +247,19 @@ export function CompaniesHouseTab() {
               </li>
             ))}
           </ul>
+        )}
+        {hits.length > 0 && (
+          <CompaniesMap
+            companies={hits.map((h) => ({
+              company_number: h.company_number,
+              title: h.title,
+              company_status: h.company_status,
+              address_snippet: h.address_snippet,
+              postcode: h.address?.postal_code,
+            }))}
+            selected={selected}
+            onSelect={(n) => void select(n)}
+          />
         )}
       </Panel>
 

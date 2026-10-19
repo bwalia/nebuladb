@@ -1,3 +1,8 @@
 node_modules/
 dist/
 tsconfig.tsbuildinfo
+
+# Local env (e.g. VITE_GOOGLE_MAPS_API_KEY); never commit real keys
+.env
+.env.local
+.env.*.local
