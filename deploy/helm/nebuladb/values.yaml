@@ -219,6 +219,28 @@ showcase:
   # it at the cluster DNS. 10.43.0.10 is the default kube-dns ClusterIP
   # on k3s (service CIDR 10.43.0.0/16); override if your cluster differs.
   nginxResolver: "10.43.0.10"
+  # HTTP basic auth in front of the whole showcase (UI, /api, /mcp).
+  # On by default in every environment; set `enabled: false` in an env's
+  # values file to open it (sets SHOWCASE_AUTH_DISABLED=true on the pod).
+  # The credentials are the keys SHOWCASE_AUTH_USERNAME and
+  # SHOWCASE_AUTH_PASSWORD of the `<release>-showcase-auth` Secret, which
+  # comes from (first match):
+  #   1. `existingSecret`: a Secret you manage, same two keys.
+  #   2. `vault.enabled`: an ExternalSecret syncing every key under the
+  #      WSLVault path `vault.key` (default nebuladb/<environment>/showcase-auth,
+  #      KV mount `kv`) through ESO, as jobshout does. Seed the path first.
+  #   3. Otherwise a chart-managed Secret: `username` below plus a random
+  #      password kept across upgrades (for installs without Vault).
+  auth:
+    enabled: true
+    username: "demo"
+    existingSecret: ""
+    vault:
+      enabled: false
+      store: wslvault-backend
+      storeKind: ClusterSecretStore
+      key: ""
+      refreshInterval: "1m"
   # nebula-mcp sidecar for the showcase's MCP tab. Runs the server image
   # (same repository + tag as `server.image`, so its tools always match
   # the server's REST surface) with the nebula-mcp entrypoint, bound to

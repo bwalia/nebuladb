@@ -78,12 +78,24 @@ jobs:
           echo "Using proxy CA: $ca"
 
       - name: Materialize .env (host-port overrides)
+        env:
+          # WSLVault machine key (no MFA, read on nebuladb/*) on the runner;
+          # same pattern as kubepilot's iOS release. Nothing in GitHub.
+          WSLVAULT_API_KEY_FILE: /Users/balinderwalia/.secrets/nebuladb/wslvault-ci-key
         run: |
           set -euo pipefail
           if [[ ! -f "$ENV_TEMPLATE" ]]; then
             echo "::error::$ENV_TEMPLATE missing — required for host-port mapping"; exit 1
           fi
           cp "$ENV_TEMPLATE" .env
+          # Showcase basic auth is on by default; credentials come from
+          # WSLVault nebuladb/int/showcase-auth. Without them the UI comes
+          # up refusing every login (fail closed).
+          if creds="$(scripts/showcase-auth-from-vault.sh nebuladb/int/showcase-auth)"; then
+            printf '%s\n' "$creds" >>.env
+          else
+            echo "::warning::could not read nebuladb/int/showcase-auth from WSLVault; the showcase will refuse every login"
+          fi
           echo "Effective port map:"
           grep -E '_HOST_PORT|SHOWCASE_PORT' .env | sed 's/^/  /'
 
@@ -247,7 +259,7 @@ jobs:
             curl -sS "http://${host}:${rest}/healthz" || true; echo
           fi
           echo "== showcase =="
-          curl -fsS -o /dev/null -w "showcase http %{http_code}\n" "http://${host}:${show}/"
+          curl -fsS -o /dev/null -w "showcase http %{http_code}\n" "http://${host}:${show}/livez"
           echo "== grafana =="
           curl -fsS -o /dev/null -w "grafana http %{http_code}\n" "http://${host}:${graf}/api/health"
           echo "== prometheus =="

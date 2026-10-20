@@ -20,6 +20,17 @@ NebulaDB is now up.
      kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "nebuladb.fullname" . }}-showcase 5173:{{ .Values.showcase.service.port }}
 
    Then open http://localhost:5173
+{{- if .Values.showcase.auth.enabled }}
+
+   Basic auth is ON. Credentials (keys SHOWCASE_AUTH_USERNAME / _PASSWORD):
+     kubectl -n {{ .Release.Namespace }} get secret {{ include "nebuladb.showcase.authSecretName" . }} -o jsonpath='{.data.SHOWCASE_AUTH_PASSWORD}' | base64 -d
+{{- if and .Values.showcase.auth.vault.enabled (not .Values.showcase.auth.existingSecret) }}
+   Synced from WSLVault path {{ .Values.showcase.auth.vault.key | default (printf "nebuladb/%s/showcase-auth" .Values.environment) }}.
+{{- end }}
+{{- else }}
+
+   WARNING: showcase.auth.enabled=false; the UI and its /api proxy are open.
+{{- end }}
 {{- end }}
 
 {{- if and (not .Values.redis.enabled) (not .Values.externalRedisUrl) }}

@@ -42,7 +42,8 @@
       poll_interval: 15s
       run_lookup_timeout: 90s
     rings:
-      int:  { target_env: int,  health_url: "https://int-nebuladb.nebuladb.net/" }
-      test: { target_env: test, health_url: "https://test-showcase.nebuladb.net/" }
-      acc:  { target_env: acc,  health_url: "https://acc-showcase.nebuladb.net/" }
-      prod: { target_env: prod, health_url: "https://showcase.nebuladb.net/" }
+      # /livez skips the showcase's basic auth (`/` answers 401).
+      int:  { target_env: int,  health_url: "https://int-nebuladb.nebuladb.net/livez" }
+      test: { target_env: test, health_url: "https://test-showcase.nebuladb.net/livez" }
+      acc:  { target_env: acc,  health_url: "https://acc-showcase.nebuladb.net/livez" }
+      prod: { target_env: prod, health_url: "https://showcase.nebuladb.net/livez" }

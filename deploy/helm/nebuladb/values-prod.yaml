@@ -103,6 +103,14 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
+  # Basic auth is OFF in prod only until the leads dump (index migration,
+  # ~/nebuladb-migration/index-migration-oct-2026) finishes: it reads
+  # through https://showcase.nebuladb.net/api without credentials. Flip
+  # `enabled` back to true (and seed nebuladb/prod/showcase-auth) then.
+  auth:
+    enabled: false
+    vault:
+      enabled: true
 
 # Claude agents example suite (MCP → NebulaDB), exposed at /examples.
 examples:

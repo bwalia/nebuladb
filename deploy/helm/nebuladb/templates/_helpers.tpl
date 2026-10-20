@@ -152,3 +152,12 @@ in-cluster DNS of the server Service.
 {{ printf "http://%s:%d" (include "nebuladb.fullname" .) (int .Values.server.service.restPort) }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Secret holding the showcase basic-auth SHOWCASE_AUTH_USERNAME /
+SHOWCASE_AUTH_PASSWORD: `showcase.auth.existingSecret`, else the one the
+chart renders (ExternalSecret target or generated).
+*/}}
+{{- define "nebuladb.showcase.authSecretName" -}}
+{{- .Values.showcase.auth.existingSecret | default (printf "%s-showcase-auth" (include "nebuladb.fullname" .)) -}}
+{{- end -}}

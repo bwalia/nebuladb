@@ -151,7 +151,8 @@ endpoints:
   # ---------------------------------------------------------------------------
   - name: Showcase UI
     group: Demo
-    url: "http://showcase:80/"
+    # /livez: the showcase's auth-exempt liveness route (`/` is 401).
+    url: "http://showcase:80/livez"
     interval: 30s
     conditions:
       - "[STATUS] == 200"
