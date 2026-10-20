@@ -1,0 +1,406 @@
+{
+  "title": "NebulaDB — Backup & Restore",
+  "uid": "nebula-backup",
+  "schemaVersion": 39,
+  "version": 2,
+  "editable": false,
+  "refresh": "30s",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "tags": [
+    "nebuladb",
+    "backup",
+    "restore"
+  ],
+  "description": "Backup/restore job health (design 0002 §9). Age of last success, failure rate, duration, and size/throughput of the latest successful backup.",
+  "templating": {
+    "list": [
+      {
+        "name": "role",
+        "type": "custom",
+        "label": "Role",
+        "query": "leader,follower",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "leader",
+            "value": "leader"
+          },
+          {
+            "selected": false,
+            "text": "follower",
+            "value": "follower"
+          }
+        ]
+      }
+    ]
+  },
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "nebuladb"
+      ],
+      "title": "NebulaDB dashboards",
+      "type": "dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Last backup age",
+      "description": "Wall time since the most recent successful backup. Absent until the first success. Backed by NebulaBackupStale (>25h).",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "time() - nebula_backup_last_success_timestamp_seconds{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 86400
+              },
+              {
+                "color": "red",
+                "value": 90000
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Jobs running",
+      "description": "In-process backup/restore jobs currently in Running phase.",
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_backup_jobs_running{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Backup attempts",
+      "gridPos": {
+        "x": 10,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_backup_attempts_total{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Backup failures",
+      "description": "Backed by NebulaBackupFailures.",
+      "gridPos": {
+        "x": 15,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_backup_failures_total{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Last backup size",
+      "gridPos": {
+        "x": 19,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_backup_size_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Backup / restore rate",
+      "description": "Attempts and failures per second. Failures should stay flat at zero outside intentional drills.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(nebula_backup_attempts_total{service=\"nebula-server\",role=~\"$role\"}[15m])",
+          "refId": "A",
+          "legendFormat": "{{role}} backup attempts/s"
+        },
+        {
+          "expr": "rate(nebula_backup_failures_total{service=\"nebula-server\",role=~\"$role\"}[15m])",
+          "refId": "B",
+          "legendFormat": "{{role}} backup failures/s"
+        },
+        {
+          "expr": "rate(nebula_restore_attempts_total{service=\"nebula-server\",role=~\"$role\"}[15m])",
+          "refId": "C",
+          "legendFormat": "{{role}} restore attempts/s"
+        },
+        {
+          "expr": "rate(nebula_restore_failures_total{service=\"nebula-server\",role=~\"$role\"}[15m])",
+          "refId": "D",
+          "legendFormat": "{{role}} restore failures/s"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Average backup duration",
+      "description": "rate(sum)/rate(count) over successful backups. Spikes often mean a larger corpus or slow object storage.",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(nebula_backup_duration_seconds_sum{service=\"nebula-server\",role=~\"$role\"}[1h]) / clamp_min(rate(nebula_backup_duration_seconds_count{service=\"nebula-server\",role=~\"$role\"}[1h]), 0.001)",
+          "refId": "A",
+          "legendFormat": "{{role}} avg duration"
+        },
+        {
+          "expr": "rate(nebula_restore_duration_seconds_sum{service=\"nebula-server\",role=~\"$role\"}[1h]) / clamp_min(rate(nebula_restore_duration_seconds_count{service=\"nebula-server\",role=~\"$role\"}[1h]), 0.001)",
+          "refId": "B",
+          "legendFormat": "{{role}} restore avg duration"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Last backup size & throughput",
+      "description": "Gauges overwrite on each success — useful as a step series of recent job outcomes.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "nebula_backup_size_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}} size"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Backup throughput",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "nebula_backup_throughput_bytes_per_sec{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}} B/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Restore attempts",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_restore_attempts_total{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Restore failures",
+      "gridPos": {
+        "x": 6,
+        "y": 20,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_restore_failures_total{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Last restore age",
+      "description": "Absent until a restore succeeds. Rare in prod — mostly useful during DR drills.",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "time() - nebula_restore_last_success_timestamp_seconds{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Prometheus alerts",
+        "datasource": "Prometheus",
+        "enable": true,
+        "expr": "ALERTS{alertstate=\"firing\",alertname=~\"Nebula.+\"}",
+        "iconColor": "red",
+        "titleFormat": "{{ $labels.alertname }}",
+        "tagKeys": "severity,role",
+        "textFormat": "{{ $labels.alertname }}"
+      }
+    ]
+  }
+}

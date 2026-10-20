@@ -1,0 +1,229 @@
+{
+  "title": "NebulaDB — Stack health",
+  "uid": "nebula-stack",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "tags": ["nebuladb", "gatus", "uptime"],
+  "description": "Gatus probe results for every compose service. Complements the per-node NebulaDB dashboards with a stack-wide up/down view.",
+  "templating": {
+    "list": [
+      {
+        "name": "group",
+        "type": "query",
+        "label": "Group",
+        "datasource": "Prometheus",
+        "query": "label_values(gatus_results_endpoint_success, group)",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": ["nebuladb"],
+      "title": "NebulaDB dashboards",
+      "type": "dashboards"
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Prometheus alerts",
+        "datasource": "Prometheus",
+        "enable": true,
+        "expr": "ALERTS{alertstate=\"firing\",alertname=~\"Nebula.+|Gatus.+\"}",
+        "iconColor": "red",
+        "titleFormat": "{{ $labels.alertname }}",
+        "tagKeys": "severity,severity",
+        "textFormat": "{{ $labels.alertname }}"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Endpoints up",
+      "description": "Count of Gatus probes currently succeeding in the selected group(s).",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "count(gatus_results_endpoint_success{group=~\"$group\"} == 1) OR on() vector(0)",
+          "refId": "A",
+          "legendFormat": "up"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Endpoints down",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "count(gatus_results_endpoint_success{group=~\"$group\"} == 0) OR on() vector(0)",
+          "refId": "A",
+          "legendFormat": "down"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Gatus scrape",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "up{job=\"gatus\"}",
+          "refId": "A",
+          "legendFormat": "gatus"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "DOWN", "color": "red" },
+                "1": { "text": "up", "color": "green" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Success ratio (15m)",
+      "description": "Fraction of Gatus results with success=true over the last 15 minutes.",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(rate(gatus_results_total{group=~\"$group\",success=\"true\"}[15m])) / clamp_min(sum(rate(gatus_results_total{group=~\"$group\"}[15m])), 0.001)",
+          "refId": "A",
+          "legendFormat": "success ratio"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.9 },
+              { "color": "green", "value": 0.99 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "state-timeline",
+      "title": "Endpoint success timeline",
+      "description": "1 = last probe succeeded, 0 = failed. Optional / multi-region / replication tiles may sit at 0 in the default stack — that is expected.",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 10 },
+      "targets": [
+        {
+          "expr": "gatus_results_endpoint_success{group=~\"$group\"}",
+          "refId": "A",
+          "legendFormat": "{{group}} / {{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": { "text": "down", "color": "red" },
+                "1": { "text": "up", "color": "green" }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "alignValue": "center"
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Probe duration",
+      "description": "Last observed request duration per endpoint (Gatus gauge).",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "gatus_results_duration_seconds{group=~\"$group\"}",
+          "refId": "A",
+          "legendFormat": "{{group}} / {{name}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 5
+          }
+        }
+      }
+    }
+  ]
+}
