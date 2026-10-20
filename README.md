@@ -62,6 +62,12 @@ ones when they're already taken on your machine):
 | `http://localhost:9090`                   | Prometheus UI                                          |
 | `http://localhost:3000`                   | Grafana (admin / admin)                                |
 
+Dashboards live in `deploy/grafana/dashboards/` and are also published to
+[grafana.workstation.co.uk](https://grafana.workstation.co.uk/) (folder
+**NebulaDB**) via `./deploy/grafana/deploy.sh`. When you add `nebula_*`
+metrics, update the matching dashboard JSON in the **same PR** — merges
+to `main` that touch `deploy/grafana/**` auto-deploy.
+
 Open the showcase and try the **Hybrid** or **RAG chat** tab after
 `start.sh` finishes — the corpus is already seeded.
 
