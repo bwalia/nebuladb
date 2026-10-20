@@ -1,0 +1,49 @@
+# Deploys the NebulaDB Grafana dashboard suite (deploy/grafana/) to the
+# central obs Grafana whenever dashboard JSON lands on main.
+#
+# Secrets / variables (repo-level):
+#   GRAFANA_ADMIN_PASSWORD  (secret)  admin password for the target Grafana
+#   GRAFANA_URL             (variable, optional) defaults to
+#                           https://grafana.workstation.co.uk
+#
+# The deploy script is idempotent (stable dashboard uids + overwrite), so
+# re-runs and manual dispatches are always safe.
+#
+# Convention: PRs that add nebula_* metrics should update the matching
+# dashboard under deploy/grafana/dashboards/ in the same PR so this
+# workflow publishes the panels on merge.
+name: Deploy Grafana Dashboards
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/grafana/**"
+      - ".github/workflows/deploy-grafana-dashboards.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: grafana-dashboards
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy dashboards to Grafana
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Deploy to Grafana
+        env:
+          GRAFANA_URL: ${{ vars.GRAFANA_URL || 'https://grafana.workstation.co.uk' }}
+          GRAFANA_USER: admin
+          GRAFANA_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+        run: |
+          if [ -z "${GRAFANA_PASSWORD}" ]; then
+            echo "::error::repo secret GRAFANA_ADMIN_PASSWORD is not set"
+            exit 1
+          fi
+          chmod +x ./deploy/grafana/deploy.sh
+          ./deploy/grafana/deploy.sh

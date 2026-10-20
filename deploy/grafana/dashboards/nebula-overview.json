@@ -2,134 +2,183 @@
   "title": "NebulaDB — Overview",
   "uid": "nebula-overview",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 3,
   "editable": false,
   "refresh": "10s",
-  "time": { "from": "now-15m", "to": "now" },
-  "tags": ["nebuladb"],
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "tags": [
+    "nebuladb"
+  ],
   "panels": [
     {
-      "id": 1,
+      "id": 100,
       "type": "stat",
-      "title": "Documents indexed",
-      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "title": "Scrape up",
+      "description": "Prometheus target health for selected role(s).",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
       "targets": [
-        { "expr": "nebula_docs_inserted{service=\"nebula-server\"}", "refId": "A" }
-      ],
-      "fieldConfig": { "defaults": { "unit": "none" } }
-    },
-    {
-      "id": 2,
-      "type": "stat",
-      "title": "Docs deleted",
-      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
-      "targets": [
-        { "expr": "nebula_docs_deleted{service=\"nebula-server\"}", "refId": "A" }
-      ]
-    },
-    {
-      "id": 3,
-      "type": "stat",
-      "title": "Total API requests",
-      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
-      "targets": [
-        { "expr": "nebula_requests_total{service=\"nebula-server\"}", "refId": "A" }
-      ]
-    },
-    {
-      "id": 4,
-      "type": "stat",
-      "title": "Auth failures",
-      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
-      "targets": [
-        { "expr": "nebula_auth_failures{service=\"nebula-server\"}", "refId": "A" }
+        {
+          "expr": "up{job=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
       ],
       "fieldConfig": {
         "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green"
+                }
+              }
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
             ]
           }
         }
       }
     },
     {
-      "id": 5,
-      "type": "timeseries",
-      "title": "Request rate (per 30s)",
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "rate(nebula_requests_total{service=\"nebula-server\"}[1m])",
-          "refId": "A",
-          "legendFormat": "requests/s"
-        },
-        {
-          "expr": "rate(nebula_requests_errors{service=\"nebula-server\"}[1m])",
-          "refId": "B",
-          "legendFormat": "errors/s"
-        }
-      ]
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Search workload (per 30s)",
-      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "rate(nebula_searches_vector{service=\"nebula-server\"}[1m])",
-          "refId": "A",
-          "legendFormat": "vector"
-        },
-        {
-          "expr": "rate(nebula_searches_semantic{service=\"nebula-server\"}[1m])",
-          "refId": "B",
-          "legendFormat": "semantic"
-        },
-        {
-          "expr": "rate(nebula_rag_requests{service=\"nebula-server\"}[1m])",
-          "refId": "C",
-          "legendFormat": "rag"
-        }
-      ]
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Embedding cache",
-      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "rate(nebula_embed_cache_hits{service=\"nebula-server\"}[1m])",
-          "refId": "A",
-          "legendFormat": "hits/s"
-        },
-        {
-          "expr": "rate(nebula_embed_cache_misses{service=\"nebula-server\"}[1m])",
-          "refId": "B",
-          "legendFormat": "misses/s"
-        },
-        {
-          "expr": "rate(nebula_embed_cache_evictions{service=\"nebula-server\"}[1m])",
-          "refId": "C",
-          "legendFormat": "evictions/s"
-        }
-      ]
-    },
-    {
-      "id": 8,
+      "id": 101,
       "type": "stat",
-      "title": "Cache hit ratio",
-      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
-      "description": "hits / (hits + misses) over the last 5 minutes",
+      "title": "Caught up",
+      "description": "Replication catch-up (leaders always 1).",
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
       "targets": [
         {
-          "expr": "sum(rate(nebula_embed_cache_hits{service=\"nebula-server\"}[5m])) / (sum(rate(nebula_embed_cache_hits{service=\"nebula-server\"}[5m])) + sum(rate(nebula_embed_cache_misses{service=\"nebula-server\"}[5m])))",
-          "refId": "A"
+          "expr": "nebula_replication_caught_up{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "lagging",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "caught up",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 102,
+      "type": "stat",
+      "title": "Operating mode",
+      "gridPos": {
+        "x": 9,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_operating_mode{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "normal",
+                  "color": "green"
+                },
+                "1": {
+                  "text": "cpu",
+                  "color": "orange"
+                },
+                "2": {
+                  "text": "memory",
+                  "color": "orange"
+                },
+                "3": {
+                  "text": "disk",
+                  "color": "orange"
+                },
+                "4": {
+                  "text": "DISK CRITICAL",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": 103,
+      "type": "stat",
+      "title": "Memory of cap",
+      "gridPos": {
+        "x": 14,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_memory_resident_bytes{service=\"nebula-server\",role=~\"$role\"} / nebula_memory_limit_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
         }
       ],
       "fieldConfig": {
@@ -140,9 +189,275 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "orange", "value": 0.3 },
-              { "color": "green", "value": 0.7 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.85
+              },
+              {
+                "color": "red",
+                "value": 0.93
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 104,
+      "type": "stat",
+      "title": "Last backup age",
+      "description": "Absent until first successful backup.",
+      "gridPos": {
+        "x": 19,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "time() - nebula_backup_last_success_timestamp_seconds{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 86400
+              },
+              {
+                "color": "red",
+                "value": 90000
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Documents indexed",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_docs_inserted{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Docs deleted",
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_docs_deleted{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total API requests",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_requests_total{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Auth failures",
+      "gridPos": {
+        "x": 18,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_auth_failures{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Request rate (req/s)",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(nebula_requests_total{service=\"nebula-server\",role=~\"$role\"}[1m])",
+          "refId": "A",
+          "legendFormat": "{{role}} requests/s"
+        },
+        {
+          "expr": "rate(nebula_requests_errors{service=\"nebula-server\",role=~\"$role\"}[1m])",
+          "refId": "B",
+          "legendFormat": "{{role}} errors/s"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Search workload (req/s)",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(nebula_searches_vector{service=\"nebula-server\",role=~\"$role\"}[1m])",
+          "refId": "A",
+          "legendFormat": "{{role}} vector"
+        },
+        {
+          "expr": "rate(nebula_searches_semantic{service=\"nebula-server\",role=~\"$role\"}[1m])",
+          "refId": "B",
+          "legendFormat": "{{role}} semantic"
+        },
+        {
+          "expr": "rate(nebula_rag_requests{service=\"nebula-server\",role=~\"$role\"}[1m])",
+          "refId": "C",
+          "legendFormat": "{{role}} rag"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Embedding cache",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(nebula_embed_cache_hits{service=\"nebula-server\",role=~\"$role\"}[1m])",
+          "refId": "A",
+          "legendFormat": "{{role}} hits/s"
+        },
+        {
+          "expr": "rate(nebula_embed_cache_misses{service=\"nebula-server\",role=~\"$role\"}[1m])",
+          "refId": "B",
+          "legendFormat": "{{role}} misses/s"
+        },
+        {
+          "expr": "rate(nebula_embed_cache_evictions{service=\"nebula-server\",role=~\"$role\"}[1m])",
+          "refId": "C",
+          "legendFormat": "{{role}} evictions/s"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Cache hit ratio",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "description": "hits / (hits + misses) over the last 5 minutes",
+      "targets": [
+        {
+          "expr": "sum(rate(nebula_embed_cache_hits{service=\"nebula-server\",role=~\"$role\"}[5m])) / (sum(rate(nebula_embed_cache_hits{service=\"nebula-server\",role=~\"$role\"}[5m])) + sum(rate(nebula_embed_cache_misses{service=\"nebula-server\",role=~\"$role\"}[5m])))",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.3
+              },
+              {
+                "color": "green",
+                "value": 0.7
+              }
             ]
           }
         }
@@ -152,18 +467,36 @@
       "id": 9,
       "type": "stat",
       "title": "Rate limited (total)",
-      "gridPos": { "x": 0, "y": 20, "w": 6, "h": 4 },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 6,
+        "h": 4
+      },
       "targets": [
-        { "expr": "nebula_rate_limited{service=\"nebula-server\"}", "refId": "A" }
+        {
+          "expr": "nebula_rate_limited{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 1 },
-              { "color": "red", "value": 100 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
             ]
           }
         }
@@ -173,17 +506,32 @@
       "id": 10,
       "type": "stat",
       "title": "JWT verification failures",
-      "gridPos": { "x": 6, "y": 20, "w": 6, "h": 4 },
+      "gridPos": {
+        "x": 6,
+        "y": 24,
+        "w": 6,
+        "h": 4
+      },
       "targets": [
-        { "expr": "nebula_jwt_failures{service=\"nebula-server\"}", "refId": "A" }
+        {
+          "expr": "nebula_jwt_failures{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         }
@@ -192,25 +540,93 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "Auth + rate-limit events (per 30s)",
-      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 4 },
+      "title": "Auth + rate-limit events (req/s)",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 4
+      },
       "targets": [
         {
-          "expr": "rate(nebula_auth_failures{service=\"nebula-server\"}[1m])",
+          "expr": "rate(nebula_auth_failures{service=\"nebula-server\",role=~\"$role\"}[1m])",
           "refId": "A",
-          "legendFormat": "auth_failures/s"
+          "legendFormat": "{{role}} auth_failures/s"
         },
         {
-          "expr": "rate(nebula_jwt_failures{service=\"nebula-server\"}[1m])",
+          "expr": "rate(nebula_jwt_failures{service=\"nebula-server\",role=~\"$role\"}[1m])",
           "refId": "B",
-          "legendFormat": "jwt_failures/s"
+          "legendFormat": "{{role}} jwt_failures/s"
         },
         {
-          "expr": "rate(nebula_rate_limited{service=\"nebula-server\"}[1m])",
+          "expr": "rate(nebula_rate_limited{service=\"nebula-server\",role=~\"$role\"}[1m])",
           "refId": "C",
-          "legendFormat": "rate_limited/s"
+          "legendFormat": "{{role}} rate_limited/s"
         }
       ]
     }
-  ]
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "role",
+        "type": "custom",
+        "label": "Role",
+        "query": "leader,follower",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "leader",
+            "value": "leader"
+          },
+          {
+            "selected": false,
+            "text": "follower",
+            "value": "follower"
+          }
+        ]
+      }
+    ]
+  },
+  "description": "Cluster traffic + HA strip (scrape, replication, mode, memory, backup age). Use Role to isolate leader vs follower.",
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "nebuladb"
+      ],
+      "title": "NebulaDB dashboards",
+      "type": "dashboards"
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Prometheus alerts",
+        "datasource": "Prometheus",
+        "enable": true,
+        "expr": "ALERTS{alertstate=\"firing\",alertname=~\"Nebula.+\"}",
+        "iconColor": "red",
+        "titleFormat": "{{ $labels.alertname }}",
+        "tagKeys": "severity,role",
+        "textFormat": "{{ $labels.alertname }}"
+      }
+    ]
+  }
 }

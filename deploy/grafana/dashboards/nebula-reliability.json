@@ -1,0 +1,549 @@
+{
+  "title": "NebulaDB — Reliability",
+  "uid": "nebula-reliability",
+  "schemaVersion": 39,
+  "version": 2,
+  "editable": false,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "tags": [
+    "nebuladb",
+    "reliability",
+    "ha",
+    "replication"
+  ],
+  "description": "Operating mode, resource pressure, memory headroom, and replication catch-up for both HA nodes (design 0010 + 0009). Use the Role filter to isolate leader or follower.",
+  "templating": {
+    "list": [
+      {
+        "name": "role",
+        "type": "custom",
+        "label": "Role",
+        "query": "leader,follower",
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "leader",
+            "value": "leader"
+          },
+          {
+            "selected": false,
+            "text": "follower",
+            "value": "follower"
+          }
+        ]
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Scrape up",
+      "description": "Prometheus target health for the selected role(s). 0 = scrape failing.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "up",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Operating mode",
+      "description": "0=normal 1=cpu 2=memory 3=disk 4=disk_critical (writes gated). Backed by NebulaDiskCriticalWritesGated / NebulaNodeDegraded.",
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_operating_mode{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "normal",
+                  "color": "green"
+                },
+                "1": {
+                  "text": "cpu pressure",
+                  "color": "orange"
+                },
+                "2": {
+                  "text": "memory pressure",
+                  "color": "orange"
+                },
+                "3": {
+                  "text": "disk pressure",
+                  "color": "orange"
+                },
+                "4": {
+                  "text": "DISK CRITICAL",
+                  "color": "red"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 4
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Replication caught up",
+      "description": "1 when the node is caught up to its leader (leaders/standalones always report 1). Backed by NebulaFollowerNotCaughtUp.",
+      "gridPos": {
+        "x": 9,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_replication_caught_up{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "lagging",
+                  "color": "red"
+                },
+                "1": {
+                  "text": "caught up",
+                  "color": "green"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Replication lag",
+      "description": "Follower same-segment byte lag behind the leader WAL tip. Absent on leaders. Backed by NebulaReplicationLagHigh (>100 MiB).",
+      "gridPos": {
+        "x": 14,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_replication_lag_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 10485760
+              },
+              {
+                "color": "red",
+                "value": 104857600
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Memory of cgroup cap",
+      "description": "Resident / limit. Backed by NebulaMemoryNearCap (85%) and NebulaMemoryCritical (93%).",
+      "gridPos": {
+        "x": 19,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "nebula_memory_resident_bytes{service=\"nebula-server\",role=~\"$role\"} / nebula_memory_limit_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.85
+              },
+              {
+                "color": "red",
+                "value": 0.93
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Operating mode timeline",
+      "description": "Mode should sit at 0. Sustained >0 or flapping trips NebulaNodeDegraded / NebulaModeFlapping.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "nebula_operating_mode{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 4,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 10
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "normal"
+                },
+                "1": {
+                  "text": "cpu"
+                },
+                "2": {
+                  "text": "memory"
+                },
+                "3": {
+                  "text": "disk"
+                },
+                "4": {
+                  "text": "disk_critical"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Resource pressure",
+      "description": "Per-resource level: 0=ok 1=high 2=critical. Absent when the sampler cannot read that source.",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "nebula_resource_pressure{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}} {{resource}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 2,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 10
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Memory headroom",
+      "description": "Resident usage vs cgroup hard limit. Crossing ~85% risks OOM on the next snapshot.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "nebula_memory_resident_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}} resident"
+        },
+        {
+          "expr": "nebula_memory_limit_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "B",
+          "legendFormat": "{{role}} limit"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Disk free on data volume",
+      "description": "Unprivileged-available free bytes. Disk-critical mode gates writes when free space collapses.",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "nebula_disk_free_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}} free"
+        },
+        {
+          "expr": "nebula_disk_total_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "B",
+          "legendFormat": "{{role}} total"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "CPU utilization",
+      "description": "Process CPU over the sampling window as a fraction of all cores.",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "nebula_cpu_utilization_ratio{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Replication lag",
+      "description": "Follower byte lag over time. Leaders omit this series.",
+      "gridPos": {
+        "x": 8,
+        "y": 20,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "nebula_replication_lag_bytes{service=\"nebula-server\",role=~\"$role\"}",
+          "refId": "A",
+          "legendFormat": "{{role}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Mode transitions & write rejects",
+      "description": "Transition rate (flapping signal) and 503 write_unavailable rejects from the disk-critical gate.",
+      "gridPos": {
+        "x": 16,
+        "y": 20,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(nebula_mode_transitions_total{service=\"nebula-server\",role=~\"$role\"}[5m])",
+          "refId": "A",
+          "legendFormat": "{{role}} mode transitions/s"
+        },
+        {
+          "expr": "rate(nebula_writes_rejected_total{service=\"nebula-server\",role=~\"$role\"}[5m])",
+          "refId": "B",
+          "legendFormat": "{{role}} writes rejected/s"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "nebuladb"
+      ],
+      "title": "NebulaDB dashboards",
+      "type": "dashboards"
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "Prometheus alerts",
+        "datasource": "Prometheus",
+        "enable": true,
+        "expr": "ALERTS{alertstate=\"firing\",alertname=~\"Nebula.+\"}",
+        "iconColor": "red",
+        "titleFormat": "{{ $labels.alertname }}",
+        "tagKeys": "severity,role",
+        "textFormat": "{{ $labels.alertname }}"
+      }
+    ]
+  }
+}
