@@ -21,6 +21,13 @@ import { TalentMatchTab } from "./tabs/TalentMatchTab";
 import { IncidentCopilotTab } from "./tabs/IncidentCopilotTab";
 import { ContractReviewTab } from "./tabs/ContractReviewTab";
 import { SupportDeskTab } from "./tabs/SupportDeskTab";
+import { PolicyDeskTab } from "./tabs/PolicyDeskTab";
+import { RfpResponderTab } from "./tabs/RfpResponderTab";
+import { OnboardingTab } from "./tabs/OnboardingTab";
+import { EntityResolveTab } from "./tabs/EntityResolveTab";
+import { LookalikeTab } from "./tabs/LookalikeTab";
+import { FraudTab } from "./tabs/FraudTab";
+import { RecommendTab } from "./tabs/RecommendTab";
 import { BlogTab } from "./tabs/BlogTab";
 
 type TabId =
@@ -37,6 +44,13 @@ type TabId =
   | "incidents"
   | "contracts"
   | "support"
+  | "policy"
+  | "rfp"
+  | "onboarding"
+  | "entity"
+  | "lookalike"
+  | "fraud"
+  | "recommend"
   | "rag"
   | "hybrid"
   | "agents"
@@ -51,7 +65,7 @@ interface NavItem {
   label: string;
   hint: string;
   icon: string;
-  group: "home" | "data" | "ai" | "apps" | "cluster" | "ops";
+  group: "home" | "data" | "ai" | "apps" | "use" | "cluster" | "ops";
 }
 
 const NAV: NavItem[] = [
@@ -68,10 +82,17 @@ const NAV: NavItem[] = [
   { id: "mcp", label: "MCP", hint: "Live MCP server + playground", icon: "⚯", group: "ai" },
   { id: "companies", label: "Companies House", hint: "UK CH search + RAG chat", icon: "⌂", group: "apps" },
   { id: "shop", label: "Shop catalogue", hint: "Stock SOT + product RAG", icon: "▣", group: "apps" },
-  { id: "talent", label: "Talent Match", hint: "Job board: SQL hard filters + multi-facet semantic matching + recruiter chat", icon: "⚑", group: "apps" },
+  { id: "talent", label: "Talent Match", hint: "Job board: SQL hard filters + multi-facet semantic matching + recruiter chat", icon: "♟", group: "apps" },
   { id: "incidents", label: "Incident Copilot", hint: "Alert → similar past incidents + runbooks → grounded triage chat", icon: "⚠", group: "apps" },
   { id: "contracts", label: "Contract Review", hint: "Clause-by-clause review against a legal playbook, with redline chat", icon: "§", group: "apps" },
   { id: "support", label: "Support Desk", hint: "Ticket triage by nearest neighbours + cited reply drafts", icon: "✉", group: "apps" },
+  { id: "policy", label: "Policy Desk", hint: "HR / security / finance handbook Q&A with citations", icon: "▤", group: "apps" },
+  { id: "rfp", label: "RFP Responder", hint: "Buyer questions → capabilities + past proposals → cited drafts", icon: "❐", group: "apps" },
+  { id: "onboarding", label: "Onboarding", hint: "Day-one checklist + role-filtered handbook concierge", icon: "⚑", group: "apps" },
+  { id: "entity", label: "Entity Resolve", hint: "CRM dedupe via semantic neighbours + merge/review scores", icon: "⊕", group: "use" },
+  { id: "lookalike", label: "Lookalike Accounts", hint: "Won ICP → similar prospects with industry filters", icon: "◈", group: "use" },
+  { id: "fraud", label: "Fraud Neighbours", hint: "Alert → labelled tx neighbourhood → risk vote (no LLM)", icon: "⚡", group: "use" },
+  { id: "recommend", label: "Recommendations", hint: "Basket → in-stock SKUs under price/category filters", icon: "↝", group: "use" },
   { id: "cluster", label: "Cluster", hint: "Topology, regions, failover", icon: "⬢", group: "cluster" },
   { id: "rebalance", label: "Rebalance", hint: "Zero-downtime node swap", icon: "⇄", group: "cluster" },
   { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },
@@ -83,6 +104,7 @@ const GROUP_LABELS: Record<NavItem["group"], string> = {
   data: "Data",
   ai: "AI",
   apps: "RAG apps",
+  use: "Applied use cases",
   cluster: "Cluster",
   ops: "Operations",
 };
@@ -207,6 +229,13 @@ export function App() {
               {tab === "incidents" && <IncidentCopilotTab />}
               {tab === "contracts" && <ContractReviewTab />}
               {tab === "support" && <SupportDeskTab />}
+              {tab === "policy" && <PolicyDeskTab />}
+              {tab === "rfp" && <RfpResponderTab />}
+              {tab === "onboarding" && <OnboardingTab />}
+              {tab === "entity" && <EntityResolveTab />}
+              {tab === "lookalike" && <LookalikeTab />}
+              {tab === "fraud" && <FraudTab />}
+              {tab === "recommend" && <RecommendTab />}
               {tab === "rag" && <RagTab />}
               {tab === "hybrid" && <HybridTab />}
               {tab === "agents" && <AgentsTab />}

@@ -150,10 +150,13 @@ ha:
     deployPeerLeader: true
     persistence:
       size: 50Gi
+    # Same full corpus as the leader (~40Gi+ RSS). Cap at 64Gi while the
+    # local-path PVC is pinned to debian004 (~64Gi allocatable); move the
+    # PVC to a larger node before matching the leader's 96Gi limit.
     resources:
       limits:
         cpu: "4"
-        memory: "32Gi"
+        memory: "64Gi"
       requests:
         cpu: "500m"
         memory: "8Gi"
