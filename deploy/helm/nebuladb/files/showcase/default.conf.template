@@ -159,6 +159,10 @@ server {
     location = /oauth2/auth {
         auth_basic off;
         auth_request off;
+        # Server-level error_page 401 → oauth start must NOT apply here:
+        # auth_request only accepts 2xx/401/403 from this subrequest; a
+        # rewritten 302 becomes "auth request unexpected status: 302" → 500.
+        error_page 401 = @oauth2_auth_unauthorized;
         proxy_pass http://127.0.0.1:4180;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -166,8 +170,16 @@ server {
         proxy_set_header Content-Length "";
         proxy_pass_request_body off;
     }
+    location @oauth2_auth_unauthorized {
+        internal;
+        default_type text/plain;
+        return 401 "Unauthorized\n";
+    }
     location @showcase_oauth_start {
-        return 302 /oauth2/start?rd=$scheme://$host$request_uri;
+        # Prefer X-Forwarded-Proto: TLS terminates at the edge, so $scheme
+        # is http inside the cluster and would bake a bad rd= into the
+        # Google state. Relative rd lets oauth2-proxy rebuild the URL.
+        return 302 /oauth2/start?rd=$request_uri;
     }
 
     # 503-from-upstream interception. When nebula-server is in WAL
