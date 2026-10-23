@@ -12,14 +12,25 @@ name: deploy
 on:
   push:
     branches: [main]
+    # Skip the self-hosted docker-compose deploy for docs/CI/meta-only
+    # pushes. Those used to pile up behind `deploy-int` concurrency and
+    # sit Pending forever when the `int` runner was offline.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/workflows/**'
+      - '!.github/workflows/deploy.yml'
+      - 'prompt-showcase/**'
+      - 'LICENSE*'
+      - '.gitignore'
   workflow_dispatch:
 
-# One deploy at a time. A second push while a build is mid-flight should
-# wait, not race — `docker compose up` on the same project name from two
-# concurrent jobs would interleave container recreates.
+# One deploy at a time. Prefer the newest push: cancel the in-flight /
+# queued job so stale deploys (and offline-runner Pending queues) do not
+# block main for hours. Manual `workflow_dispatch` shares the same group.
 concurrency:
   group: deploy-int
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read

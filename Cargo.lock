@@ -2590,7 +2590,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nebula-backup"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -2619,7 +2619,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-bm25"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "ahash 0.8.12",
  "proptest",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-cache"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "lru 0.12.5",
@@ -2640,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-cdc"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "axum",
@@ -2657,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-chunk"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "proptest",
  "serde",
@@ -2667,7 +2667,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-client"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "axum",
  "hyper 1.9.0",
@@ -2683,7 +2683,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-core"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "serde",
  "thiserror 1.0.69",
@@ -2691,7 +2691,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-embed"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -2706,7 +2706,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-grpc"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "bincode",
@@ -2735,7 +2735,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-index"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -2758,7 +2758,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-ingest-worker"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "anyhow",
  "clap",
@@ -2776,7 +2776,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-llm"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "axum",
@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-mcp"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "axum",
  "http 1.4.0",
@@ -2813,7 +2813,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-pgwire"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "futures",
@@ -2832,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-raft"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "bincode",
@@ -2858,7 +2858,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-redis-cache"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "nebula-embed",
@@ -2871,7 +2871,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-rerank"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -2883,7 +2883,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-resource"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "libc",
  "parking_lot",
@@ -2893,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-search"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "dashmap",
@@ -2916,7 +2916,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-server"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -2964,7 +2964,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-sql"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "async-trait",
  "futures",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-vector"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "ahash 0.8.12",
  "bincode",
@@ -3003,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "nebula-wal"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "bincode",
  "crc32fast",
@@ -3020,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "nebulactl"
-version = "0.1.0"
+version = "0.1.55"
 dependencies = [
  "anyhow",
  "clap",
