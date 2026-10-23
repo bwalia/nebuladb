@@ -8,10 +8,10 @@
 #   ${NEBULA_REGION_B_HOST}  host of the cross-region peer (or leader if none)
 #   ${NGINX_RESOLVER}        DNS server for variable-based proxy_pass
 #   ${NEBULA_MCP}            base URL of nebula-mcp (the /mcp route)
-#   ${SHOWCASE_AUTH_BASIC}   basic-auth realm, or `off`; computed at boot
-#                            by docker-entrypoint.d/15-showcase-auth.envsh
-#                            from SHOWCASE_AUTH_DISABLED / _USERNAME /
-#                            _PASSWORD (auth is on unless disabled)
+#   ${SHOWCASE_AUTH_BASIC}   basic-auth realm, or `off`; from
+#                            docker-entrypoint.d/15-showcase-auth.envsh
+#   Google OAuth gate (auth_request) is written at boot into
+#   /etc/nginx/showcase-oauth-gate.conf when SHOWCASE_GOOGLE_AUTH=true.
 # That lets the same image work in compose (service names, embedded DNS),
 # standalone (host.docker.internal), or k8s (Service DNS, cluster DNS).
 # In a single-node deploy leader and follower point at the same Service,
@@ -129,21 +129,45 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # Basic auth over the whole showcase: UI, /api (which carries the
-    # injected app bearer, so an open proxy would be an open API), /mcp.
-    # On by default; only SHOWCASE_AUTH_DISABLED=true turns it off. The
-    # browser replays the credentials on its same-origin fetch/SSE calls,
-    # and every proxied route overwrites Authorization before it reaches
-    # nebula-server. Probes use /livez and /healthz, exempted below.
+    # Basic auth (optional) and/or Google OAuth via oauth2-proxy
+    # (auth_request). Probes and /oauth2/* are exempt. The Google gate
+    # snippet is empty unless SHOWCASE_GOOGLE_AUTH=true at boot.
     auth_basic ${SHOWCASE_AUTH_BASIC};
     auth_basic_user_file /etc/nginx/showcase.htpasswd;
+    include /etc/nginx/showcase-oauth-gate.conf;
 
     # Liveness of this nginx alone, for kubelet / compose / edge probes.
     location = /livez {
         auth_basic off;
+        auth_request off;
         access_log off;
         default_type text/plain;
         return 200 "ok\n";
+    }
+
+    # oauth2-proxy (sidecar on :4180). Used when SHOWCASE_GOOGLE_AUTH=true.
+    location /oauth2/ {
+        auth_basic off;
+        auth_request off;
+        proxy_pass http://127.0.0.1:4180;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Auth-Request-Redirect $scheme://$host$request_uri;
+    }
+    location = /oauth2/auth {
+        auth_basic off;
+        auth_request off;
+        proxy_pass http://127.0.0.1:4180;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Uri $request_uri;
+        proxy_set_header Content-Length "";
+        proxy_pass_request_body off;
+    }
+    location @showcase_oauth_start {
+        return 302 /oauth2/start?rd=$scheme://$host$request_uri;
     }
 
     # 503-from-upstream interception. When nebula-server is in WAL
@@ -357,6 +381,7 @@ server {
     location /healthz {
         # Health only (no data), polled by monitors without credentials.
         auth_basic off;
+        auth_request off;
         proxy_pass http://nebula_read_pool;
         proxy_set_header Host $host;
         proxy_set_header Authorization "";

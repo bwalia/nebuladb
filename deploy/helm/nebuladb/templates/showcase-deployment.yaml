@@ -1,4 +1,10 @@
 {{- if .Values.showcase.enabled -}}
+{{- if and .Values.showcase.googleAuth.enabled (not .Values.showcase.googleAuth.redirectUrl) -}}
+{{- fail "showcase.googleAuth.enabled=true needs showcase.googleAuth.redirectUrl (e.g. https://showcase.nebuladb.net)" -}}
+{{- end -}}
+{{- if and .Values.showcase.googleAuth.enabled (not .Values.showcase.auth.vault.enabled) (not .Values.showcase.auth.existingSecret) -}}
+{{- fail "showcase.googleAuth.enabled=true needs showcase.auth.vault.enabled or showcase.auth.existingSecret (GOOGLE_OAUTH_* + OAUTH2_PROXY_COOKIE_SECRET)" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,8 +74,11 @@ spec:
             # Basic auth (apps/showcase/docker-entrypoint.d/15-showcase-auth.envsh).
             # Set explicitly so a SHOWCASE_AUTH_DISABLED key in the app
             # secret can't silently open the UI; only values can.
+            # Google OAuth forces basic off inside the entrypoint.
             - name: SHOWCASE_AUTH_DISABLED
               value: {{ (not .Values.showcase.auth.enabled) | quote }}
+            - name: SHOWCASE_GOOGLE_AUTH
+              value: {{ .Values.showcase.googleAuth.enabled | quote }}
             {{- if .Values.showcase.auth.enabled }}
             - name: SHOWCASE_AUTH_USERNAME
               valueFrom:
@@ -85,7 +94,7 @@ spec:
           {{- with .Values.showcase.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
-          # /livez is exempt from basic auth; `/` answers 401.
+          # /livez is exempt from auth; `/` answers 401 / oauth redirect.
           livenessProbe:
             httpGet:
               path: /livez
@@ -105,6 +114,45 @@ spec:
               mountPath: /etc/nginx/templates/default.conf.template
               subPath: default.conf.template
               readOnly: true
+        {{- if .Values.showcase.googleAuth.enabled }}
+        # Google OAuth: nginx auth_request → this sidecar on loopback.
+        - name: oauth2-proxy
+          image: "{{ .Values.showcase.googleAuth.image.repository }}:{{ .Values.showcase.googleAuth.image.tag }}"
+          imagePullPolicy: {{ .Values.showcase.googleAuth.image.pullPolicy }}
+          args:
+            - --provider=google
+            - --http-address=127.0.0.1:4180
+            - --upstream=static://202
+            - --email-domain={{ .Values.showcase.googleAuth.emailDomains }}
+            - --redirect-url={{ .Values.showcase.googleAuth.redirectUrl }}/oauth2/callback
+            - --reverse-proxy=true
+            - --set-xauthrequest=true
+            - --pass-access-token=false
+            - --skip-provider-button=true
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --cookie-expire=168h
+            - --cookie-refresh=1h
+          env:
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.showcase.authSecretName" . }}
+                  key: GOOGLE_OAUTH_CLIENT_ID
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.showcase.authSecretName" . }}
+                  key: GOOGLE_OAUTH_CLIENT_SECRET
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.showcase.authSecretName" . }}
+                  key: OAUTH2_PROXY_COOKIE_SECRET
+          {{- with .Values.showcase.googleAuth.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
         {{- if .Values.showcase.mcp.enabled }}
         # MCP adapter for the MCP tab. Loopback-only: nginx in this pod is
         # its sole client, which also satisfies rmcp's Host allow-list.

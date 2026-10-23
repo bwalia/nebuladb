@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
 import { api, type Health } from "./api";
+import {
+  fetchShowcaseUser,
+  logShowcaseVisit,
+  showcaseSignOutUrl,
+  type ShowcaseUser,
+} from "./auth";
 import { getTheme, toggleTheme } from "./theme";
 import { OverviewTab } from "./tabs/OverviewTab";
 import { DocumentsTab } from "./tabs/DocumentsTab";
@@ -126,6 +132,7 @@ export function App() {
   });
   const [health, setHealth] = useState<Health | null>(null);
   const [healthErr, setHealthErr] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<ShowcaseUser | null>(null);
 
   useEffect(() => {
     try {
@@ -156,6 +163,19 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const user = await fetchShowcaseUser();
+      if (cancelled || !user) return;
+      setViewer(user);
+      void logShowcaseVisit(user);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const grouped = NAV.reduce<Record<string, NavItem[]>>((acc, n) => {
     (acc[n.group] ||= []).push(n);
     return acc;
@@ -170,6 +190,7 @@ export function App() {
         onToggleTheme={() => setThemeState(toggleTheme())}
         health={health}
         healthErr={healthErr}
+        viewer={viewer}
         onToggleSidebar={() => setCollapsed((v) => !v)}
         sidebarCollapsed={collapsed}
       />
@@ -259,6 +280,7 @@ function TopBar({
   onToggleTheme,
   health,
   healthErr,
+  viewer,
   onToggleSidebar,
   sidebarCollapsed,
 }: {
@@ -266,6 +288,7 @@ function TopBar({
   onToggleTheme: () => void;
   health: Health | null;
   healthErr: string | null;
+  viewer: ShowcaseUser | null;
   onToggleSidebar: () => void;
   sidebarCollapsed: boolean;
 }) {
@@ -291,6 +314,20 @@ function TopBar({
         </div>
 
         <div className="ml-auto flex items-center gap-2.5 text-xs">
+          {viewer && (
+            <div className="hidden sm:flex items-center gap-2 text-gray-600 dark:text-muted">
+              <span className="max-w-[14rem] truncate" title={viewer.email}>
+                {viewer.email}
+              </span>
+              <a
+                href={showcaseSignOutUrl()}
+                className="btn-secondary !py-1 !px-2 no-underline"
+                title="Sign out"
+              >
+                Sign out
+              </a>
+            </div>
+          )}
           <HealthBadge health={health} err={healthErr} />
           <button
             onClick={onToggleTheme}

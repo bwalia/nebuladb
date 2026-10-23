@@ -20,7 +20,13 @@ NebulaDB is now up.
      kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "nebuladb.fullname" . }}-showcase 5173:{{ .Values.showcase.service.port }}
 
    Then open http://localhost:5173
-{{- if .Values.showcase.auth.enabled }}
+{{- if .Values.showcase.googleAuth.enabled }}
+
+   Google OAuth is ON (oauth2-proxy). Redirect:
+     {{ .Values.showcase.googleAuth.redirectUrl }}/oauth2/callback
+   Vault keys: GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET,
+   OAUTH2_PROXY_COOKIE_SECRET under {{ .Values.showcase.auth.vault.key | default (printf "nebuladb/%s/showcase-auth" .Values.environment) }}.
+{{- else if .Values.showcase.auth.enabled }}
 
    Basic auth is ON. Credentials (keys SHOWCASE_AUTH_USERNAME / _PASSWORD):
      kubectl -n {{ .Release.Namespace }} get secret {{ include "nebuladb.showcase.authSecretName" . }} -o jsonpath='{.data.SHOWCASE_AUTH_PASSWORD}' | base64 -d
@@ -29,7 +35,7 @@ NebulaDB is now up.
 {{- end }}
 {{- else }}
 
-   WARNING: showcase.auth.enabled=false; the UI and its /api proxy are open.
+   WARNING: showcase.auth.enabled=false and googleAuth.enabled=false; the UI and its /api proxy are open.
 {{- end }}
 {{- end }}
 

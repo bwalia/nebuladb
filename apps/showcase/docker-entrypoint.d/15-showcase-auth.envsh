@@ -1,38 +1,60 @@
 #!/bin/sh
-# HTTP basic auth for the showcase — ON unless explicitly disabled.
+# Showcase auth for nginx (sourced before envsubst).
 #
-# The nginx image's entrypoint *sources* `*.envsh` files (so exports
-# persist) before 20-envsubst-on-templates.sh renders the config. We
-# export SHOWCASE_AUTH_BASIC for the template's `auth_basic` directive
-# and write the htpasswd file it points at.
+# HTTP basic auth — ON unless explicitly disabled:
+#   SHOWCASE_AUTH_DISABLED=true   no basic auth
+#   SHOWCASE_AUTH_USERNAME / SHOWCASE_AUTH_PASSWORD
 #
-#   SHOWCASE_AUTH_DISABLED=true   no auth (anyone who can reach it gets in)
-#   SHOWCASE_AUTH_USERNAME        login, required while auth is on
-#   SHOWCASE_AUTH_PASSWORD        password, required while auth is on
+# Google OAuth (oauth2-proxy sidecar + nginx auth_request):
+#   SHOWCASE_GOOGLE_AUTH=true     write oauth gate into
+#                                 /etc/nginx/showcase-oauth-gate.conf
+#   When Google is on, basic auth is forced off (one login method).
 #
-# Auth on without credentials fails closed: nginx gets an empty user
-# file and refuses every login. Better a locked demo than an open one.
+# Auth on without credentials fails closed for basic auth.
 
 showcase_htpasswd=/etc/nginx/showcase.htpasswd
+oauth_gate=/etc/nginx/showcase-oauth-gate.conf
 : >"$showcase_htpasswd"
+: >"$oauth_gate"
 
-case "$(printf '%s' "${SHOWCASE_AUTH_DISABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
-  true|1|yes|on)
-    export SHOWCASE_AUTH_BASIC=off
-    echo "showcase-auth: SHOWCASE_AUTH_DISABLED is set; the showcase is open to anyone who can reach it" >&2
-    ;;
-  *)
-    export SHOWCASE_AUTH_BASIC='"NebulaDB Showcase"'
-    case "${SHOWCASE_AUTH_USERNAME:-}" in
-      *:*) echo "showcase-auth: SHOWCASE_AUTH_USERNAME must not contain ':'" >&2; exit 1 ;;
-    esac
-    if [ -n "${SHOWCASE_AUTH_USERNAME:-}" ] && [ -n "${SHOWCASE_AUTH_PASSWORD:-}" ]; then
-      printf '%s:%s\n' "$SHOWCASE_AUTH_USERNAME" \
-        "$(printf '%s' "$SHOWCASE_AUTH_PASSWORD" | openssl passwd -apr1 -stdin)" >"$showcase_htpasswd"
-      echo "showcase-auth: basic auth on for user '$SHOWCASE_AUTH_USERNAME'" >&2
-    else
-      echo "showcase-auth: basic auth is on but SHOWCASE_AUTH_USERNAME / SHOWCASE_AUTH_PASSWORD are unset; every login will be refused (set SHOWCASE_AUTH_DISABLED=true to open it)" >&2
-    fi
-    ;;
+google_on=false
+case "$(printf '%s' "${SHOWCASE_GOOGLE_AUTH:-false}" | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes|on) google_on=true ;;
 esac
-unset showcase_htpasswd
+
+if [ "$google_on" = true ]; then
+  # auth_request + 401→oauth only when Google is on. Leaving error_page 401
+  # in place while basic auth is active would swallow the WWW-Authenticate
+  # challenge and redirect to a missing /oauth2/start.
+  cat >"$oauth_gate" <<'EOF'
+    auth_request /oauth2/auth;
+    error_page 401 = @showcase_oauth_start;
+    auth_request_set $auth_email $upstream_http_x_auth_request_email;
+    auth_request_set $auth_user $upstream_http_x_auth_request_user;
+EOF
+  export SHOWCASE_AUTH_BASIC=off
+  echo "showcase-auth: Google OAuth gate on (basic auth forced off)" >&2
+else
+  echo "# google oauth gate off" >"$oauth_gate"
+  case "$(printf '%s' "${SHOWCASE_AUTH_DISABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes|on)
+      export SHOWCASE_AUTH_BASIC=off
+      echo "showcase-auth: basic auth disabled" >&2
+      ;;
+    *)
+      export SHOWCASE_AUTH_BASIC='"NebulaDB Showcase"'
+      case "${SHOWCASE_AUTH_USERNAME:-}" in
+        *:*) echo "showcase-auth: SHOWCASE_AUTH_USERNAME must not contain ':'" >&2; exit 1 ;;
+      esac
+      if [ -n "${SHOWCASE_AUTH_USERNAME:-}" ] && [ -n "${SHOWCASE_AUTH_PASSWORD:-}" ]; then
+        printf '%s:%s\n' "$SHOWCASE_AUTH_USERNAME" \
+          "$(printf '%s' "$SHOWCASE_AUTH_PASSWORD" | openssl passwd -apr1 -stdin)" >"$showcase_htpasswd"
+        echo "showcase-auth: basic auth on for user '$SHOWCASE_AUTH_USERNAME'" >&2
+      else
+        echo "showcase-auth: basic auth is on but credentials unset; every login will be refused" >&2
+      fi
+      ;;
+  esac
+fi
+
+unset showcase_htpasswd oauth_gate google_on
