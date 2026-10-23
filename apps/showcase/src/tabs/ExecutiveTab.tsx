@@ -27,7 +27,7 @@ const FLOW = [
   { label: "AI Retrieval", detail: "hybrid BM25 + HNSW, reranked" },
   { label: "RAG", detail: "grounded answers with citations" },
   { label: "AI Agents", detail: "tool calls over MCP" },
-  { label: "Enterprise Applications", detail: "support, SRE, analytics" },
+  { label: "Enterprise Applications", detail: "RAG apps + fraud, CRM resolve, lookalikes, reco" },
 ];
 
 export function ExecutiveTab({ onNavigate }: { onNavigate?: (t: string) => void }) {
@@ -113,10 +113,14 @@ export function ExecutiveTab({ onNavigate }: { onNavigate?: (t: string) => void 
         <div className="mt-4 flex flex-wrap gap-2">
           {[
             ["rag", "Explore RAG"],
+            ["entity", "Entity Resolve"],
+            ["lookalike", "Lookalikes"],
+            ["fraud", "Fraud Neighbours"],
+            ["recommend", "Recommendations"],
+            ["policy", "Policy Desk"],
+            ["support", "Support Desk"],
             ["agents", "Try an AI agent"],
-            ["sql", "Explore SQL"],
             ["cluster", "View cluster"],
-            ["mcp", "Explore MCP"],
           ].map(([id, label]) => (
             <button key={id} onClick={() => onNavigate?.(id)} className="btn-secondary !text-xs">
               {label}
