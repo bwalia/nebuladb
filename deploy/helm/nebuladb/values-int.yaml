@@ -66,6 +66,9 @@ showcase:
     pullPolicy: IfNotPresent
   # Basic auth (default on); credentials from WSLVault path
   # nebuladb/int/showcase-auth (SHOWCASE_AUTH_USERNAME / _PASSWORD).
+  # Path is not seeded yet (ESO SecretSyncedError) — deploy-k3s does
+  # not --wait on the ExternalSecret so the rest of the release can
+  # still roll; seed the Vault path when int auth is needed.
   auth:
     vault:
       enabled: true
