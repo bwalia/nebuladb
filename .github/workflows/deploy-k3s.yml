@@ -85,15 +85,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Need tags so the footer can show the latest release (v0.1.x).
+          fetch-depth: 0
 
-      - name: Compute image tag
+      - name: Compute image tag + release identity
         id: tag
         run: |
           set -euo pipefail
           TAG="${{ github.event.inputs.IMAGE_TAG }}"
           [ -z "$TAG" ] && TAG="${GITHUB_SHA::7}"
-          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
-          echo "Building tag: $TAG"
+          # Prefer the newest v* tag reachable from HEAD (release number for UI).
+          REL="$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)"
+          [ -z "$REL" ] && REL="$(git tag -l 'v*' --sort=-v:refname | head -1 || true)"
+          REL="${REL#v}"
+          [ -z "$REL" ] && REL="0.0.0"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          SHA="${GITHUB_SHA::7}"
+          {
+            echo "tag=$TAG"
+            echo "version=$REL"
+            echo "git_sha=$SHA"
+            echo "build_date=$BUILD_DATE"
+          } >>"$GITHUB_OUTPUT"
+          echo "Building image=$TAG version=$REL sha=$SHA at $BUILD_DATE"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -113,6 +128,10 @@ jobs:
           # runner can't publish an unrunnable image.
           platforms: linux/amd64
           push: true
+          build-args: |
+            NEBULADB_VERSION=${{ steps.tag.outputs.version }}
+            NEBULADB_GIT_SHA=${{ steps.tag.outputs.git_sha }}
+            NEBULADB_BUILD_DATE=${{ steps.tag.outputs.build_date }}
           tags: |
             ${{ env.DOCKERHUB_NAMESPACE }}/nebula-server:${{ steps.tag.outputs.tag }}
             ${{ env.DOCKERHUB_NAMESPACE }}/nebula-server:latest

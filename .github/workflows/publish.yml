@@ -83,6 +83,8 @@ jobs:
             dockerfile: apps/showcase/Dockerfile
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # QEMU so we can build linux/arm64 from the amd64 runner. On a
       # native arm64 runner (e.g. GitHub's new ones) this is a
@@ -98,6 +100,23 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Release identity (server binary stamp)
+        id: identity
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            REL="${GITHUB_REF_NAME#v}"
+          else
+            REL="$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)"
+            REL="${REL#v}"
+          fi
+          [ -z "$REL" ] && REL="0.0.0"
+          {
+            echo "version=$REL"
+            echo "git_sha=${GITHUB_SHA::7}"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Derive tags
         id: meta
@@ -150,6 +169,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Only the server Dockerfile consumes these; showcase ignores unknown ARGs.
+          build-args: |
+            NEBULADB_VERSION=${{ steps.identity.outputs.version }}
+            NEBULADB_GIT_SHA=${{ steps.identity.outputs.git_sha }}
+            NEBULADB_BUILD_DATE=${{ steps.identity.outputs.build_date }}
           # `type=gha` stores layers in GitHub's Actions cache. Much
           # faster than rebuilding from scratch every run, and
           # smaller blast radius than pushing a `:cache` tag.

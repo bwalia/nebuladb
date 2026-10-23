@@ -6,6 +6,13 @@ metadata:
     {{- include "nebuladb.server.selectorLabels" . | nindent 4 }}
     {{- include "nebuladb.labels" . | nindent 4 }}
 data:
+  # Showcase / ops footer (jobshout-style build stamp). DEPLOYED_AT is
+  # this helm render time so a rollout reports the last deploy, not boot.
+  NEBULA_DEPLOYED_AT: {{ now | date "2006-01-02T15:04:05Z07:00" | quote }}
+  NEBULA_IMAGE_TAG: {{ .Values.server.image.tag | quote }}
+  {{- if .Values.environment }}
+  NEBULA_ENV: {{ .Values.environment | quote }}
+  {{- end }}
   # Only non-empty, non-null values get mounted; blank/null stay unset so
   # the server falls back to its hardcoded defaults. Env overlays can set
   # a key to `null` to clear a chart default (e.g. pin mock-384 until a

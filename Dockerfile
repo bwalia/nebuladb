@@ -47,6 +47,15 @@ COPY crates/nebula-server/Cargo.toml   crates/nebula-server/Cargo.toml
 COPY crates crates
 COPY apps apps
 
+# Bake release identity into the binary (read by build_info via option_env!).
+# CI passes these as --build-arg; local builds keep Cargo/unknown defaults.
+ARG NEBULADB_VERSION=
+ARG NEBULADB_GIT_SHA=unknown
+ARG NEBULADB_BUILD_DATE=unknown
+ENV NEBULADB_VERSION=${NEBULADB_VERSION} \
+    NEBULADB_GIT_SHA=${NEBULADB_GIT_SHA} \
+    NEBULADB_BUILD_DATE=${NEBULADB_BUILD_DATE}
+
 # Release build. `--locked` forces use of the committed Cargo.lock and
 # fails CI if a manifest edit changes resolution without updating the
 # lock — a common source of "works on my machine" drift.
