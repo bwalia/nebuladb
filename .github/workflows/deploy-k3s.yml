@@ -260,6 +260,29 @@ jobs:
           kubectl version --output=yaml | head -20 || true
           kubectl get nodes -o wide
 
+      # Resources created outside Helm (kubectl apply during OAuth setup,
+      # earlier chart revisions) block `helm upgrade` with ownership
+      # errors. Stamp the release labels/annotations so Helm can adopt.
+      - name: Adopt orphan chart resources
+        run: |
+          set -euo pipefail
+          ns="$TARGET_ENV"
+          adopt() {
+            local kind="$1" name="$2"
+            if ! kubectl -n "$ns" get "$kind" "$name" >/dev/null 2>&1; then
+              return 0
+            fi
+            kubectl -n "$ns" label "$kind" "$name" \
+              app.kubernetes.io/managed-by=Helm --overwrite
+            kubectl -n "$ns" annotate "$kind" "$name" \
+              meta.helm.sh/release-name=nebuladb \
+              meta.helm.sh/release-namespace="$ns" --overwrite
+            echo "adopted ${kind}/${name} in ${ns}"
+          }
+          adopt externalsecret nebuladb-showcase-auth
+          adopt secret nebuladb-showcase-auth
+          adopt externalsecret nebuladb-config
+
       - name: Helm upgrade --install
         env:
           TAG: ${{ steps.tag.outputs.tag }}
@@ -278,12 +301,16 @@ jobs:
             fi
             sleep $((attempt * 10))
           done
+          # No --wait: ExternalSecrets (and other CRs) stay NotReady when
+          # Vault paths are missing (e.g. nebuladb/int/showcase-auth) and
+          # would fail the whole upgrade after 20m. Deploy readiness is
+          # enforced in the next step via rollout status on Deployments.
           helm upgrade --install nebuladb ./deploy/helm/nebuladb \
             -f ./deploy/helm/nebuladb/values-"${TARGET_ENV}".yaml \
             --set server.image.tag="$TAG" \
             --set showcase.image.tag="$TAG" \
             --namespace "$TARGET_ENV" --create-namespace \
-            --wait --timeout 20m
+            --timeout 10m
 
       - name: Rollout status
         run: |
