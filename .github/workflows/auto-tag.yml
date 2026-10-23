@@ -1,17 +1,15 @@
 # Auto Tag on Merge to Main
 #
-# Creates an incremental semantic version tag when code lands on main
-# (PR merge or direct push). Also creates a GitHub Release with
-# generated notes. Manual major/minor bumps via workflow_dispatch.
+# Same pattern as fishers / wslvault / jobshout: every push to main cuts the
+# next patch tag (vMAJOR.MINOR.PATCH). Manual major/minor via workflow_dispatch.
 #
-# Version scheme: MAJOR.MINOR.PATCH
-#   - PATCH increments on every merge to main
-#   - MINOR/MAJOR increments are manual (workflow_dispatch)
-#   - Tags: v<MAJOR>.<MINOR>.<PATCH> (e.g. v0.1.1)
+# deploy-k3s.yml waits for a v* tag on this SHA before baking NEBULADB_VERSION
+# into the server image (footer /healthz) — same idea as opsapi's
+# autotag-before-build.
 #
-# publish.yml already listens for `v*.*.*` tags and pushes Docker
-# Hub `:X.Y.Z` / `:latest` images, so this workflow is the trigger
-# that turns a main merge into a versioned image release.
+# publish.yml listens for `v*.*.*` and pushes versioned Hub tags.
+#
+# Skip with `[skip tag]` in the commit message.
 
 name: Auto Tag on Merge to Main
 
@@ -40,9 +38,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  # Serialize tagging so two quick merges can't race to the same
-  # version. cancel-in-progress: false so a burst of PR merges each
-  # get their own tag (the second waits rather than being cancelled).
+  # Serialize tagging so two quick merges can't race to the same version.
   group: auto-tag-main
   cancel-in-progress: false
 
@@ -50,25 +46,27 @@ jobs:
   auto-tag:
     name: Create Incremental Tag
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event_name != 'pull_request'
+      && (github.event_name == 'workflow_dispatch'
+          || !contains(github.event.head_commit.message, '[skip tag]'))
+    outputs:
+      tag_created: ${{ steps.create_tag.outputs.tag_created }}
+      next_version: ${{ steps.calc_version.outputs.next_version }}
 
     steps:
       - name: Checkout repository with full history
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
       - name: Get latest tag
         id: get_latest_tag
         run: |
-          # Union of v-prefixed and bare semver tags, normalise by
-          # stripping leading "v", sort, then re-emit with "v".
+          set -euo pipefail
+          git fetch --tags --force
           ALL_TAGS=$(
             {
               git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//'
@@ -90,14 +88,11 @@ jobs:
       - name: Calculate next version
         id: calc_version
         run: |
+          set -euo pipefail
           LATEST_TAG="${{ steps.get_latest_tag.outputs.latest_tag }}"
-          MAJOR=""
-          MINOR=""
-          PATCH=""
 
           if [ -n "${{ github.event.inputs.custom_version }}" ]; then
             NEXT_VERSION="${{ github.event.inputs.custom_version }}"
-            # Ensure v prefix
             case "$NEXT_VERSION" in
               v*) ;;
               *) NEXT_VERSION="v${NEXT_VERSION}" ;;
@@ -107,21 +102,14 @@ jobs:
             IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
           elif [ -n "${{ github.event.inputs.version_type }}" ] \
               && [ "${{ github.event.inputs.version_type }}" != "patch" ]; then
-            # Manual minor/major bump. The -n guard matters: on push
-            # events, version_type is empty; "" != "patch" would
-            # otherwise enter this branch with no bump and silently
-            # skip tagging forever.
             VERSION_TYPE="${{ github.event.inputs.version_type }}"
             BASE_VERSION="${LATEST_TAG#v}"
             IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
 
             if [ "$VERSION_TYPE" = "major" ]; then
-              MAJOR=$((MAJOR + 1))
-              MINOR=0
-              PATCH=0
+              MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
             elif [ "$VERSION_TYPE" = "minor" ]; then
-              MINOR=$((MINOR + 1))
-              PATCH=0
+              MINOR=$((MINOR + 1)); PATCH=0
             fi
 
             NEXT_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
@@ -131,28 +119,61 @@ jobs:
             IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
             PATCH=$((PATCH + 1))
             NEXT_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+            while git ls-remote --exit-code --tags origin "refs/tags/${NEXT_VERSION}" >/dev/null 2>&1; do
+              PATCH=$((PATCH + 1))
+              NEXT_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+            done
             echo "Auto patch bump: $LATEST_TAG -> $NEXT_VERSION"
           fi
 
-          echo "next_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
-          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
-          echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
+          {
+            echo "next_version=$NEXT_VERSION"
+            echo "major=$MAJOR"
+            echo "minor=$MINOR"
+            echo "patch=$PATCH"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create and push tag
         id: create_tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT_VERSION: ${{ steps.calc_version.outputs.next_version }}
+          SHA: ${{ github.sha }}
         run: |
-          NEXT_VERSION="${{ steps.calc_version.outputs.next_version }}"
+          set -euo pipefail
 
-          if git tag -l "$NEXT_VERSION" | grep -q "^${NEXT_VERSION}$"; then
-            echo "Tag $NEXT_VERSION already exists, skipping creation"
+          # Already tagged this commit? (re-run / race)
+          EXISTING=$(git ls-remote --tags "https://github.com/${{ github.repository }}" 2>/dev/null \
+            | awk -v sha="$SHA" '$1 == sha { print $2 }' \
+            | sed 's#refs/tags/##; s#\^{}##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+          if [ -n "$EXISTING" ]; then
+            echo "::notice::${SHA} is already tagged ${EXISTING}"
             echo "tag_created=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Creating tag: $NEXT_VERSION"
-            git tag -a "$NEXT_VERSION" -m "Release $NEXT_VERSION"
-            git push origin "$NEXT_VERSION"
-            echo "tag_created=true" >> "$GITHUB_OUTPUT"
+            echo "next_version=$EXISTING" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          if gh api "repos/${{ github.repository }}/git/ref/tags/${NEXT_VERSION}" >/dev/null 2>&1; then
+            echo "::notice::Tag $NEXT_VERSION already exists — skipping"
+            echo "tag_created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          MSG="Release ${NEXT_VERSION}"
+          TAG_SHA=$(gh api -X POST "repos/${{ github.repository }}/git/tags" \
+            -f tag="$NEXT_VERSION" \
+            -f message="$MSG" \
+            -f object="$SHA" \
+            -f type=commit \
+            -f tagger.name="github-actions[bot]" \
+            -f tagger.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            --jq .sha)
+          gh api -X POST "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/${NEXT_VERSION}" \
+            -f sha="$TAG_SHA" >/dev/null
+
+          echo "tag_created=true" >> "$GITHUB_OUTPUT"
+          echo "Created $NEXT_VERSION -> $SHA (tag object $TAG_SHA)"
 
       - name: Create GitHub Release
         if: steps.create_tag.outputs.tag_created == 'true'
@@ -163,6 +184,7 @@ jobs:
           tag_name: ${{ steps.calc_version.outputs.next_version }}
           name: Release ${{ steps.calc_version.outputs.next_version }}
           generate_release_notes: true
+          target_commitish: ${{ github.sha }}
 
       - name: Notify Slack on new release
         if: steps.create_tag.outputs.tag_created == 'true'

@@ -89,22 +89,65 @@ jobs:
           # Need tags so the footer can show the latest release (v0.1.x).
           fetch-depth: 0
 
+      - name: Wait for auto-tag on this commit (push to main)
+        id: wait_tag
+        if: github.event_name == 'push'
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # auto-tag.yml runs in parallel on the same push. Poll until a v*
+          # tag points at this SHA (opsapi-style: never bake an untagged build).
+          tag_on_sha() {
+            git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}" 2>/dev/null \
+              | awk -v sha="$SHA" '$1 == sha { print $2 }' \
+              | sed 's#refs/tags/##; s#\^{}##' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true
+          }
+          for i in $(seq 1 40); do
+            TAG=$(tag_on_sha)
+            if [ -n "$TAG" ]; then
+              echo "release_tag=$TAG" >>"$GITHUB_OUTPUT"
+              echo "::notice::Found release tag ${TAG} on ${SHA}"
+              exit 0
+            fi
+            echo "waiting for auto-tag on ${SHA} (attempt ${i}/40)…"
+            sleep 15
+          done
+          echo "::error::No v* tag on ${SHA} after ~10m. Check the Auto Tag workflow."
+          exit 1
+
       - name: Compute image tag + release identity
         id: tag
         run: |
           set -euo pipefail
+          git fetch --tags --force
           TAG="${{ github.event.inputs.IMAGE_TAG }}"
           [ -z "$TAG" ] && TAG="${GITHUB_SHA::7}"
-          # Prefer the newest v* tag reachable from HEAD (release number for UI).
-          REL="$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)"
-          [ -z "$REL" ] && REL="$(git tag -l 'v*' --sort=-v:refname | head -1 || true)"
-          REL="${REL#v}"
+
+          # Prefer the tag auto-tag.yml just cut on this SHA; else nearest v*.
+          REL_TAG="${{ steps.wait_tag.outputs.release_tag }}"
+          if [ -z "$REL_TAG" ]; then
+            REL_TAG=$(git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}" 2>/dev/null \
+              | awk -v sha="${GITHUB_SHA}" '$1 == sha { print $2 }' \
+              | sed 's#refs/tags/##; s#\^{}##' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+          fi
+          if [ -z "$REL_TAG" ]; then
+            REL_TAG="$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)"
+          fi
+          if [ -z "$REL_TAG" ]; then
+            REL_TAG="$(git tag -l 'v*' --sort=-v:refname | head -1 || true)"
+          fi
+          REL="${REL_TAG#v}"
           [ -z "$REL" ] && REL="0.0.0"
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           SHA="${GITHUB_SHA::7}"
           {
             echo "tag=$TAG"
             echo "version=$REL"
+            echo "version_tag=v$REL"
             echo "git_sha=$SHA"
             echo "build_date=$BUILD_DATE"
           } >>"$GITHUB_OUTPUT"
@@ -134,6 +177,7 @@ jobs:
             NEBULADB_BUILD_DATE=${{ steps.tag.outputs.build_date }}
           tags: |
             ${{ env.DOCKERHUB_NAMESPACE }}/nebula-server:${{ steps.tag.outputs.tag }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/nebula-server:${{ steps.tag.outputs.version_tag }}
             ${{ env.DOCKERHUB_NAMESPACE }}/nebula-server:latest
           cache-from: type=gha,scope=nebula-server
           cache-to: type=gha,mode=max,scope=nebula-server
@@ -147,6 +191,7 @@ jobs:
           push: true
           tags: |
             ${{ env.DOCKERHUB_NAMESPACE }}/nebula-showcase:${{ steps.tag.outputs.tag }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/nebula-showcase:${{ steps.tag.outputs.version_tag }}
             ${{ env.DOCKERHUB_NAMESPACE }}/nebula-showcase:latest
           cache-from: type=gha,scope=nebula-showcase
           cache-to: type=gha,mode=max,scope=nebula-showcase
