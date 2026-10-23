@@ -88,6 +88,8 @@ COPY --from=build /src/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 # Sourced by the nginx entrypoint before envsubst; must be executable.
 COPY --chmod=755 docker-entrypoint.d/15-showcase-auth.envsh /docker-entrypoint.d/
+# Placeholder so `include` is valid before the entrypoint rewrites it.
+RUN touch /etc/nginx/showcase-oauth-gate.conf
 # Defaults target the compose topology (leader `nebula-server` +
 # follower `nebula-follower`, Docker's embedded DNS at 127.0.0.11).
 # In standalone mode, set NEBULA_SERVER=http://host.docker.internal:8080.
@@ -111,8 +113,10 @@ ENV NEBULA_MCP=http://nebula-mcp:8090
 # Supply SHOWCASE_AUTH_USERNAME + SHOWCASE_AUTH_PASSWORD, or set
 # SHOWCASE_AUTH_DISABLED=true to open it. Without credentials it fails
 # closed (all logins refused). See docker-entrypoint.d/15-showcase-auth.envsh.
+# SHOWCASE_GOOGLE_AUTH=true switches to oauth2-proxy (sidecar) instead.
 ENV SHOWCASE_AUTH_DISABLED=false
+ENV SHOWCASE_GOOGLE_AUTH=false
 EXPOSE 80
-# /livez is exempt from basic auth; `/` now answers 401.
+# /livez is exempt from auth; `/` answers 401 when auth is on.
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
   CMD wget -q -O /dev/null http://localhost/livez || exit 1

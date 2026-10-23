@@ -63,11 +63,13 @@ instead of the boot stub's 503 failover (prod 2026-09-24).
 | `redis.enabled` | `false` | Bundle Bitnami Redis |
 | `externalRedisUrl` | `""` | Point at external Redis |
 | `showcase.enabled` | `true` | Deploy the React admin UI |
-| `showcase.auth.enabled` | `true` | Basic auth on the showcase (UI, `/api`, `/mcp`); `false` opens it |
+| `showcase.auth.enabled` | `true` | Basic auth on the showcase (UI, `/api`, `/mcp`); `false` opens it (unless Google OAuth is on) |
 | `showcase.auth.vault.enabled` | `false` | Sync the credentials from WSLVault via ESO (`wslvault-backend`); on for int/test/acc/prod |
-| `showcase.auth.vault.key` | `nebuladb/<environment>/showcase-auth` | WSLVault path (mount `kv`) holding `SHOWCASE_AUTH_USERNAME` and `SHOWCASE_AUTH_PASSWORD` |
+| `showcase.auth.vault.key` | `nebuladb/<environment>/showcase-auth` | WSLVault path (mount `kv`) holding basic-auth and/or Google OAuth keys |
 | `showcase.auth.username` | `demo` | Login for the chart-generated Secret (random password, kept across upgrades) when neither Vault nor `existingSecret` is set |
-| `showcase.auth.existingSecret` | `""` | Use your own Secret (keys `SHOWCASE_AUTH_USERNAME`, `SHOWCASE_AUTH_PASSWORD`) instead |
+| `showcase.auth.existingSecret` | `""` | Use your own Secret instead of Vault / chart-generated |
+| `showcase.googleAuth.enabled` | `false` | Google OAuth via oauth2-proxy sidecar; forces basic auth off. Needs `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `OAUTH2_PROXY_COOKIE_SECRET` in the auth Secret |
+| `showcase.googleAuth.redirectUrl` | `""` | Public origin (e.g. `https://showcase.nebuladb.net`); callback is `<redirectUrl>/oauth2/callback` |
 | `serviceMonitor.enabled` | `false` | kube-prometheus-stack scrape target |
 
 ### HA topology

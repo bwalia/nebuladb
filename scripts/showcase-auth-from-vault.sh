@@ -3,6 +3,11 @@
 #   SHOWCASE_AUTH_USERNAME='…'
 #   SHOWCASE_AUTH_PASSWORD='…'
 #
+# The same Vault path may also hold Google OAuth keys used by the k8s
+# oauth2-proxy sidecar (not printed here):
+#   GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET,
+#   OAUTH2_PROXY_COOKIE_SECRET  (openssl rand -base64 32)
+#
 # Usage: scripts/showcase-auth-from-vault.sh <path>   (e.g. nebuladb/int/showcase-auth)
 #
 # Auth, first match: WSLVAULT_TOKEN, WSLVAULT_API_KEY, or a machine API key

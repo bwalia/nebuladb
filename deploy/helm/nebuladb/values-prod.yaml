@@ -103,14 +103,18 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
-  # Basic auth is OFF in prod only until the leads dump (index migration,
-  # ~/nebuladb-migration/index-migration-oct-2026) finishes: it reads
-  # through https://showcase.nebuladb.net/api without credentials. Flip
-  # `enabled` back to true (and seed nebuladb/prod/showcase-auth) then.
+  # Basic auth stays off; Google OAuth gates the UI. Seed Vault path
+  # nebuladb/prod/showcase-auth with GOOGLE_OAUTH_CLIENT_ID,
+  # GOOGLE_OAUTH_CLIENT_SECRET, OAUTH2_PROXY_COOKIE_SECRET before or
+  # with this deploy (Google Console redirect:
+  # https://showcase.nebuladb.net/oauth2/callback).
   auth:
     enabled: false
     vault:
       enabled: true
+  googleAuth:
+    enabled: true
+    redirectUrl: "https://showcase.nebuladb.net"
 
 # Claude agents example suite (MCP → NebulaDB), exposed at /examples.
 examples:

@@ -241,6 +241,33 @@ showcase:
       storeKind: ClusterSecretStore
       key: ""
       refreshInterval: "1m"
+  # Google OAuth via oauth2-proxy sidecar + nginx auth_request. When
+  # enabled, basic auth is forced off. Vault path (same Secret as basic
+  # auth) must hold:
+  #   GOOGLE_OAUTH_CLIENT_ID
+  #   GOOGLE_OAUTH_CLIENT_SECRET
+  #   OAUTH2_PROXY_COOKIE_SECRET   (openssl rand -base64 32)
+  # Google Cloud Console redirect URI:
+  #   https://<host>/oauth2/callback
+  googleAuth:
+    enabled: false
+    # Public origin for --redirect-url (no trailing slash). Required
+    # when enabled; usually the ingress host for this environment.
+    redirectUrl: ""
+    # "*" = any Google account (know who viewed). Restrict with a
+    # domain list, e.g. "example.com,other.org".
+    emailDomains: "*"
+    image:
+      repository: quay.io/oauth2-proxy/oauth2-proxy
+      tag: "v7.8.1"
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "64Mi"
+      requests:
+        cpu: "5m"
+        memory: "16Mi"
   # nebula-mcp sidecar for the showcase's MCP tab. Runs the server image
   # (same repository + tag as `server.image`, so its tools always match
   # the server's REST surface) with the nebula-mcp entrypoint, bound to
