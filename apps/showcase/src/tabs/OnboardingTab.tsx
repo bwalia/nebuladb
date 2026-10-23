@@ -74,10 +74,11 @@ export function OnboardingTab() {
     setErr(null);
     setBusy(true);
     const sq = lit(semanticText(q));
-    // Include role-specific docs and company-wide ("all") docs.
+    // Role-specific + company-wide ("all"). Use IN — OR in WHERE is
+    // unsupported (ANN has no well-defined disjunction).
     const sql =
       `SELECT * FROM ${ONBOARD_BUCKET}\nWHERE semantic_match(text, ${sq})\n` +
-      `  AND (role = ${lit(role)} OR role = 'all')\nLIMIT 10`;
+      `  AND role IN (${lit(role)}, ${lit("all")})\nLIMIT 10`;
     const trace: PipelineStep[] = [
       { label: "Handbook retrieval", detail: sql, status: "running" },
     ];
