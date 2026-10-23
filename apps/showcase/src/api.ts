@@ -213,21 +213,80 @@ export interface SnapshotOutcome {
 // are optional where the server only populates them in some roles, so a
 // standalone node renders without exploding.
 
-export interface ClusterNode {
-  id?: string;
-  address?: string;
+/** One probed peer from GET /admin/cluster/nodes. */
+export interface ClusterPeer {
+  id: string;
+  base_url: string;
+  /** true healthy, false sick, null/undefined unreachable */
+  healthy?: boolean | null;
+  docs?: number | null;
+  probe_ms?: number | null;
+}
+
+/** Full cluster membership view (not a bare array). */
+export interface ClusterTopology {
+  self_id?: string | null;
   role?: string;
-  state?: string;
-  region?: string;
-  [k: string]: unknown;
+  leader_url?: string | null;
+  peers: ClusterPeer[];
+}
+
+/** @deprecated Prefer ClusterTopology — kept for call sites that only need a peer row. */
+export type ClusterNode = ClusterPeer;
+
+export interface WalCursor {
+  segment_seq: number;
+  byte_offset: number;
+}
+
+/** Cross-region (XDCR) consumer status for one remote. */
+export interface RemoteRegionStatus {
+  region: string;
+  grpc_url: string;
+  healthy: boolean;
+  last_applied_segment?: number | null;
+  last_applied_byte_offset?: number | null;
+  applied_records: number;
+  consecutive_errors: number;
+  last_error?: string | null;
+  last_error_at?: string | null;
 }
 
 export interface ReplicationInfo {
   role?: string;
-  region?: string;
-  peers?: unknown[];
-  applied_seq?: number;
-  [k: string]: unknown;
+  region?: string | null;
+  local_newest?: WalCursor | null;
+  follower_applied?: WalCursor | null;
+  leader_newest_probed?: WalCursor | null;
+  /** Same-segment follower lag in bytes; null when cross-segment or N/A. */
+  lag_bytes?: number | null;
+  behind?: boolean | null;
+  remotes?: RemoteRegionStatus[];
+}
+
+export interface HomeRegionInfo {
+  bucket: string;
+  home_region?: string | null;
+  home_epoch?: number | null;
+  replicated_to?: string[];
+  node_region?: string;
+  has_home?: boolean;
+}
+
+export interface PromoteResponse {
+  role: string;
+  promoted: boolean;
+}
+
+export interface BucketExport {
+  bucket: string;
+  dim?: number;
+  docs: unknown[];
+}
+
+export interface BucketImportResult {
+  bucket: string;
+  imported: number;
 }
 
 export interface BackupEntry {
@@ -617,9 +676,20 @@ export const api = {
 
   version: () => request<VersionInfo>("/api/v1/admin/version"),
 
-  clusterNodes: () => request<ClusterNode[]>("/api/v1/admin/cluster/nodes"),
+  clusterNodes: () => request<ClusterTopology>("/api/v1/admin/cluster/nodes"),
 
   replication: () => request<ReplicationInfo>("/api/v1/admin/replication"),
+
+  /** Promote the targeted peer (follower) to leader. Hits /peer/<id>/… */
+  promoteOnPeer: (peer: "follower" | "region-b" = "follower") =>
+    request<PromoteResponse>(`/peer/${peer}/api/v1/admin/promote`, {
+      method: "POST",
+    }),
+
+  homeRegion: (bucket: string) =>
+    request<HomeRegionInfo>(
+      `/api/v1/admin/bucket/${encodeURIComponent(bucket)}/home-region`
+    ),
 
   backups: () => request<BackupEntry[]>("/api/v1/admin/backups"),
 
@@ -632,7 +702,25 @@ export const api = {
     }),
 
   exportBucket: (bucket: string) =>
-    request<unknown>(`/api/v1/admin/bucket/${encodeURIComponent(bucket)}/export`),
+    request<BucketExport>(
+      `/api/v1/admin/bucket/${encodeURIComponent(bucket)}/export`
+    ),
+
+  /** Import on primary (default) or a peer via /peer/<id>/… */
+  importBucket: (
+    bucket: string,
+    body: BucketExport,
+    peer?: "follower" | "region-b"
+  ) => {
+    const prefix = peer ? `/peer/${peer}` : "";
+    return request<BucketImportResult>(
+      `${prefix}/api/v1/admin/bucket/${encodeURIComponent(bucket)}/import`,
+      {
+        method: "POST",
+        body: JSON.stringify({ dim: body.dim, docs: body.docs }),
+      }
+    );
+  },
 
   bulkDocs: (bucket: string, docs: Array<{ id: string; text: string; metadata?: unknown }>) =>
     request<{ bucket: string; inserted: number; requested: number }>(

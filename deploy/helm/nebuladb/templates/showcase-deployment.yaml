@@ -52,6 +52,12 @@ spec:
               {{- else }}
               value: {{ include "nebuladb.fullname" . | quote }}
               {{- end }}
+            - name: NEBULA_REGION_B_HOST
+              {{- if and .Values.ha.crossRegion.enabled .Values.ha.crossRegion.deployPeerLeader }}
+              value: {{ include "nebuladb.regionB.fullname" . | quote }}
+              {{- else }}
+              value: {{ include "nebuladb.fullname" . | quote }}
+              {{- end }}
             # Cluster DNS for nginx's variable-based proxy_pass (the image
             # default 127.0.0.11 is Docker-only and unreachable in k8s).
             - name: NGINX_RESOLVER

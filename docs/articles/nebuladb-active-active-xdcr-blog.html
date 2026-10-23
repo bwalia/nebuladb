@@ -1,0 +1,61 @@
+<article class="blog-content">
+
+<p>If your vector database “multi-region” story is either a cold standby or a fake map with six glowing nodes, you do not have active-active — you have a slide. NebulaDB’s production shape is simpler and more honest: <strong>each region accepts writes for buckets it homes; XDCR replicates both ways; reads work locally everywhere</strong>. The same bucket is not writable in two regions at once.</p>
+
+<p>You can see the live topology on <a href="https://showcase.nebuladb.net">showcase.nebuladb.net</a> — Cluster and Rebalance bind to real <code>/admin/cluster/nodes</code> and <code>/admin/replication</code> APIs, and RAG / Talent Match run against the local index after replication catches up.</p>
+
+<!-- FIGURE: Cluster -->
+<figure style="margin:1.5rem 0">
+  <img src="/img/nebuladb-aa-cluster-live-peers.png" alt="Showcase Cluster tab with live peers and XDCR remotes" width="1200" height="700" style="max-width:100%;height:auto;border-radius:8px;border:1px solid #e2e8f0" loading="lazy" decoding="async" />
+  <figcaption style="font-size:0.9rem;color:#64748b;margin-top:0.5rem">Live peers and lag — not a simulated six-node map.</figcaption>
+</figure>
+
+<h2>Why home region exists</h2>
+
+<p>Large HNSW corpuses do not rewind from a compacted WAL tip. A late peer needs a snapshot bootstrap, then incremental XDCR. Pinning each bucket to one home region gives a single writer, local reads everywhere after apply, and failover that is “re-home the bucket” rather than inventing multi-master merge for embeddings.</p>
+
+<h2>How it works</h2>
+
+<ol>
+  <li>Seed metadata sets <code>home_region</code> / <code>home_epoch</code>.</li>
+  <li>Wrong-region writes get <code>wrong_home_region</code>.</li>
+  <li>Home leader appends WAL; followers catch up inside the region.</li>
+  <li>Peer regions apply via bidirectional XDCR.</li>
+  <li>RAG and vector search run on any region’s local index.</li>
+</ol>
+
+<p>East and west can both be “active” for the cluster: east homes some buckets, west homes others. Neither side silently dual-writes the same bucket.</p>
+
+<h2>What we prove in prod</h2>
+
+<ol>
+  <li><strong>Snapshot-bootstrap</strong> <code>nebuladb-region-b</code> so west holds the full east corpus.</li>
+  <li><strong>Seed homes</strong> so some buckets write east, some west.</li>
+  <li><strong>Prove convergence</strong> east→west and west→east (and the wrong-home reject).</li>
+  <li><strong>Show live peers</strong> in the Cluster tab — lag_bytes, behind, remotes.</li>
+</ol>
+
+<!-- FIGURE: RAG -->
+<figure style="margin:1.5rem 0">
+  <img src="/img/nebuladb-aa-rag-streaming.png" alt="Showcase RAG streaming answer with context chunks" width="1200" height="700" style="max-width:100%;height:auto;border-radius:8px;border:1px solid #e2e8f0" loading="lazy" decoding="async" />
+  <figcaption style="font-size:0.9rem;color:#64748b;margin-top:0.5rem">RAG after XDCR — local search, streamed context then tokens.</figcaption>
+</figure>
+
+<h2>Scenarios that matter</h2>
+
+<ul>
+  <li><strong>Write in east, RAG in west</strong> once lag is quiet.</li>
+  <li><strong>Split affinity</strong> — catalogue west, ingest east.</li>
+  <li><strong>Follower loss</strong> — promote/practise carefully; snapshot if the PVC is empty.</li>
+  <li><strong>Partition</strong> — each region keeps home writes; converge on heal.</li>
+</ul>
+
+<p>Grafana on <a href="https://grafana.workstation.co.uk/">grafana.workstation.co.uk</a> scrapes the same stack, so lag and query panels are not showcase-only theatre.</p>
+
+<h2>Read the deep dive</h2>
+
+<p>The full technote and long article cover API tables, anti-patterns, and a screenshot checklist for Cluster, Rebalance, RAG, Talent Match, and Grafana. Start at the companion post once filed, or the repo paths <code>docs/technotes/active-active-xdcr.md</code> and <code>docs/articles/nebuladb-active-active-xdcr.html</code>.</p>
+
+<p><strong>CTA:</strong> open <a href="https://showcase.nebuladb.net">the showcase</a>, click <strong>Cluster</strong>, then run a <strong>RAG</strong> query after the remotes look healthy.</p>
+
+</article>

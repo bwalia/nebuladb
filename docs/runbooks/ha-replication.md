@@ -3,6 +3,11 @@
 Applies to helm-managed rings with `ha.withinRegion` / `ha.crossRegion`
 enabled (`int`, `prod` as of this rollout). Raft quorum is **not** used.
 
+**See also:** [active-active XDCR technote](../technotes/active-active-xdcr.md) ·
+[long article (HTML)](../articles/nebuladb-active-active-xdcr.html) ·
+CMS publish prompt on workstation-website:
+`nebuladb-active-active-xdcr-blog-articles.prompt.md`
+
 ## Topology
 
 | Role | Workload | Notes |
@@ -78,11 +83,38 @@ Symptoms: `/admin/replication` remotes show `healthy: false` and/or `last_error`
 4. `healthy` stays false until the first record is applied from that peer — write a small doc in the peer’s home region to confirm.
 5. Dimension / embedder mismatch between regions will fail applies — keep `NEBULA_EMBED_DIM` identical.
 
+## Active-active region-b as a full primary mirror
+
+Prod runs `us-east-1` (leader + follower) and `us-west-2` (`nebuladb-region-b`)
+with bidirectional XDCR. XDCR **does not backfill** compacted WAL history —
+if region-b docs ≪ leader docs, snapshot-bootstrap it:
+
+```bash
+export KUBECONFIG=~/.kube/k3s1.yaml
+NS=prod SOURCE=nebuladb TARGET=nebuladb-region-b \
+  ./scripts/bootstrap_region_mirror.sh
+```
+
+Then assign write homes (seed doc `__nebuladb_operator_seed__`) so some
+buckets write only in east and some only in west. Showcase **Cluster** /
+**Rebalance** tabs bind to live `/admin/cluster/nodes`, `/admin/replication`
+(`lag_bytes`, `behind`, `remotes[]`), export/import, and
+`POST /peer/follower/api/v1/admin/promote` — not the old simulated topology.
+
+Verify:
+
+```bash
+curl -sS https://showcase.nebuladb.net/api/v1/admin/cluster/nodes | jq .
+curl -sS https://showcase.nebuladb.net/api/v1/admin/replication | jq .
+# Bidirectional: upsert in an east-homed bucket → eventually visible on region-b;
+# upsert in a west-homed bucket on region-b → visible on the primary.
+```
+
 ## Prod notes
 
 - Deploying to prod: see [prod-deploy.md](prod-deploy.md) for triggers, pre-flight checks, the expected 503 and partial-data windows, and rollback.
 - Primary host: `https://showcase.nebuladb.net`
-- Initial region-b sync of the full `leads` corpus is async; prefer export/import for a cold mirror rather than relying solely on WAL replay from BEGIN on multi-million doc buckets.
+- Initial region-b sync of the full corpus: use `scripts/bootstrap_region_mirror.sh` (above), not WAL-from-BEGIN.
 - Raft (`NEBULA_RAFT_*`) stays **off** until soak evidence exists.
 - **Memory:** cold start / snapshot recovery for ~3M docs needs ≥24Gi limit (8Gi OOMs).
 - **Probes:** liveness = `/healthz/live`, readiness = `/healthz/live` (must stay in Service during WAL recovery so nginx sees boot-stub 503 and fails over — readiness on `/healthz` caused 502/504 on 2026-09-24).

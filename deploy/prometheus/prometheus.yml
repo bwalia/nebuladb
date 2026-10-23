@@ -15,12 +15,30 @@ rule_files:
   - "/etc/prometheus/alerts.yml"
 
 scrape_configs:
+  # Both HA nodes share job + service so existing alert exprs keep
+  # working; `role` distinguishes leader vs follower on dashboards
+  # (Grafana $role template → role=~"$role").
   - job_name: nebula-server
     metrics_path: /metrics
     static_configs:
       - targets: ["nebula-server:8080"]
         labels:
           service: nebula-server
+          role: leader
+      - targets: ["nebula-follower:8080"]
+        labels:
+          service: nebula-server
+          role: follower
+
+  # Gatus exposes probe results at /metrics when `metrics: true` in
+  # deploy/gatus/config.yaml. Gives Grafana a stack-wide "what's red"
+  # view without clicking through the Gatus UI.
+  - job_name: gatus
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["gatus:8080"]
+        labels:
+          service: gatus
 
   # Prometheus scraping itself is the cheapest way to spot a broken
   # scrape config (missing targets show up as `up == 0`).
