@@ -19,6 +19,14 @@ export interface Health {
   // Present on the deployed server; shown in the bottom status bar.
   version?: string;
   git_commit?: string;
+  /** ISO build time baked into the binary. */
+  build_date?: string;
+  /** Helm upgrade time (`NEBULA_DEPLOYED_AT`), jobshout-style. */
+  deployed_at?: string;
+  /** Ring name (`int` / `prod` / …). */
+  env?: string;
+  /** Container image tag (often short sha). */
+  image_tag?: string;
 }
 
 export interface Hit {

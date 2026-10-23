@@ -444,11 +444,23 @@ function HealthBadge({ health, err }: { health: Health | null; err: string | nul
 }
 
 /**
- * Bottom status bar — mirrors the Ring Promoter deploy footer: the app
- * identity plus mono build/runtime metadata (version, commit, embedder).
+ * Bottom status bar — jobshout-style build stamp: live release tag,
+ * deploy age, commit, embedder, corpus size.
  */
 function StatusBar({ health, err }: { health: Health | null; err: string | null }) {
-  const commit = health?.git_commit && health.git_commit !== "unknown" ? health.git_commit.slice(0, 7) : null;
+  const commit =
+    health?.git_commit && health.git_commit !== "unknown"
+      ? health.git_commit.slice(0, 7)
+      : health?.image_tag && !/^v?\d+\.\d+/.test(health.image_tag)
+        ? health.image_tag.slice(0, 7)
+        : null;
+  const ver = health?.version?.replace(/^v/, "");
+  const deployedRel = formatDeployed(health?.deployed_at || health?.build_date);
+  const deployedAbs = absoluteTime(health?.deployed_at || health?.build_date);
+  const deployTitle = [health?.env, deployedAbs && `Deployed ${deployedAbs}`]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
     <footer className="border-t border-gray-200 dark:border-edge bg-white/80 dark:bg-carbon-950/90 backdrop-blur">
       <div className="px-4 py-2 flex items-center gap-5 overflow-x-auto">
@@ -463,19 +475,51 @@ function StatusBar({ health, err }: { health: Health | null; err: string | null 
               <span className={`dot ${health ? "dot-ok" : "dot-idle"}`} />
               {health ? "live" : "connecting"}
             </span>
-            {health?.version && (
-              <span className="metachip" title="server version">🏷 v{health.version}</span>
+            {ver && (
+              <span className="metachip" title={deployTitle || "server version"}>
+                🏷 v{ver}
+              </span>
             )}
-            {commit && <span className="metachip" title="git commit">⑂ {commit}</span>}
+            {deployedRel && (
+              <span className="metachip" title={deployTitle || undefined}>
+                {health?.env ? `${health.env} · ` : ""}
+                Deployed {deployedRel}
+              </span>
+            )}
+            {commit && <span className="metachip" title="git commit / image tag">⑂ {commit}</span>}
             {health && (
               <span className="metachip" title="embedder">✷ {health.model}</span>
             )}
             {health && (
-              <span className="metachip" title="documents indexed">❏ {health.docs} docs · dim {health.dim}</span>
+              <span className="metachip" title="documents indexed">
+                ❏ {health.docs.toLocaleString()} docs · dim {health.dim}
+              </span>
             )}
           </>
         )}
       </div>
     </footer>
   );
+}
+
+function absoluteTime(iso?: string): string | null {
+  if (!iso || iso === "unknown") return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toLocaleString();
+}
+
+/** Relative deploy age — same wording as jobshout's sidebar stamp. */
+function formatDeployed(iso?: string): string | null {
+  if (!iso || iso === "unknown") return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  const mins = Math.floor((Date.now() - t) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(t).toLocaleDateString();
 }

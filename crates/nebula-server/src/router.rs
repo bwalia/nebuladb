@@ -281,13 +281,23 @@ struct Health {
     docs: usize,
     dim: usize,
     model: String,
-    /// Server crate version from Cargo. Stable across restarts; the
-    /// operator uses this to detect an upgrade has taken effect without
-    /// having to shell into the pod.
+    /// Release version (git tag baked at build, else Cargo). Operators
+    /// and the showcase footer use this to confirm an upgrade landed.
     version: &'static str,
-    /// Git sha at build time when exposed via the `NEBULADB_GIT_SHA`
-    /// environment variable during `cargo build`. `"unknown"` otherwise.
+    /// Git sha at build time when exposed via `NEBULADB_GIT_SHA`.
+    /// `"unknown"` otherwise.
     git_commit: &'static str,
+    /// ISO build instant when baked via `NEBULADB_BUILD_DATE`.
+    build_date: &'static str,
+    /// When Helm last rendered this release (`NEBULA_DEPLOYED_AT`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deployed_at: Option<String>,
+    /// Ring / environment name (`NEBULA_ENV`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    env: Option<String>,
+    /// Container image tag (`NEBULA_IMAGE_TAG`), often the short sha.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_tag: Option<String>,
     /// Operating mode from the resource manager (design 0010 §3):
     /// "normal", "cpu_pressure", "memory_pressure", "disk_pressure",
     /// or "disk_critical". The status stays "ok" while degraded —
@@ -305,6 +315,10 @@ async fn healthz(State(s): State<AppState>) -> Json<Health> {
         model: s.index.embedder_model().to_string(),
         version: crate::build_info::VERSION,
         git_commit: crate::build_info::GIT_COMMIT,
+        build_date: crate::build_info::BUILD_DATE,
+        deployed_at: crate::build_info::deployed_at(),
+        env: crate::build_info::deploy_env(),
+        image_tag: crate::build_info::image_tag(),
         mode: s.resource.mode().as_str(),
     })
 }
@@ -2026,12 +2040,19 @@ async fn admin_durability(State(s): State<AppState>) -> Json<DurabilityInfo> {
 
 #[derive(Serialize)]
 struct VersionInfo {
-    /// Cargo package version — matches the git tag on releases.
+    /// Release version (git tag at build, else Cargo).
     version: &'static str,
     /// Short git sha when baked in at build time, `"unknown"` otherwise.
     git_commit: &'static str,
     /// Build date when baked in at build time.
     build_date: &'static str,
+    /// Helm deploy stamp when `NEBULA_DEPLOYED_AT` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deployed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_tag: Option<String>,
     /// Target OS / architecture the binary was compiled for.
     os: &'static str,
     arch: &'static str,
@@ -2045,6 +2066,9 @@ async fn admin_version() -> Json<VersionInfo> {
         version: crate::build_info::VERSION,
         git_commit: crate::build_info::GIT_COMMIT,
         build_date: crate::build_info::BUILD_DATE,
+        deployed_at: crate::build_info::deployed_at(),
+        env: crate::build_info::deploy_env(),
+        image_tag: crate::build_info::image_tag(),
         os: crate::build_info::OS,
         arch: crate::build_info::ARCH,
     })
