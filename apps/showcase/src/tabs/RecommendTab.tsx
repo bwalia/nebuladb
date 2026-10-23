@@ -80,19 +80,23 @@ export function RecommendTab() {
     setBusy(true);
     const blob = basketDocs.map((d) => d.text).join("\n");
     const q = lit(semanticText(blob, 800));
-    const exclude = basket.skus.map((s) => lit(s)).join(", ");
+    // NOT IN is unsupported; drop basket SKUs client-side after retrieval.
+    const exclude = new Set(basket.skus);
     let sql =
       `SELECT * FROM ${PRODUCT_BUCKET}\nWHERE semantic_match(text, ${q})\n` +
-      `  AND sku NOT IN (${exclude})\n` +
       `  AND price_gbp <= ${lit(maxPrice)}\n`;
     if (inStockOnly) sql += `  AND stock > 0\n`;
     if (category) sql += `  AND category = ${lit(category)}\n`;
-    sql += `LIMIT 12`;
+    sql += `LIMIT 24`;
     const trace: PipelineStep[] = [{ label: "Complementary SKUs", detail: sql, status: "running" }];
     setSteps([...trace]);
     try {
       const r = await runSql(sql);
-      const rows = r.rows.map(toProd).sort((a, b) => b.sim - a.sim);
+      const rows = r.rows
+        .map(toProd)
+        .filter((p) => !exclude.has(p.id))
+        .sort((a, b) => b.sim - a.sim)
+        .slice(0, 12);
       trace[0] = { ...trace[0], rowsOut: rows.length, ms: r.tookMs, status: "ok" };
       setSteps([...trace]);
       setHits(rows);
