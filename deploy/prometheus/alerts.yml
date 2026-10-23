@@ -160,3 +160,70 @@ groups:
           description: >-
             Follower same-segment lag exceeds 100 MiB. Investigate
             leader write rate, follower apply stalls, or network.
+
+  # Backup / restore health (design 0002 §9 / §12 phase 4). The stale
+  # alert only fires once a success has been observed — a brand-new
+  # node with no backups yet omits the timestamp gauge entirely.
+  - name: nebula-backup-health
+    rules:
+      - alert: NebulaBackupFailures
+        expr: increase(nebula_backup_failures_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup job failed on {{ $labels.instance }} in the last hour"
+          description: >-
+            Check GET /api/v1/admin/backups for the error, object-store
+            credentials, and staging disk. See the NebulaDB — Backup
+            & Restore Grafana dashboard.
+
+      - alert: NebulaBackupStale
+        expr: time() - nebula_backup_last_success_timestamp_seconds > 25 * 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Last successful backup is {{ $value | humanizeDuration }} old on {{ $labels.instance }}"
+          description: >-
+            Expected cron cadence is ≤24h. Confirm the schedule CronJob
+            / operator POST /admin/backup is still firing, and that
+            jobs are not stuck Running (nebula_backup_jobs_running).
+
+      - alert: NebulaBackupStuck
+        expr: nebula_backup_jobs_running > 0
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup/restore job Running for 2h+ on {{ $labels.instance }}"
+          description: >-
+            In-process job ring still shows a Running job. Likely a
+            hung object-store upload or a wedged staging write. Check
+            GET /api/v1/admin/backups and server logs.
+
+  # Core stack probes from Gatus. Scoped to the always-on NebulaDB
+  # group so optional multi-region / replication tiles don't page.
+  - name: nebula-stack-probes
+    rules:
+      - alert: GatusCoreEndpointDown
+        expr: gatus_results_endpoint_success{group="NebulaDB"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gatus probe failing: {{ $labels.name }}"
+          description: >-
+            Core NebulaDB endpoint "{{ $labels.name }}" has been failing
+            Gatus checks for 5m. Open the Stack health Grafana dashboard
+            or http://localhost:8280 for details.
+
+      - alert: GatusInfraEndpointDown
+        expr: gatus_results_endpoint_success{group=~"Infrastructure|Observability|Demo|AI sidecars"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gatus probe failing: {{ $labels.group }} / {{ $labels.name }}"
+          description: >-
+            Supporting service "{{ $labels.name }}" has been down for 10m.
+            Check docker compose ps and the Stack health dashboard.

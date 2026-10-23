@@ -1,0 +1,189 @@
+<article class="blog-content">
+
+<p>Most “multi-region database” demos are either a primary with a cold standby, or a slide that pretends every region can write the same key at once. NebulaDB takes a third path that matches how large vector corpora actually behave: <strong>each region accepts writes for the buckets it homes, XDCR replicates both ways, and reads work locally everywhere</strong>. The same bucket is not writable in two regions at once.</p>
+
+<p>This long article walks through the model, the production topology behind <a href="https://showcase.nebuladb.net">showcase.nebuladb.net</a>, concrete scenarios (RAG, catalogue, failover, partitions), and what you should see in the live Cluster and RAG tabs. The companion technote lives in the NebulaDB repo at <code>docs/technotes/active-active-xdcr.md</code>.</p>
+
+<p><em>Screenshots below use paths under <code>/img/nebuladb-aa-*</code> on workstation.co.uk (or the technote’s <code>docs/articles/assets/</code> while drafts are in review). Replace placeholders once captures are filed.</em></p>
+
+<!-- FIGURE: Cluster live peers -->
+<figure style="margin:1.5rem 0">
+  <img src="/img/nebuladb-aa-cluster-live-peers.png" alt="NebulaDB showcase Cluster tab showing live peers from /admin/cluster/nodes and XDCR remotes from /admin/replication" width="1200" height="700" style="max-width:100%;height:auto;border-radius:8px;border:1px solid #e2e8f0" loading="lazy" decoding="async" />
+  <figcaption style="font-size:0.9rem;color:#64748b;margin-top:0.5rem">Cluster tab — live peers and replication lag, not a decorative six-node map.</figcaption>
+</figure>
+
+<h2>The problem with “write anywhere” for vectors</h2>
+
+<p>A hybrid document + vector store is not a tiny key-value cache. Production corpuses on NebulaDB run to millions of documents with HNSW indexes measured in gigabytes. WAL segments compact. A peer that joins late cannot rebuild history from the live tip alone — it needs a full <code>.nsnap</code> bootstrap, then incremental replication.</p>
+
+<p>If two regions accept writes to the same bucket without a merge story, you inherit last-writer-wins across oceans, conflicting embeddings, and opaque “who is authoritative?” incidents. Pinning <strong>home region</strong> per bucket keeps a single writer while still giving every region a local read replica via bidirectional XDCR.</p>
+
+<h2>How it works in sixty seconds</h2>
+
+<ol>
+  <li><strong>Home region</strong> is stored on the bucket seed document (<code>home_region</code>, <code>home_epoch</code>).</li>
+  <li>Middleware rejects writes when <code>NEBULA_REGION</code> ≠ home (<code>wrong_home_region</code>).</li>
+  <li>The home leader WAL-appends and fans out within the region to followers.</li>
+  <li><strong>XDCR</strong> tails owned writes to peer-region leaders; they apply into the local index.</li>
+  <li>Clients read and run vector / RAG queries against <strong>any</strong> healthy region’s local index.</li>
+  <li>Failover re-homes the bucket (bump epoch) after the target region is caught up — it is not “open dual writers.”</li>
+</ol>
+
+<pre style="background:#0f172a;color:#e2e8f0;padding:1rem;border-radius:8px;overflow:auto"><code>                    ┌─ us-east-1 (home: catalog) ─┐
+  writes (home) ──▶ │ leader ──▶ follower         │
+                    │    │  XDCR (bidirectional)  │
+                    └────┼────────────────────────┘
+                         ▼
+                    ┌─ us-west-2 (home: logs) ────┐
+  reads (any)  ◀── │ leader ──▶ local HNSW       │
+                    └─────────────────────────────┘</code></pre>
+
+<p>This is active-active <strong>at the cluster level</strong>: every region serves all reads; every region accepts writes for its home buckets. It is deliberately <strong>not</strong> multi-master for a single bucket.</p>
+
+<h2>What runs in production today</h2>
+
+<p>On the Workstation k3s ring used by the public showcase:</p>
+
+<ul>
+  <li><strong>East</strong> — <code>nebuladb</code> leader + <code>nebuladb-follower</code> (<code>NEBULA_REGION=us-east-1</code>).</li>
+  <li><strong>West</strong> — <code>nebuladb-region-b</code> (<code>NEBULA_REGION=us-west-2</code>).</li>
+  <li>Showcase nginx exposes <code>/peer/follower</code> and <code>/peer/region-b</code> for admin paths.</li>
+  <li>The <strong>Cluster</strong> and <strong>Rebalance</strong> tabs call live admin APIs only.</li>
+</ul>
+
+<p>Healthy signals operators care about:</p>
+
+<ul>
+  <li>Follower <code>/healthz/caught-up</code> → 200.</li>
+  <li><code>GET /api/v1/admin/replication</code> remotes with <code>healthy: true</code> after traffic.</li>
+  <li><code>GET /api/v1/admin/cluster/nodes</code> peers listed with real health — the UI you screenshot for docs.</li>
+</ul>
+
+<!-- FIGURE: Rebalance -->
+<figure style="margin:1.5rem 0">
+  <img src="/img/nebuladb-aa-rebalance-live.png" alt="NebulaDB showcase Rebalance tab bound to live export/import and peer topology" width="1200" height="700" style="max-width:100%;height:auto;border-radius:8px;border:1px solid #e2e8f0" loading="lazy" decoding="async" />
+  <figcaption style="font-size:0.9rem;color:#64748b;margin-top:0.5rem">Rebalance — export/import and promote paths against real peers.</figcaption>
+</figure>
+
+<h2>Bootstrapping west (why snapshot first)</h2>
+
+<p>XDCR streams <em>new</em> WAL. It does not resurrect compacted history. If west’s document count is a tiny fraction of east’s, you are looking at an empty (or partial) index sitting at a WAL tip that already matches — TailWal has nothing left to replay.</p>
+
+<p>The fix is explicit:</p>
+
+<pre style="background:#0f172a;color:#e2e8f0;padding:1rem;border-radius:8px;overflow:auto"><code>export KUBECONFIG=~/.kube/k3s1.yaml
+NS=prod SOURCE=nebuladb TARGET=nebuladb-region-b \
+  ./scripts/bootstrap_region_mirror.sh</code></pre>
+
+<p>Operational detail that bites in production: piping a multi-gigabyte <code>.nsnap</code> through <code>kubectl exec</code> often truncates. Prefer chunked <code>dd</code>, node-local copy, or object storage, then write the follower/region cursor to the leader tip. The HA runbook documents the failure mode and the recovery path.</p>
+
+<p>After bootstrap, seed <code>home_region</code> so some buckets write in east and some in west. Prove both directions with a small document each way, and prove the negative path: a wrong-home write must return <code>wrong_home_region</code>.</p>
+
+<h2>Scenario walkthroughs</h2>
+
+<h3>1. East write, west RAG</h3>
+
+<p>Home a knowledge-base bucket in east. Ingest (or use an existing corpus). Wait until replication lag on the Cluster tab is near zero. Open the showcase <strong>RAG</strong> tab — or call vector search — against the west peer path. Retrieval and generation run on the local west index; you are not shipping every query across the ocean.</p>
+
+<!-- FIGURE: RAG -->
+<figure style="margin:1.5rem 0">
+  <img src="/img/nebuladb-aa-rag-streaming.png" alt="NebulaDB showcase RAG tab with streamed answer and context chunks" width="1200" height="700" style="max-width:100%;height:auto;border-radius:8px;border:1px solid #e2e8f0" loading="lazy" decoding="async" />
+  <figcaption style="font-size:0.9rem;color:#64748b;margin-top:0.5rem">RAG — SSE context chunks then answer tokens, served from the local region after XDCR.</figcaption>
+</figure>
+
+<p>Streaming RAG on NebulaDB emits context chunks before answer tokens over SSE. That makes multi-region behaviour visible: once west has applied the WAL records, chunk provenance and latency look local even though the write landed in east.</p>
+
+<h3>2. Split domain affinity</h3>
+
+<p>Catalogue writes home in west; regulatory ingest homes in east. Showcase demos such as <strong>Shop Catalog</strong> and <strong>Companies House</strong> stay useful as product surfaces while the write path stays pinned. Product teams get regional write locality without inventing a second database.</p>
+
+<h3>3. Talent match / enterprise search</h3>
+
+<p>Semantic retrieval demos (<strong>Talent Match</strong>, <strong>Enterprise Search</strong>) are the same physics as RAG: embed query, HNSW search, rank. Run the query on both regions after convergence; scores should match within normal float noise once lag is quiet.</p>
+
+<!-- FIGURE: Talent Match -->
+<figure style="margin:1.5rem 0">
+  <img src="/img/nebuladb-aa-talent-match.png" alt="NebulaDB Talent Match demo showing semantic candidate ranking" width="1200" height="700" style="max-width:100%;height:auto;border-radius:8px;border:1px solid #e2e8f0" loading="lazy" decoding="async" />
+  <figcaption style="font-size:0.9rem;color:#64748b;margin-top:0.5rem">Talent Match — local vector search over a replicated corpus.</figcaption>
+</figure>
+
+<h3>4. Within-region follower loss</h3>
+
+<p>Delete the east follower pod. The leader keeps serving. The Deployment recreates the follower. For a multi-million-document corpus, if the new PVC is empty but the cursor already sits at tip, snapshot-bootstrap again — do not wait forever for WAL that no longer exists.</p>
+
+<h3>5. Cross-region partition</h3>
+
+<p>Break east↔west connectivity. Each region continues local reads and home-bucket writes. On heal, lag rises then falls. Because only one region wrote each bucket, there is no CRDT merge ceremony — apply order is the home WAL order.</p>
+
+<h3>6. Wrong-home client</h3>
+
+<p>Point a mistaken client at west for an east-home bucket. The API returns a structured error with <code>home_region</code>, <code>home_epoch</code>, and <code>node_region</code>. Gateways and SDKs should refresh the home map from <code>GET /admin/bucket/:bucket/home-region</code> rather than retrying blindly.</p>
+
+<h3>7. Re-home / failover</h3>
+
+<p>When an entire home region is lost (or you are practising), catch the surviving region up, bump <code>home_epoch</code>, set the new <code>home_region</code>, and stop accepting writes on the deposed side. Within-region promote (<code>POST /admin/promote</code> on the follower) remains a separate lever for east HA and is exposed carefully in the Cluster tab.</p>
+
+<h2>What the Cluster tab must show</h2>
+
+<p>Earlier showcase builds used a simulated multi-region map. That is gone for Cluster/Rebalance. The UI polls:</p>
+
+<ul>
+  <li><code>GET /api/v1/admin/cluster/nodes</code></li>
+  <li><code>GET /api/v1/admin/replication</code> — <code>lag_bytes</code>, <code>behind</code>, <code>remotes[]</code></li>
+</ul>
+
+<p>If a screenshot still shows a fake six-node topology, it is stale. Replace it before publishing.</p>
+
+<pre style="background:#0f172a;color:#e2e8f0;padding:1rem;border-radius:8px;overflow:auto"><code>curl -sS -H "Authorization: Bearer $API_KEY" \
+  https://showcase.nebuladb.net/api/v1/admin/replication | jq '{lag_bytes, behind, remotes}'</code></pre>
+
+<!-- FIGURE: API JSON -->
+<figure style="margin:1.5rem 0">
+  <img src="/img/nebuladb-aa-replication-api-json.png" alt="Terminal showing jq output of /admin/replication lag_bytes behind and remotes" width="1200" height="600" style="max-width:100%;height:auto;border-radius:8px;border:1px solid #e2e8f0" loading="lazy" decoding="async" />
+  <figcaption style="font-size:0.9rem;color:#64748b;margin-top:0.5rem">Same numbers the Cluster tab displays.</figcaption>
+</figure>
+
+<h2>Observability</h2>
+
+<p>Metrics land in the Workstation Prometheus/Grafana stack. Dashboards under <code>deploy/grafana/dashboards/</code> cover overview, query performance, durability, backup, AI metrics, reliability, and the wider stack. Central Grafana is at <a href="https://grafana.workstation.co.uk/">grafana.workstation.co.uk</a>; scrape jobs include the showcase nebula-server path so lag and QPS are not “demo only.”</p>
+
+<!-- FIGURE: Grafana -->
+<figure style="margin:1.5rem 0">
+  <img src="/img/nebuladb-aa-grafana-overview.png" alt="Grafana Nebula overview dashboard with query and durability panels" width="1200" height="700" style="max-width:100%;height:auto;border-radius:8px;border:1px solid #e2e8f0" loading="lazy" decoding="async" />
+  <figcaption style="font-size:0.9rem;color:#64748b;margin-top:0.5rem">Grafana — production scrape, not a static PNG from a laptop.</figcaption>
+</figure>
+
+<h2>Comparison to Couchbase XDCR (mental model)</h2>
+
+<p>Couchbase XDCR popularised filtered, topology-aware replication between clusters. NebulaDB borrows the intuition — declare where writes land, replicate elsewhere, observe lag — while staying native to WAL + snapshot recovery for an AI-native hybrid store (documents, HNSW, SQL with <code>semantic_match</code>, streaming RAG in one binary).</p>
+
+<p>What we deliberately do <em>not</em> claim: conflict-free concurrent writers on one bucket, automatic magic backfill of compacted history, or Raft quorum across regions. Within-region HA is leader + follower WAL tail; cross-region is XDCR + home pinning.</p>
+
+<h2>Operator checklist (copy/paste)</h2>
+
+<ol>
+  <li>Snapshot-bootstrap <code>nebuladb-region-b</code> until west ≈ east corpus.</li>
+  <li>Seed <code>home_region</code> for east-home and west-home demo buckets.</li>
+  <li>Write east → read west; write west → read east; wrong-home write fails.</li>
+  <li>Open Cluster tab — live peers and remotes, lag visible.</li>
+  <li>Run RAG / Talent Match on both sides after convergence.</li>
+  <li>Confirm Grafana panels and alerts still scrape showcase metrics.</li>
+</ol>
+
+<h2>Who this is for</h2>
+
+<p>Platform teams who need regional read locality for RAG and search without pretending every write can land everywhere. Product engineers building on the showcase demos who need the honest story behind Cluster and Rebalance. SREs who would rather snapshot-bootstrap once than debug a silent empty index forever.</p>
+
+<h2>Further reading</h2>
+
+<ul>
+  <li>Technote: <code>docs/technotes/active-active-xdcr.md</code> in the NebulaDB repository</li>
+  <li>Design: <code>docs/design/0001-multi-region-active-active.md</code></li>
+  <li>Runbook: <code>docs/runbooks/ha-replication.md</code></li>
+  <li>Live demo: <a href="https://showcase.nebuladb.net">https://showcase.nebuladb.net</a></li>
+  <li>Product site: <a href="https://nebuladb.net">https://nebuladb.net</a></li>
+</ul>
+
+<p><em>Claims in this article are limited to behaviour implemented in NebulaDB (home-region guard, admin APIs, showcase Cluster/Rebalance/RAG bindings, helm HA topology). Do not invent latency SLOs or customer names when filing CMS drafts.</em></p>
+
+</article>

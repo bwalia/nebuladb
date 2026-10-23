@@ -106,6 +106,15 @@ impl JobRing {
     pub fn get(&self, id: &str) -> Option<JobStatus> {
         self.inner.read().iter().find(|j| j.id == id).cloned()
     }
+
+    /// Count of jobs currently in the Running phase (backups + restores).
+    pub fn running_count(&self) -> u64 {
+        self.inner
+            .read()
+            .iter()
+            .filter(|j| j.phase == JobPhase::Running)
+            .count() as u64
+    }
 }
 
 fn now_iso() -> String {
@@ -361,6 +370,7 @@ pub async fn admin_backup_start(
     // ours is the job-tracking handle exposed to the client.
     let job_id = ulid_like();
     let ring = Arc::clone(&s.backup_jobs);
+    let metrics = Arc::clone(&s.metrics);
     ring.push_running(&job_id, "backup");
     let job_id_for_task = job_id.clone();
 
@@ -375,6 +385,7 @@ pub async fn admin_backup_start(
                     .map(|a| a.size_bytes)
                     .sum::<u64>();
                 ring.complete(&job_id_for_task, Some(url), Some(size));
+                metrics.record_backup_ok(started.elapsed(), size);
                 tracing::info!(
                     job_id = %job_id_for_task,
                     backup_id = %manifest.backup_id,
@@ -384,6 +395,7 @@ pub async fn admin_backup_start(
             }
             Err(e) => {
                 ring.fail(&job_id_for_task, &e.to_string());
+                metrics.record_backup_fail();
                 tracing::error!(job_id = %job_id_for_task, error = %e, "backup failed");
             }
         }
@@ -433,13 +445,21 @@ pub async fn admin_restore_start(
 
     let job_id = ulid_like();
     let ring = Arc::clone(&s.backup_jobs);
+    let metrics = Arc::clone(&s.metrics);
     ring.push_running(&job_id, "restore");
     let job_id_for_task = job_id.clone();
 
     tokio::spawn(async move {
+        let started = Instant::now();
         match restore.run().await {
-            Ok(_manifest) => ring.complete(&job_id_for_task, None, None),
-            Err(e) => ring.fail(&job_id_for_task, &e.to_string()),
+            Ok(_manifest) => {
+                ring.complete(&job_id_for_task, None, None);
+                metrics.record_restore_ok(started.elapsed());
+            }
+            Err(e) => {
+                ring.fail(&job_id_for_task, &e.to_string());
+                metrics.record_restore_fail();
+            }
         }
     });
 

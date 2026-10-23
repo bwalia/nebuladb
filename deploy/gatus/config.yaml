@@ -16,10 +16,9 @@
 #   - Internal services without HTTP (Redis) use a TCP probe.
 #   - Ollama's HTTP path `/api/tags` returns 200 even before a model
 #     is pulled — same signal the compose healthcheck relies on.
-#   - The follower is listed but tagged with `client-group: replication`
-#     so the tile shows up only when the compose `replication`
-#     profile is active. Gatus will still try to reach it; failures
-#     are the expected state for the default single-node demo.
+#   - The follower is a first-class HA peer (same NebulaDB group as
+#     the leader). Multi-region region-b stays in its own group so a
+#     single-region deploy doesn't look "half red".
 #
 # Interval defaults to 10s everywhere — short enough to catch a
 # flake, infrequent enough not to drown dev laptops in probes.
@@ -78,18 +77,18 @@ endpoints:
       - "[BODY] == pat(*nebula_requests_total*)"
 
   - name: nebula-follower (REST)
-    group: NebulaDB (replication profile)
+    group: NebulaDB
     url: "http://nebula-follower:8080/healthz"
     interval: 15s
-    # Expected to be Down in the default demo — the follower only
-    # runs under `--profile replication`. Gatus still shows the tile;
-    # it's useful to watch go green when the profile is on.
+    # Follower is always in the compose stack (HA pair on the shared
+    # int host). During leader WAL recovery it may return 503 while
+    # /healthz/live stays 200 — treat that as down until caught up.
     conditions:
       - "[STATUS] == 200"
       - "[BODY].status == ok"
 
   - name: nebula-follower caught-up
-    group: NebulaDB (replication profile)
+    group: NebulaDB
     url: "http://nebula-follower:8080/healthz/caught-up"
     interval: 30s
     conditions:

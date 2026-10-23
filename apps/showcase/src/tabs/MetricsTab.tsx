@@ -3,36 +3,90 @@ import { Panel } from "../components";
 
 /**
  * Metrics tab. Embeds Grafana in an iframe so operators don't need
- * to tab-switch to see the pre-provisioned dashboard alongside their
+ * to tab-switch to see the pre-provisioned dashboards alongside their
  * workflow.
  *
  * The Grafana URL is read from `localStorage` (`nebula:grafana-url`)
  * so devs with custom port mappings don't have to rebuild the app;
- * sensible default is `http://localhost:3000`.
- *
- * Two quality-of-life details:
- * 1. The iframe tracks a reachability probe: if Grafana doesn't
- *    respond to a HEAD on the root URL within a timeout, we show
- *    an explainer panel with the exact compose command to bring it
- *    up. Avoids the "blank iframe" confusion.
- * 2. The default dashboard URL points at the provisioned
- *    `nebula-overview` dashboard with kiosk mode so the Grafana
- *    chrome (sidebar, navbar) doesn't eat vertical space.
+ * sensible default is `http://localhost:3000`. The selected dashboard
+ * uid is stored under `nebula:grafana-dashboard`.
  */
 
-const STORAGE_KEY = "nebula:grafana-url";
+const URL_KEY = "nebula:grafana-url";
+const DASH_KEY = "nebula:grafana-dashboard";
 const DEFAULT_URL = "http://localhost:3000";
-const DASHBOARD_PATH =
-  "/d/nebula-overview/nebuladb-overview?orgId=1&kiosk=tv&refresh=10s";
+
+const DASHBOARDS = [
+  {
+    uid: "nebula-overview",
+    slug: "nebuladb-overview",
+    label: "Overview",
+    hint: "Traffic + HA strip",
+  },
+  {
+    uid: "nebula-reliability",
+    slug: "nebuladb-reliability",
+    label: "Reliability",
+    hint: "Mode, memory, replication",
+  },
+  {
+    uid: "nebula-query-perf",
+    slug: "nebuladb-query-performance",
+    label: "Query Performance",
+    hint: "Errors + endpoint mix",
+  },
+  {
+    uid: "nebula-ai",
+    slug: "nebuladb-ai-cache",
+    label: "AI & Cache",
+    hint: "Semantic / RAG / embed cache",
+  },
+  {
+    uid: "nebula-durability",
+    slug: "nebuladb-durability-health",
+    label: "Durability",
+    hint: "WAL + snapshots",
+  },
+  {
+    uid: "nebula-backup",
+    slug: "nebuladb-backup-restore",
+    label: "Backup & Restore",
+    hint: "Job age, size, failures",
+  },
+  {
+    uid: "nebula-stack",
+    slug: "nebuladb-stack-health",
+    label: "Stack health",
+    hint: "Gatus probes",
+  },
+] as const;
+
+type DashUid = (typeof DASHBOARDS)[number]["uid"];
+
+function dashPath(uid: DashUid): string {
+  const d = DASHBOARDS.find((x) => x.uid === uid) ?? DASHBOARDS[0];
+  return `/d/${d.uid}/${d.slug}?orgId=1&kiosk=tv&refresh=10s`;
+}
+
+function readStoredDash(): DashUid {
+  try {
+    const v = localStorage.getItem(DASH_KEY);
+    if (v && DASHBOARDS.some((d) => d.uid === v)) return v as DashUid;
+  } catch {
+    /* private mode */
+  }
+  return "nebula-overview";
+}
 
 export function MetricsTab() {
   const [baseUrl, setBaseUrl] = useState<string>(() => {
     try {
-      return localStorage.getItem(STORAGE_KEY) || DEFAULT_URL;
+      return localStorage.getItem(URL_KEY) || DEFAULT_URL;
     } catch {
       return DEFAULT_URL;
     }
   });
+  const [dashUid, setDashUid] = useState<DashUid>(readStoredDash);
   const [reachable, setReachable] = useState<"checking" | "yes" | "no">(
     "checking"
   );
@@ -62,20 +116,30 @@ export function MetricsTab() {
   const saveUrl = () => {
     const next = inputRef.current?.value?.trim() || DEFAULT_URL;
     try {
-      localStorage.setItem(STORAGE_KEY, next);
+      localStorage.setItem(URL_KEY, next);
     } catch {
       /* private mode — apply for session only */
     }
     setBaseUrl(next);
   };
 
-  const fullUrl = `${baseUrl}${DASHBOARD_PATH}`;
+  const selectDash = (uid: DashUid) => {
+    setDashUid(uid);
+    try {
+      localStorage.setItem(DASH_KEY, uid);
+    } catch {
+      /* private mode */
+    }
+  };
+
+  const fullUrl = `${baseUrl}${dashPath(dashUid)}`;
+  const current = DASHBOARDS.find((d) => d.uid === dashUid) ?? DASHBOARDS[0];
 
   return (
     <div className="space-y-4">
       <Panel
         title="Metrics"
-        subtitle="Embedded Grafana — the auto-provisioned nebula-overview dashboard"
+        subtitle={`Embedded Grafana — ${current.label} (${current.hint})`}
         action={
           <a
             className="btn-secondary !py-1 !px-2 !text-xs"
@@ -89,6 +153,19 @@ export function MetricsTab() {
         }
       >
         <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-gray-500 dark:text-gray-400">Dashboard</span>
+          <select
+            className="input !py-1 !w-auto min-w-[12rem]"
+            value={dashUid}
+            onChange={(e) => selectDash(e.target.value as DashUid)}
+            aria-label="Grafana dashboard"
+          >
+            {DASHBOARDS.map((d) => (
+              <option key={d.uid} value={d.uid}>
+                {d.label}
+              </option>
+            ))}
+          </select>
           <span className="text-gray-500 dark:text-gray-400">Grafana URL</span>
           <input
             ref={inputRef}
@@ -135,7 +212,7 @@ docker compose up -d grafana prometheus
             key={fullUrl}
             src={fullUrl}
             loading="lazy"
-            title="NebulaDB metrics"
+            title={`NebulaDB metrics — ${current.label}`}
             className="w-full h-[70vh] border-0"
           />
         </div>

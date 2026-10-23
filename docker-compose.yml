@@ -550,6 +550,13 @@ services:
     depends_on:
       nebula-server:
         condition: service_started
+      # Soft dependencies: scrape config includes follower + gatus.
+      # If either isn't up yet Prometheus still starts; targets show
+      # as down until DNS resolves and /metrics answers.
+      nebula-follower:
+        condition: service_started
+      gatus:
+        condition: service_started
       snapshots-init:
         condition: service_completed_successfully
     healthcheck:

@@ -91,6 +91,8 @@ COPY --chmod=755 docker-entrypoint.d/15-showcase-auth.envsh /docker-entrypoint.d
 ENV NEBULA_SERVER=http://nebula-server:8080
 ENV NEBULA_LEADER_HOST=nebula-server
 ENV NEBULA_FOLLOWER_HOST=nebula-follower
+# Default to leader when no region-b service exists (compose without HA).
+ENV NEBULA_REGION_B_HOST=nebula-server
 ENV NGINX_RESOLVER=127.0.0.11
 # Bearer nginx injects on proxied /api calls. Empty by default (auth off);
 # set from the app secret so the public UI works once the server requires

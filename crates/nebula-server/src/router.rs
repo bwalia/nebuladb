@@ -359,6 +359,7 @@ async fn metrics_handler(
     render_durability_metrics(&mut body, &s);
     render_memory_metrics(&mut body);
     render_reliability_metrics(&mut body, &s);
+    render_backup_job_metrics(&mut body, &s);
 
     // Replication catch-up gauges (design 0009 §6). On a follower this
     // probes the leader (≤500ms, gated to followers only); leaders /
@@ -521,6 +522,21 @@ fn render_reliability_metrics(body: &mut String, s: &AppState) {
         "nebula_mode_transitions_total {}",
         snap.transitions_total
     );
+}
+
+/// In-process backup/restore job ring gauges. Counters for attempts /
+/// failures / duration live on `Metrics::render`; this only surfaces
+/// the live "how many jobs are running right now" signal so a stuck
+/// backup shows up without waiting for the next failure.
+fn render_backup_job_metrics(body: &mut String, s: &AppState) {
+    use std::fmt::Write as _;
+    let running = s.backup_jobs.running_count();
+    let _ = writeln!(
+        body,
+        "# HELP nebula_backup_jobs_running In-process backup/restore jobs currently Running"
+    );
+    let _ = writeln!(body, "# TYPE nebula_backup_jobs_running gauge");
+    let _ = writeln!(body, "nebula_backup_jobs_running {running}");
 }
 
 /// cgroup memory accounting, exposed so an alert can fire BEFORE the
