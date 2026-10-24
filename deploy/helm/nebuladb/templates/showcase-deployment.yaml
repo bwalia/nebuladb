@@ -197,23 +197,24 @@ spec:
           {{- end }}
         {{- end }}
       {{- if .Values.showcase.googleAuth.enabled }}
-      # Showcase entrypoint writes apr1 htpasswd here for oauth2-proxy.
-      # initContainer ensures the file exists before oauth2-proxy starts.
+      # oauth2-proxy only accepts bcrypt/SHA htpasswd (not nginx apr1).
+      # httpd image provides `htpasswd -B`; run before oauth2-proxy starts.
       initContainers:
         - name: prepare-htpasswd
-          image: "{{ .Values.showcase.image.repository }}:{{ .Values.showcase.image.tag }}"
-          imagePullPolicy: {{ .Values.showcase.image.pullPolicy }}
+          image: httpd:2.4-alpine
+          imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "-c"]
           args:
             - |
               set -euo pipefail
               mkdir -p /shared/oauth2
               if [ -n "${SHOWCASE_AUTH_USERNAME:-}" ] && [ -n "${SHOWCASE_AUTH_PASSWORD:-}" ]; then
-                printf '%s:%s\n' "$SHOWCASE_AUTH_USERNAME" \
-                  "$(printf '%s' "$SHOWCASE_AUTH_PASSWORD" | openssl passwd -apr1 -stdin)" \
+                htpasswd -Bbn "$SHOWCASE_AUTH_USERNAME" "$SHOWCASE_AUTH_PASSWORD" \
                   > /shared/oauth2/htpasswd
               else
-                echo 'nobody:$apr1$disabled$ffffffffffffffffffffff' > /shared/oauth2/htpasswd
+                # Valid bcrypt entry that matches no real password.
+                htpasswd -Bbn nobody "$(dd if=/dev/urandom bs=16 count=1 2>/dev/null | base64)" \
+                  > /shared/oauth2/htpasswd
               fi
           env:
             - name: SHOWCASE_AUTH_USERNAME

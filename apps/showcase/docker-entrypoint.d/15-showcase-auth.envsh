@@ -16,12 +16,12 @@
 # login page knows which methods to show.
 
 showcase_htpasswd=/etc/nginx/showcase.htpasswd
-oauth_htpasswd=/shared/oauth2/htpasswd
 oauth_gate=/etc/nginx/showcase-oauth-gate.conf
 login_config=/usr/share/nginx/html/login-config.json
 : >"$showcase_htpasswd"
 : >"$oauth_gate"
-mkdir -p /shared/oauth2 2>/dev/null || true
+# /shared/oauth2/htpasswd is owned by the prepare-htpasswd initContainer
+# (bcrypt for oauth2-proxy). Do not overwrite it with apr1 here.
 
 google_on=false
 case "$(printf '%s' "${SHOWCASE_GOOGLE_AUTH:-false}" | tr '[:upper:]' '[:lower:]')" in
@@ -33,12 +33,10 @@ write_htpasswd() {
     *:*) echo "showcase-auth: SHOWCASE_AUTH_USERNAME must not contain ':'" >&2; exit 1 ;;
   esac
   if [ -n "${SHOWCASE_AUTH_USERNAME:-}" ] && [ -n "${SHOWCASE_AUTH_PASSWORD:-}" ]; then
-    hash="$(printf '%s' "$SHOWCASE_AUTH_PASSWORD" | openssl passwd -apr1 -stdin)"
-    line="$(printf '%s:%s\n' "$SHOWCASE_AUTH_USERNAME" "$hash")"
-    printf '%s' "$line" >"$showcase_htpasswd"
-    if [ -d /shared/oauth2 ]; then
-      printf '%s' "$line" >"$oauth_htpasswd"
-    fi
+    # nginx basic auth wants apr1; oauth2-proxy wants bcrypt (initContainer).
+    printf '%s:%s\n' "$SHOWCASE_AUTH_USERNAME" \
+      "$(printf '%s' "$SHOWCASE_AUTH_PASSWORD" | openssl passwd -apr1 -stdin)" \
+      >"$showcase_htpasswd"
     return 0
   fi
   return 1
@@ -48,11 +46,7 @@ password_on=false
 if write_htpasswd; then
   password_on=true
   echo "showcase-auth: htpasswd ready for user '$SHOWCASE_AUTH_USERNAME'" >&2
-elif [ -d /shared/oauth2 ]; then
-  # oauth2-proxy requires the file to exist at start; placeholder accepts nobody.
-  echo 'nobody:$apr1$disabled$ffffffffffffffffffffff' >"$oauth_htpasswd"
 fi
-
 if [ "$google_on" = true ]; then
   # 401 → branded /login (not straight to Google). /login is auth-exempt.
   cat >"$oauth_gate" <<'EOF'
