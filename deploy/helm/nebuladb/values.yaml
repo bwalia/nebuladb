@@ -242,11 +242,15 @@ showcase:
       key: ""
       refreshInterval: "1m"
   # Google OAuth via oauth2-proxy sidecar + nginx auth_request. When
-  # enabled, basic auth is forced off. Vault path (same Secret as basic
-  # auth) must hold:
+  # enabled, nginx basic auth is forced off and unauthenticated users
+  # land on /login (Continue with Google + optional email/password).
+  # Password sign-in uses oauth2-proxy --htpasswd-file from the same
+  # Vault Secret when SHOWCASE_AUTH_USERNAME / SHOWCASE_AUTH_PASSWORD
+  # are present. Vault path must hold:
   #   GOOGLE_OAUTH_CLIENT_ID
   #   GOOGLE_OAUTH_CLIENT_SECRET
   #   OAUTH2_PROXY_COOKIE_SECRET   (openssl rand -base64 32)
+  #   optional SHOWCASE_AUTH_USERNAME / SHOWCASE_AUTH_PASSWORD
   # Google Cloud Console redirect URI:
   #   https://<host>/oauth2/callback
   googleAuth:

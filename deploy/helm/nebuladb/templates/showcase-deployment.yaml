@@ -74,27 +74,32 @@ spec:
             # Basic auth (apps/showcase/docker-entrypoint.d/15-showcase-auth.envsh).
             # Set explicitly so a SHOWCASE_AUTH_DISABLED key in the app
             # secret can't silently open the UI; only values can.
-            # Google OAuth forces basic off inside the entrypoint.
+            # Google OAuth forces nginx basic off; password sign-in then
+            # uses oauth2-proxy --htpasswd-file from the same credentials.
             - name: SHOWCASE_AUTH_DISABLED
               value: {{ (not .Values.showcase.auth.enabled) | quote }}
             - name: SHOWCASE_GOOGLE_AUTH
               value: {{ .Values.showcase.googleAuth.enabled | quote }}
-            {{- if .Values.showcase.auth.enabled }}
+            {{- if or .Values.showcase.auth.enabled .Values.showcase.googleAuth.enabled }}
+            # optional: password form works when these keys exist in Vault
+            # even if basic auth is disabled (Google + email/password).
             - name: SHOWCASE_AUTH_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: {{ include "nebuladb.showcase.authSecretName" . }}
                   key: SHOWCASE_AUTH_USERNAME
+                  optional: true
             - name: SHOWCASE_AUTH_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "nebuladb.showcase.authSecretName" . }}
                   key: SHOWCASE_AUTH_PASSWORD
+                  optional: true
             {{- end }}
           {{- with .Values.showcase.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
-          # /livez is exempt from auth; `/` answers 401 / oauth redirect.
+          # /livez is exempt from auth; `/` answers 401 → /login.
           livenessProbe:
             httpGet:
               path: /livez
@@ -114,8 +119,12 @@ spec:
               mountPath: /etc/nginx/templates/default.conf.template
               subPath: default.conf.template
               readOnly: true
+            {{- if .Values.showcase.googleAuth.enabled }}
+            - name: oauth2-htpasswd
+              mountPath: /shared/oauth2
+            {{- end }}
         {{- if .Values.showcase.googleAuth.enabled }}
-        # Google OAuth: nginx auth_request → this sidecar on loopback.
+        # Google OAuth (+ optional htpasswd): nginx auth_request → sidecar.
         - name: oauth2-proxy
           image: "{{ .Values.showcase.googleAuth.image.repository }}:{{ .Values.showcase.googleAuth.image.tag }}"
           imagePullPolicy: {{ .Values.showcase.googleAuth.image.pullPolicy }}
@@ -128,7 +137,10 @@ spec:
             - --reverse-proxy=true
             - --set-xauthrequest=true
             - --pass-access-token=false
+            # Branded /login is the interstitial; skip oauth2-proxy's own page.
             - --skip-provider-button=true
+            - --htpasswd-file=/shared/oauth2/htpasswd
+            - --display-htpasswd-form=true
             - --cookie-secure=true
             - --cookie-samesite=lax
             - --cookie-expire=168h
@@ -149,6 +161,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "nebuladb.showcase.authSecretName" . }}
                   key: OAUTH2_PROXY_COOKIE_SECRET
+          volumeMounts:
+            - name: oauth2-htpasswd
+              mountPath: /shared/oauth2
+              readOnly: true
           {{- with .Values.showcase.googleAuth.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -180,10 +196,50 @@ spec:
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
         {{- end }}
+      {{- if .Values.showcase.googleAuth.enabled }}
+      # Showcase entrypoint writes apr1 htpasswd here for oauth2-proxy.
+      # initContainer ensures the file exists before oauth2-proxy starts.
+      initContainers:
+        - name: prepare-htpasswd
+          image: "{{ .Values.showcase.image.repository }}:{{ .Values.showcase.image.tag }}"
+          imagePullPolicy: {{ .Values.showcase.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p /shared/oauth2
+              if [ -n "${SHOWCASE_AUTH_USERNAME:-}" ] && [ -n "${SHOWCASE_AUTH_PASSWORD:-}" ]; then
+                printf '%s:%s\n' "$SHOWCASE_AUTH_USERNAME" \
+                  "$(printf '%s' "$SHOWCASE_AUTH_PASSWORD" | openssl passwd -apr1 -stdin)" \
+                  > /shared/oauth2/htpasswd
+              else
+                echo 'nobody:$apr1$disabled$ffffffffffffffffffffff' > /shared/oauth2/htpasswd
+              fi
+          env:
+            - name: SHOWCASE_AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.showcase.authSecretName" . }}
+                  key: SHOWCASE_AUTH_USERNAME
+                  optional: true
+            - name: SHOWCASE_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.showcase.authSecretName" . }}
+                  key: SHOWCASE_AUTH_PASSWORD
+                  optional: true
+          volumeMounts:
+            - name: oauth2-htpasswd
+              mountPath: /shared/oauth2
+      {{- end }}
       volumes:
         - name: nginx-template
           configMap:
             name: {{ include "nebuladb.fullname" . }}-showcase-nginx
+        {{- if .Values.showcase.googleAuth.enabled }}
+        - name: oauth2-htpasswd
+          emptyDir: {}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

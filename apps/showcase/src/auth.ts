@@ -74,6 +74,8 @@ export async function logShowcaseVisit(user: ShowcaseUser): Promise<void> {
 }
 
 export function showcaseSignOutUrl(): string {
-  const rd = encodeURIComponent(window.location.origin + "/");
+  // Land on the branded login page (not `/`, which would bounce straight
+  // back into Google when the IdP session is still warm).
+  const rd = encodeURIComponent(window.location.origin + "/login");
   return `/oauth2/sign_out?rd=${rd}`;
 }
