@@ -8,24 +8,53 @@
 # Google OAuth (oauth2-proxy sidecar + nginx auth_request):
 #   SHOWCASE_GOOGLE_AUTH=true     write oauth gate into
 #                                 /etc/nginx/showcase-oauth-gate.conf
-#   When Google is on, basic auth is forced off (one login method).
+#   Unauthenticated users land on /login (Google + optional password).
+#   When Google is on, nginx basic auth is forced off; password sign-in
+#   goes through oauth2-proxy --htpasswd-file (shared volume).
 #
-# Auth on without credentials fails closed for basic auth.
+# Also writes /usr/share/nginx/html/login-config.json so the public
+# login page knows which methods to show.
 
 showcase_htpasswd=/etc/nginx/showcase.htpasswd
+oauth_htpasswd=/shared/oauth2/htpasswd
 oauth_gate=/etc/nginx/showcase-oauth-gate.conf
+login_config=/usr/share/nginx/html/login-config.json
 : >"$showcase_htpasswd"
 : >"$oauth_gate"
+mkdir -p /shared/oauth2 2>/dev/null || true
 
 google_on=false
 case "$(printf '%s' "${SHOWCASE_GOOGLE_AUTH:-false}" | tr '[:upper:]' '[:lower:]')" in
   true|1|yes|on) google_on=true ;;
 esac
 
+write_htpasswd() {
+  case "${SHOWCASE_AUTH_USERNAME:-}" in
+    *:*) echo "showcase-auth: SHOWCASE_AUTH_USERNAME must not contain ':'" >&2; exit 1 ;;
+  esac
+  if [ -n "${SHOWCASE_AUTH_USERNAME:-}" ] && [ -n "${SHOWCASE_AUTH_PASSWORD:-}" ]; then
+    hash="$(printf '%s' "$SHOWCASE_AUTH_PASSWORD" | openssl passwd -apr1 -stdin)"
+    line="$(printf '%s:%s\n' "$SHOWCASE_AUTH_USERNAME" "$hash")"
+    printf '%s' "$line" >"$showcase_htpasswd"
+    if [ -d /shared/oauth2 ]; then
+      printf '%s' "$line" >"$oauth_htpasswd"
+    fi
+    return 0
+  fi
+  return 1
+}
+
+password_on=false
+if write_htpasswd; then
+  password_on=true
+  echo "showcase-auth: htpasswd ready for user '$SHOWCASE_AUTH_USERNAME'" >&2
+elif [ -d /shared/oauth2 ]; then
+  # oauth2-proxy requires the file to exist at start; placeholder accepts nobody.
+  echo 'nobody:$apr1$disabled$ffffffffffffffffffffff' >"$oauth_htpasswd"
+fi
+
 if [ "$google_on" = true ]; then
-  # auth_request + 401→oauth only when Google is on. Leaving error_page 401
-  # in place while basic auth is active would swallow the WWW-Authenticate
-  # challenge and redirect to a missing /oauth2/start.
+  # 401 → branded /login (not straight to Google). /login is auth-exempt.
   cat >"$oauth_gate" <<'EOF'
     auth_request /oauth2/auth;
     error_page 401 = @showcase_oauth_start;
@@ -33,28 +62,32 @@ if [ "$google_on" = true ]; then
     auth_request_set $auth_user $upstream_http_x_auth_request_user;
 EOF
   export SHOWCASE_AUTH_BASIC=off
-  echo "showcase-auth: Google OAuth gate on (basic auth forced off)" >&2
+  printf '{"google":true,"password":%s,"mode":"google"}\n' \
+    "$([ "$password_on" = true ] && echo true || echo false)" >"$login_config"
+  echo "showcase-auth: Google OAuth gate on → /login (password=$password_on)" >&2
 else
   echo "# google oauth gate off" >"$oauth_gate"
   case "$(printf '%s' "${SHOWCASE_AUTH_DISABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
     true|1|yes|on)
       export SHOWCASE_AUTH_BASIC=off
+      printf '{"google":false,"password":false,"mode":"open"}\n' >"$login_config"
       echo "showcase-auth: basic auth disabled" >&2
       ;;
     *)
       export SHOWCASE_AUTH_BASIC='"NebulaDB Showcase"'
-      case "${SHOWCASE_AUTH_USERNAME:-}" in
-        *:*) echo "showcase-auth: SHOWCASE_AUTH_USERNAME must not contain ':'" >&2; exit 1 ;;
-      esac
-      if [ -n "${SHOWCASE_AUTH_USERNAME:-}" ] && [ -n "${SHOWCASE_AUTH_PASSWORD:-}" ]; then
-        printf '%s:%s\n' "$SHOWCASE_AUTH_USERNAME" \
-          "$(printf '%s' "$SHOWCASE_AUTH_PASSWORD" | openssl passwd -apr1 -stdin)" >"$showcase_htpasswd"
-        echo "showcase-auth: basic auth on for user '$SHOWCASE_AUTH_USERNAME'" >&2
-      else
+      if [ "$password_on" != true ]; then
         echo "showcase-auth: basic auth is on but credentials unset; every login will be refused" >&2
       fi
+      # 401 from basic → /login form (location /login/basic-check keeps the realm).
+      cat >"$oauth_gate" <<'EOF'
+    error_page 401 = @showcase_oauth_start;
+EOF
+      printf '{"google":false,"password":%s,"mode":"basic"}\n' \
+        "$([ "$password_on" = true ] && echo true || echo false)" >"$login_config"
+      echo "showcase-auth: basic auth on → /login (password=$password_on)" >&2
       ;;
   esac
 fi
 
-unset showcase_htpasswd oauth_gate google_on
+unset showcase_htpasswd oauth_htpasswd oauth_gate login_config google_on password_on
+unset -f write_htpasswd
