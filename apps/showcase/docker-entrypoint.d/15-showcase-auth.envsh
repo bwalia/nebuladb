@@ -83,5 +83,5 @@ EOF
   esac
 fi
 
-unset showcase_htpasswd oauth_htpasswd oauth_gate login_config google_on password_on
+unset showcase_htpasswd oauth_gate login_config google_on password_on
 unset -f write_htpasswd
