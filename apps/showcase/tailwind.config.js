@@ -25,7 +25,9 @@ export default {
         accent: "#4C8DFF",
       },
       fontFamily: {
-        sans: ['"Inter"', "system-ui", "-apple-system", "sans-serif"],
+        // Align with workstation-website (`--ws-font-stack-*` in ws-theme.css).
+        sans: ['"Poppins"', '"Helvetica Neue"', "Arial", "sans-serif"],
+        display: ['"Unbounded"', '"Poppins"', "sans-serif"],
         mono: ['"JetBrains Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       borderRadius: {

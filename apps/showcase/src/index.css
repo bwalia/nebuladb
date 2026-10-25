@@ -19,13 +19,17 @@
   }
   body {
     @apply bg-[#FAFAFA] text-[#18181B] antialiased font-sans;
-    font-feature-settings: "cv05", "cv08", "ss01";
   }
   html.dark body {
     @apply bg-carbon-950 text-ink;
   }
-  h1, h2, h3, h4 {
-    @apply tracking-tight;
+  /* Display face (Unbounded) for primary headings — same split as
+     workstation-website (h1/h2 display, h3 stays Poppins body). */
+  h1, h2 {
+    @apply font-display tracking-tight;
+  }
+  h3, h4 {
+    @apply font-sans tracking-tight;
   }
   pre, code, kbd, .mono {
     font-family: theme("fontFamily.mono");
