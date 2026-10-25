@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="en-GB" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NebulaDB — the enterprise AI database, written in Rust</title>
+  <meta name="description" content="NebulaDB is an AI-native enterprise database written in Rust from the ground up: SQL, JSON documents, HNSW vectors, hybrid search, streaming RAG and MCP for agents in one binary, with WAL durability, Raft HA and multi-region XDCR." />
+  <link rel="canonical" href="https://nebuladb.net/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://nebuladb.net/" />
+  <meta property="og:title" content="NebulaDB — the enterprise AI database, written in Rust" />
+  <meta property="og:description" content="SQL, documents, vectors, RAG and AI agents in one Rust binary. Durable, replicated, multi-region." />
+  <meta property="og:image" content="https://nebuladb.net/assets/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("nebula-theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/site.css" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "NebulaDB",
+    "applicationCategory": "DatabaseApplication",
+    "operatingSystem": "Linux, macOS, Kubernetes",
+    "programmingLanguage": "Rust",
+    "url": "https://nebuladb.net/",
+    "codeRepository": "https://github.com/bwalia/nebuladb",
+    "description": "AI-native enterprise database written in Rust: SQL, JSON documents, HNSW vectors, hybrid search, streaming RAG and MCP in one binary."
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" aria-label="NebulaDB home">
+        <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+          <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+          <circle class="cell-on" cx="29" cy="3" r="3"/>
+        </svg>
+        NebulaDB
+      </a>
+      <nav class="nav" id="site-nav" aria-label="Primary">
+        <a href="/features.html">Features</a>
+        <a href="/#why-rust">Why Rust</a>
+        <a href="/#demos">Demos</a>
+        <a href="/architecture.html">Architecture</a>
+        <a href="https://github.com/bwalia/nebuladb">GitHub</a>
+      </nav>
+      <div class="header-actions">
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="Switch colour theme">
+          <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <a class="btn btn-primary btn-sm" href="https://showcase.nebuladb.net">Live showcase</a>
+        <button class="icon-btn menu-btn" type="button" data-menu aria-controls="site-nav" aria-expanded="false" aria-label="Menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ============================================================ hero -->
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow">Enterprise AI database · written in Rust</p>
+          <h1>One database for <span class="accent">enterprise AI</span></h1>
+          <p class="lead">
+            NebulaDB stores, indexes and retrieves your enterprise data with SQL, JSON documents,
+            vectors, hybrid search and streaming RAG, and exposes all of it to AI agents over MCP.
+            It is one Rust binary, built from the ground up for the workloads that relational and
+            search databases were never designed to carry.
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="#quickstart">Run it in one command</a>
+            <a class="btn btn-secondary" href="#demos">See it work in your browser</a>
+          </div>
+          <ul class="hero-badges" aria-label="Protocols">
+            <li class="pill"><span class="dot"></span>REST + SSE</li>
+            <li class="pill"><span class="dot"></span>gRPC</li>
+            <li class="pill"><span class="dot"></span>Postgres wire</li>
+            <li class="pill"><span class="dot"></span>MCP</li>
+            <li class="pill"><span class="dot"></span>Azure AI Search API</li>
+          </ul>
+        </div>
+
+        <div class="code reveal" aria-label="Example query">
+          <div class="code-bar"><span class="dots"><i></i><i></i><i></i></span>psql -h nebula -p 5433</div>
+<pre><span class="c">-- vector retrieval and structured filters, one statement</span>
+<span class="k">SELECT</span> id, title, region, severity
+  <span class="k">FROM</span> incidents
+ <span class="k">WHERE</span> <span class="k">semantic_match</span>(content, <span class="s">'TLS resets at checkout'</span>)
+   <span class="k">AND</span> region <span class="k">IN</span> (<span class="s">'eu'</span>, <span class="s">'uk'</span>)
+   <span class="k">AND</span> severity <span class="k">&lt;=</span> 2
+ <span class="k">LIMIT</span> 3;</pre>
+          <div class="table-scroll"><table class="result-table" aria-label="Example result">
+            <thead><tr><th>id</th><th>title</th><th>region</th><th>severity</th></tr></thead>
+            <tbody>
+              <tr><td>pm-2310</td><td>ECONNRESET in payment gateway</td><td>eu</td><td class="num">1</td></tr>
+              <tr><td>pm-2287</td><td>p95 regression on checkout-api</td><td>uk</td><td class="num">2</td></tr>
+              <tr><td>pm-2251</td><td>Handshake timeouts after cert rotation</td><td>eu</td><td class="num">2</td></tr>
+            </tbody>
+          </table></div>
+          <div class="code-bar" style="border-top:1px solid #212227;border-bottom:0"><span class="ok">●</span>&nbsp;3 rows · HNSW top-k → residual filter · same engine over REST, gRPC and pgwire</div>
+        </div>
+      </div>
+
+      <div class="wrap" style="margin-top:clamp(2.5rem,2rem + 3vw,4rem)">
+        <div class="stats" aria-label="Codebase facts">
+          <div class="stat"><b>~50k</b><span>lines of Rust</span></div>
+          <div class="stat"><b>23</b><span>workspace crates</span></div>
+          <div class="stat"><b>500+</b><span>unit + integration tests</span></div>
+          <div class="stat"><b>4</b><span>wire protocols, 1 binary</span></div>
+          <div class="stat"><b>24</b><span>MCP tools for agents</span></div>
+          <div class="stat"><b>0</b><span>GC pauses</span></div>
+        </div>
+        <p class="stats-note">Counted from the public repository: <code>crates/**/*.rs</code> and <code>#[test]</code> / <code>#[tokio::test]</code> attributes.</p>
+      </div>
+    </section>
+
+    <!-- ====================================================== limitations -->
+    <section class="section" id="problems">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">The problem</p>
+          <h2>Traditional databases were not built for AI workloads</h2>
+          <p>
+            Enterprises bolt vector search onto relational databases, run a separate search cluster,
+            and glue an embedder, a chunker and an LLM gateway on top. Each layer has its own
+            deploy, its own auth and its own way to fail. NebulaDB takes those layers into the database.
+          </p>
+        </div>
+
+        <ol class="problems">
+          <li class="problem reveal">
+            <span class="problem-num">01</span>
+            <div>
+              <h3>RAG is five services glued together</h3>
+              <p class="was">Vector store, embedding service, chunking script, LLM gateway and a streaming layer: five processes, five deploys, five places for auth to leak.</p>
+            </div>
+            <div class="fix">
+              <p><strong>One binary does the pipeline.</strong> Ingest chunks and embeds server-side; <code>POST /api/v1/ai/rag</code> streams retrieved context and generated tokens over one SSE response, with citations.</p>
+              <span class="where">nebula-chunk · nebula-embed · nebula-llm · nebula-server</span>
+            </div>
+          </li>
+          <li class="problem reveal">
+            <span class="problem-num">02</span>
+            <div>
+              <h3>Vectors are an extension, not a native type</h3>
+              <p class="was">Bolted-on vector types share a planner, buffer pool and vacuum designed for rows. Similarity search competes with the workload the engine was tuned for.</p>
+            </div>
+            <div class="fix">
+              <p><strong>HNSW is the core index.</strong> Cosine, L2 and dot metrics, int8 quantisation with dequantisation fused into the distance loop, and SQL that plans <code>semantic_match()</code> as a first-class retrieval step.</p>
+              <span class="where">nebula-vector · nebula-sql</span>
+            </div>
+          </li>
+          <li class="problem reveal">
+            <span class="problem-num">03</span>
+            <div>
+              <h3>Exact tokens get lost in embeddings</h3>
+              <p class="was">Dense retrieval handles paraphrase but misses error codes, SKUs and function names. Teams run a second search engine to get them back.</p>
+            </div>
+            <div class="fix">
+              <p><strong>Hybrid search in the same index.</strong> Okapi BM25 and HNSW are fused with per-bucket weights, with optional query expansion and a pluggable reranker.</p>
+              <span class="where">nebula-bm25 · nebula-rerank · NEBULA_HYBRID_WEIGHTS</span>
+            </div>
+          </li>
+          <li class="problem reveal">
+            <span class="problem-num">04</span>
+            <div>
+              <h3>In-memory vector indexes vanish on restart</h3>
+              <p class="was">A pod restart drops the index and someone re-ingests from source, paying for every embedding again.</p>
+            </div>
+            <div class="fix">
+              <p><strong>Durable by design.</strong> Every mutation is CRC32-framed and fsynced to the WAL before it is applied. Boot loads the newest snapshot and replays the tail; a torn frame is truncated, never trusted. Vectors are stored in the log, so recovery needs no embedder.</p>
+              <span class="where">nebula-wal · nebula-index/durability · nebula-backup</span>
+            </div>
+          </li>
+          <li class="problem reveal">
+            <span class="problem-num">05</span>
+            <div>
+              <h3>Analysts and agents cannot reach the vector store</h3>
+              <p class="was">BI tools speak Postgres. Agents speak MCP. A bespoke REST dialect turns into adapters that nobody maintains.</p>
+            </div>
+            <div class="fix">
+              <p><strong>Every client speaks its own protocol.</strong> The same SQL engine serves REST, gRPC and the Postgres wire protocol, so <code>psql</code> works. A native MCP server gives agents 24 tools with auth passed through.</p>
+              <span class="where">nebula-pgwire · nebula-grpc · nebula-mcp · nebula-search</span>
+            </div>
+          </li>
+          <li class="problem reveal">
+            <span class="problem-num">06</span>
+            <div>
+              <h3>HA and multi-region are bolted on later</h3>
+              <p class="was">Replicas fall behind silently, compaction deletes segments a follower still needs, and a write to the wrong node diverges forever.</p>
+            </div>
+            <div class="fix">
+              <p><strong>Replication is part of the design.</strong> Raft within a region, home-region XDCR across regions, follower ack cursors that clamp WAL compaction, a write guard that returns 409 on followers, and a region-aware client that retries on the right home.</p>
+              <span class="where">nebula-raft · nebula-cdc · nebula-client · operator/</span>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ========================================================= why rust -->
+    <section class="section" id="why-rust">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">Why Rust from the ground up</p>
+          <h2>The language is part of the database's guarantees</h2>
+          <p>
+            A database is judged on its worst millisecond and its worst crash. Rust lets NebulaDB keep
+            the speed of C++ while ruling out whole classes of bugs at compile time.
+          </p>
+        </div>
+
+        <ul class="grid grid-4" style="list-style:none;margin:0;padding:0">
+          <li class="card reveal">
+            <div class="card-top">
+              <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span>
+              <span class="card-index">01</span>
+            </div>
+            <h3>No garbage-collector pauses</h3>
+            <p>Memory is freed deterministically by ownership. Tail latency for search and RAG is not hostage to a collector, which matters when an agent waits on every call.</p>
+          </li>
+          <li class="card reveal">
+            <div class="card-top">
+              <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg></span>
+              <span class="card-index">02</span>
+            </div>
+            <h3>Memory safety without a runtime</h3>
+            <p>Buffer overflows, use-after-free and data races are compile errors, not CVEs. The WAL and HNSW arena are written in safe Rust with checked UTF-8 chunk boundaries.</p>
+          </li>
+          <li class="card reveal">
+            <div class="card-top">
+              <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><path d="M8 3v18M16 3v18"/></svg></span>
+              <span class="card-index">03</span>
+            </div>
+            <h3>Concurrency the compiler checks</h3>
+            <p>Tokio serves REST, gRPC, pgwire and SSE from one async runtime. The HNSW graph uses per-node, per-layer locks, so readers search while writers insert.</p>
+          </li>
+          <li class="card reveal">
+            <div class="card-top">
+              <span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></span>
+              <span class="card-index">04</span>
+            </div>
+            <h3>Traits instead of glue</h3>
+            <p><code>Embedder</code>, <code>LlmClient</code>, <code>Chunker</code> and <code>Reranker</code> are traits. Swap Ollama for OpenAI, Anthropic or Gemini by configuration; the deterministic mocks keep CI offline.</p>
+          </li>
+        </ul>
+
+        <div style="margin-top:clamp(2.5rem,2rem + 2vw,3.5rem)">
+          <h3>The workspace, crate by crate</h3>
+          <p class="lead" style="margin-bottom:1.25rem">Each concern is a separate crate with its own tests, so the boundaries in the diagram are the boundaries in the code.</p>
+          <ul class="legend">
+            <li class="l-ai">AI and retrieval</li>
+            <li class="l-durability">Durability and HA</li>
+            <li class="l-surface">Protocols and clients</li>
+            <li>Core</li>
+          </ul>
+          <ul class="crates">
+            <li class="crate" data-layer="core"><code>nebula-core</code><span>IDs, error type and shared primitives</span></li>
+            <li class="crate" data-layer="core"><code>nebula-index</code><span>Buckets, chunks, parent/child docs, durable TextIndex</span></li>
+            <li class="crate" data-layer="ai"><code>nebula-vector</code><span>HNSW graph, distance metrics, int8 quantisation</span></li>
+            <li class="crate" data-layer="ai"><code>nebula-bm25</code><span>Okapi BM25 inverted index for lexical recall</span></li>
+            <li class="crate" data-layer="ai"><code>nebula-rerank</code><span>Reranker and query-expansion stages</span></li>
+            <li class="crate" data-layer="ai"><code>nebula-embed</code><span>Embedder trait, OpenAI-compatible and Ollama clients</span></li>
+            <li class="crate" data-layer="ai"><code>nebula-cache</code><span>In-process LRU embedding cache</span></li>
+            <li class="crate" data-layer="ai"><code>nebula-redis-cache</code><span>Shared Redis tier, failure-transparent</span></li>
+            <li class="crate" data-layer="ai"><code>nebula-chunk</code><span>Fixed, sentence, heading-aware and code-aware chunkers</span></li>
+            <li class="crate" data-layer="ai"><code>nebula-llm</code><span>Streaming LLM clients: Ollama, OpenAI, Anthropic, Gemini</span></li>
+            <li class="crate" data-layer="core"><code>nebula-sql</code><span>Parser, typed plan tree, executor, result cache, EXPLAIN</span></li>
+            <li class="crate" data-layer="durability"><code>nebula-wal</code><span>CRC-framed segments, subscribe API, ack-clamped compaction</span></li>
+            <li class="crate" data-layer="durability"><code>nebula-raft</code><span>Raft log, state machine and snapshots (openraft)</span></li>
+            <li class="crate" data-layer="durability"><code>nebula-cdc</code><span>Typed change events from the WAL to webhooks and files</span></li>
+            <li class="crate" data-layer="durability"><code>nebula-backup</code><span>Snapshot + WAL bundles to disk or S3, manifests, restore</span></li>
+            <li class="crate" data-layer="durability"><code>nebula-resource</code><span>Memory, CPU and disk pressure → operating mode</span></li>
+            <li class="crate" data-layer="surface"><code>nebula-server</code><span>Axum REST, SSE, auth, rate limit, audit, metrics</span></li>
+            <li class="crate" data-layer="surface"><code>nebula-grpc</code><span>Tonic Document, Search and AI services</span></li>
+            <li class="crate" data-layer="surface"><code>nebula-pgwire</code><span>Postgres wire protocol over the same SQL engine</span></li>
+            <li class="crate" data-layer="surface"><code>nebula-mcp</code><span>Model Context Protocol server for agents</span></li>
+            <li class="crate" data-layer="surface"><code>nebula-search</code><span>Azure AI Search-compatible API</span></li>
+            <li class="crate" data-layer="surface"><code>nebula-client</code><span>Region-aware SDK, retries to the home region</span></li>
+            <li class="crate" data-layer="surface"><code>nebulactl</code><span>Backup and restore CLI, run by the operator</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ demos -->
+    <section class="section" id="demos">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">See it work</p>
+          <h2>The algorithms, running in your browser</h2>
+          <p>
+            These demos run the same algorithms NebulaDB uses, on toy data, so you can change a
+            parameter and watch the effect. For the real thing over a live corpus, open the
+            <a href="https://showcase.nebuladb.net">showcase</a>.
+          </p>
+        </div>
+
+        <div class="tabs" role="tablist" aria-label="Demos">
+          <button role="tab" id="tab-hnsw" aria-controls="demo-hnsw" aria-selected="true">HNSW vector search</button>
+          <button role="tab" id="tab-hybrid" aria-controls="demo-hybrid" aria-selected="false" tabindex="-1">Hybrid search</button>
+          <button role="tab" id="tab-wal" aria-controls="demo-wal" aria-selected="false" tabindex="-1">Crash recovery</button>
+          <button role="tab" id="tab-proto" aria-controls="demo-proto" aria-selected="false" tabindex="-1">One query, four protocols</button>
+        </div>
+
+        <!-- HNSW -->
+        <div role="tabpanel" id="demo-hnsw" aria-labelledby="tab-hnsw">
+          <div class="demo">
+            <div class="demo-stage demo-stage-canvas">
+              <canvas id="hnsw-canvas" aria-label="HNSW graph. Click to place a query point."></canvas>
+            </div>
+            <div class="demo-side">
+              <span class="sim-label">Runs in your browser · 2-D toy vectors</span>
+              <h3>Find neighbours without reading every vector</h3>
+              <p>Click the graph to place a query. The search enters at the top layer, takes long hops through the sparse upper layers, then widens to a beam of <code>ef</code> candidates on layer 0. Green rings are the 5 results.</p>
+              <div class="control">
+                <label for="hnsw-n">Vectors <output id="hnsw-n-out">1,500</output></label>
+                <input id="hnsw-n" type="range" min="200" max="3000" step="100" value="1500" />
+              </div>
+              <div class="control">
+                <label for="hnsw-m">M (links per node) <output id="hnsw-m-out">8</output></label>
+                <input id="hnsw-m" type="range" min="3" max="24" step="1" value="8" />
+              </div>
+              <div class="control">
+                <label for="hnsw-ef">ef_search (beam width) <output id="hnsw-ef-out">24</output></label>
+                <input id="hnsw-ef" type="range" min="5" max="160" step="1" value="24" />
+              </div>
+              <div class="metrics">
+                <div class="metric"><span>Distance calls</span><b id="hnsw-dist">–</b></div>
+                <div class="metric"><span>Brute force</span><b id="hnsw-brute">–</b></div>
+                <div class="metric"><span>Corpus touched</span><b id="hnsw-touched">–</b></div>
+                <div class="metric"><span>Recall@5</span><b id="hnsw-recall">–</b></div>
+                <div class="metric"><span>Layers</span><b id="hnsw-layers">–</b></div>
+                <div class="metric"><span>Search ms</span><b id="hnsw-ms">–</b></div>
+              </div>
+              <div class="button-row"><button class="btn btn-secondary btn-sm" type="button" id="hnsw-random">Random query</button></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hybrid -->
+        <div role="tabpanel" id="demo-hybrid" aria-labelledby="tab-hybrid" hidden>
+          <div class="demo">
+            <div class="demo-stage">
+              <ol class="hits" id="hybrid-hits" aria-live="polite"></ol>
+            </div>
+            <div class="demo-side">
+              <span class="sim-label">Real BM25 · sample vector scores</span>
+              <h3>Lexical and semantic, fused</h3>
+              <p>Set the weight to 1.00 (vector only) on the error-code query: a look-alike <code>ECONNRESET</code> postmortem from another service ranks first. Move towards BM25 and the exact <code>ERR_CONN_RESET</code> document wins. NebulaDB min-max normalises both scores and takes a weighted sum, per bucket.</p>
+              <div class="control">
+                <label for="hybrid-query">Query</label>
+                <select id="hybrid-query">
+                  <option value="0">ERR_CONN_RESET checkout-api</option>
+                  <option value="1">how do we recover when a region goes down</option>
+                  <option value="2">zero trust access for contractors</option>
+                </select>
+              </div>
+              <div class="control">
+                <label for="hybrid-w">Weight vector / BM25 <output id="hybrid-w-out">0.50 / 0.50</output></label>
+                <input id="hybrid-w" type="range" min="0" max="100" step="5" value="50" />
+              </div>
+              <label style="display:flex;gap:10px;align-items:center;font-size:var(--fs-sm);color:var(--muted)">
+                <input id="hybrid-eu" type="checkbox" /> Residual filter <code>region = 'eu'</code>
+              </label>
+              <div class="code">
+                <div class="code-bar">config</div>
+                <pre id="hybrid-env"></pre>
+              </div>
+              <div class="code">
+                <div class="code-bar">request</div>
+                <pre id="hybrid-req"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- WAL -->
+        <div role="tabpanel" id="demo-wal" aria-labelledby="tab-wal" hidden>
+          <div class="demo">
+            <div class="demo-stage wal-stage">
+              <div><div class="wal-row-label">WAL · wal/0000000001.nwal</div><div class="wal-row" id="wal-frames"></div></div>
+              <div><div class="wal-row-label">Snapshot · snapshots/</div><div class="wal-row" id="wal-snap"></div></div>
+              <div><div class="wal-row-label">In-memory index</div><div class="wal-row" id="wal-mem"></div></div>
+              <pre class="wal-log" id="wal-log" aria-live="polite"></pre>
+            </div>
+            <div class="demo-side">
+              <span class="sim-label">Simulation of the real recovery path</span>
+              <h3>Kill it mid-write. Lose nothing acknowledged.</h3>
+              <p>Write a few documents, take a snapshot, write more, then crash during an fsync. On restart NebulaDB loads the snapshot, replays only the newer frames, and truncates the half-written tail because its CRC32 does not match.</p>
+              <div class="button-row">
+                <button class="btn btn-primary btn-sm" type="button" id="wal-write">Write document</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="wal-snapshot">Snapshot</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="wal-crash">Crash</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="wal-restart">Restart</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="wal-reset">Reset</button>
+              </div>
+              <p style="font-size:var(--fs-sm)">Frame format: <code>len u32</code> · <code>crc32 u32</code> · <code>bincode(WalRecord)</code>. Snapshots are written to <code>.tmp</code> and atomically renamed.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Protocols -->
+        <div role="tabpanel" id="demo-proto" aria-labelledby="tab-proto" hidden>
+          <div class="proto-grid">
+            <div class="code">
+              <div class="code-bar">REST · curl<button class="copy-btn" type="button">copy</button></div>
+<pre>curl -s -X POST http://localhost:8080/api/v1/ai/search \
+  -H 'content-type: application/json' \
+  -d '{"query": "dns failover", "top_k": 3, "hybrid": true}'</pre>
+            </div>
+            <div class="code">
+              <div class="code-bar">Postgres wire · psql<button class="copy-btn" type="button">copy</button></div>
+<pre>psql -h localhost -p 5433 -U any -d any -c \
+  "SELECT id, text FROM docs
+    WHERE semantic_match(content, 'dns failover')
+    LIMIT 3"</pre>
+            </div>
+            <div class="code">
+              <div class="code-bar">gRPC · grpcurl<button class="copy-btn" type="button">copy</button></div>
+<pre>grpcurl -plaintext \
+  -import-path crates/nebula-grpc/proto -proto nebula.proto \
+  -d '{"query": "dns failover", "top_k": 3}' \
+  localhost:50051 nebula.v1.SearchService/SemanticSearch</pre>
+            </div>
+            <div class="code">
+              <div class="code-bar">MCP · POST http://localhost:8090/mcp<button class="copy-btn" type="button">copy</button></div>
+<pre>{ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": { "name": "semantic_search",
+              "arguments": { "query": "dns failover", "top_k": 3 } } }</pre>
+            </div>
+            <div class="code" style="grid-column:1/-1">
+              <div class="code-bar">Streaming RAG · Server-Sent Events<button class="copy-btn" type="button">copy</button></div>
+<pre>curl -N -X POST http://localhost:8080/api/v1/ai/rag \
+  -H 'content-type: application/json' \
+  -d '{"query": "explain dns failover", "top_k": 3, "stream": true}'
+
+<span class="c">event: context       ← one per retrieved chunk, before any token</span>
+<span class="c">event: answer_delta  ← LLM tokens as they are generated</span>
+<span class="c">event: done</span></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================================= features -->
+    <section class="section" id="features">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">Capabilities</p>
+          <h2>Everything an AI application needs from its data layer</h2>
+          <p>Store, index, understand, retrieve, answer and automate, on one highly available database.</p>
+        </div>
+        <ul class="grid grid-3" style="list-style:none;margin:0;padding:0">
+          <li class="card reveal">
+            <div class="card-top"><span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span><span class="card-index">SQL + JSON</span></div>
+            <h3>SQL over documents</h3>
+            <p><code>semantic_match()</code> and <code>vector_distance()</code> beside filters, <code>IN</code>, <code>array_contains</code>, <code>GROUP BY</code>, inner joins and <code>EXPLAIN</code>. JSON metadata on every document.</p>
+            <a class="arrow-link card-meta" href="/features.html#sql">SQL and documents</a>
+          </li>
+          <li class="card reveal">
+            <div class="card-top"><span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><circle cx="12" cy="10" r="2"/><path d="M7 6h10M6.5 7.5l4.5 9M17.5 7.5l-4.5 9M12 12v4"/></svg></span><span class="card-index">Vectors</span></div>
+            <h3>HNSW and hybrid search</h3>
+            <p>Native HNSW with three metrics and int8 quantisation, BM25 fusion, query expansion, reranking and per-bucket weights.</p>
+            <a class="arrow-link card-meta" href="/features.html#search">Vector and hybrid search</a>
+          </li>
+          <li class="card reveal">
+            <div class="card-top"><span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg></span><span class="card-index">RAG</span></div>
+            <h3>Batteries-included RAG</h3>
+            <p>Smart chunking, embedding with a two-tier cache, grounded answers with <code>[n]</code> citations, history and caller-supplied context, streamed over SSE.</p>
+            <a class="arrow-link card-meta" href="/features.html#rag">RAG pipeline</a>
+          </li>
+          <li class="card reveal">
+            <div class="card-top"><span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M9 14h.01M15 14h.01"/><circle cx="12" cy="3" r="1"/></svg></span><span class="card-index">Agents</span></div>
+            <h3>MCP for AI agents</h3>
+            <p>24 tools across SQL, search, RAG, documents, per-user long-term memory, cluster health, replication, backups and audit. Every tool declares whether it writes.</p>
+            <a class="arrow-link card-meta" href="/features.html#agents">Agents and MCP</a>
+          </li>
+          <li class="card reveal">
+            <div class="card-top"><span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span><span class="card-index">HA</span></div>
+            <h3>Replicated, multi-region</h3>
+            <p>Raft within a region, home-region XDCR across regions, follower promotion, zero-downtime swap rebalance and a Kubernetes operator.</p>
+            <a class="arrow-link card-meta" href="/features.html#ha">High availability</a>
+          </li>
+          <li class="card reveal">
+            <div class="card-top"><span class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg></span><span class="card-index">Operations</span></div>
+            <h3>Durable and observable</h3>
+            <p>WAL, snapshots, backup to S3 and restore, CDC, Prometheus metrics with Grafana dashboards, live log streaming, slow-query log, audit log and graceful degradation.</p>
+            <a class="arrow-link card-meta" href="/features.html#ops">Durability and operations</a>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ===================================================== architecture -->
+    <section class="section" id="architecture">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">Architecture</p>
+          <h2>One engine behind every protocol</h2>
+          <p>Every surface calls the same index, so a bug fix or a feature lands everywhere at once and REST, gRPC, pgwire and MCP can never disagree.</p>
+        </div>
+        <div class="diagram reveal">
+          <svg viewBox="0 0 960 420" role="img" aria-labelledby="arch-title arch-desc">
+            <title id="arch-title">NebulaDB architecture</title>
+            <desc id="arch-desc">Clients and agents connect over REST, gRPC, Postgres wire and MCP to nebula-server. The server routes to the SQL planner and the retrieval pipeline, which share one durable index of HNSW vectors, BM25 and documents. The index writes to a WAL that feeds snapshots, Raft followers, cross-region XDCR, CDC and backups.</desc>
+            <defs>
+              <marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="arrow" d="M0 0L8 4L0 8z"/></marker>
+              <marker id="aha" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="arrow-accent" d="M0 0L8 4L0 8z"/></marker>
+            </defs>
+            <text class="tl" x="20" y="24">CLIENTS</text>
+            <rect class="box" x="20" y="36" width="170" height="52" rx="10"/><text class="t" x="36" y="60">Apps · curl</text><text class="tm" x="36" y="77">REST + SSE</text>
+            <rect class="box" x="210" y="36" width="170" height="52" rx="10"/><text class="t" x="226" y="60">Services</text><text class="tm" x="226" y="77">gRPC (tonic)</text>
+            <rect class="box" x="400" y="36" width="170" height="52" rx="10"/><text class="t" x="416" y="60">BI · psql · ORMs</text><text class="tm" x="416" y="77">Postgres wire</text>
+            <rect class="box-accent" x="590" y="36" width="170" height="52" rx="10"/><text class="t" x="606" y="60">AI agents</text><text class="tm" x="606" y="77">MCP · nebula-mcp</text>
+            <rect class="box" x="780" y="36" width="160" height="52" rx="10"/><text class="t" x="796" y="60">Azure AI Search</text><text class="tm" x="796" y="77">compat API</text>
+
+            <path class="edge" d="M105 88V120M295 88V120M485 88V120M855 88V120" marker-end="url(#ah)"/>
+            <path class="edge-accent flow" d="M675 88V120" marker-end="url(#aha)"/>
+
+            <rect class="box" x="20" y="124" width="920" height="54" rx="10"/>
+            <text class="t" x="36" y="148">nebula-server</text>
+            <text class="tm" x="36" y="166">rate limit → audit → follower write guard → API key / JWT → handler · /healthz and /metrics bypass auth</text>
+
+            <path class="edge" d="M250 178V206M700 178V206" marker-end="url(#ah)"/>
+
+            <rect class="box" x="20" y="210" width="440" height="72" rx="10"/>
+            <text class="t" x="36" y="234">SQL planner · nebula-sql</text>
+            <text class="tm" x="36" y="254">parse → typed plan → semantic_match → filters</text>
+            <text class="tm" x="36" y="270">GROUP BY · JOIN · result cache · EXPLAIN</text>
+            <rect class="box" x="480" y="210" width="460" height="72" rx="10"/>
+            <text class="t" x="496" y="234">Retrieval and RAG</text>
+            <text class="tm" x="496" y="254">chunk → embed (LRU → Redis) → expand → hybrid → rerank</text>
+            <text class="tm" x="496" y="270">→ prompt → LLM stream (Ollama · OpenAI · Anthropic · Gemini)</text>
+
+            <path class="edge" d="M250 282V306M700 282V306" marker-end="url(#ah)"/>
+
+            <rect class="box-accent" x="20" y="310" width="560" height="90" rx="10"/>
+            <text class="t" x="36" y="334">Durable index · nebula-index</text>
+            <rect class="box" x="36" y="346" width="160" height="40" rx="8"/><text class="tm" x="50" y="370">HNSW vectors</text>
+            <rect class="box" x="210" y="346" width="160" height="40" rx="8"/><text class="tm" x="224" y="370">BM25 postings</text>
+            <rect class="box" x="384" y="346" width="180" height="40" rx="8"/><text class="tm" x="398" y="370">documents + metadata</text>
+
+            <path class="edge-accent flow" d="M580 355H612" marker-end="url(#aha)"/>
+            <rect class="box-ok" x="616" y="310" width="324" height="90" rx="10"/>
+            <text class="t" x="632" y="334">WAL · nebula-wal</text>
+            <text class="tm" x="632" y="354">→ snapshots · backup to S3 · restore</text>
+            <text class="tm" x="632" y="370">→ Raft followers · XDCR to regions</text>
+            <text class="tm" x="632" y="386">→ CDC events · webhooks</text>
+          </svg>
+        </div>
+        <p style="margin-top:16px"><a class="arrow-link" href="/architecture.html">Read the architecture</a></p>
+      </div>
+    </section>
+
+    <!-- ========================================================= compare -->
+    <section class="section" id="compare">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">Compared with a typical stack</p>
+          <h2>What changes when the database understands AI</h2>
+        </div>
+        <div class="table-wrap reveal">
+          <table class="compare">
+            <thead><tr><th scope="col">Concern</th><th scope="col">Relational DB + extensions + glue</th><th scope="col">NebulaDB</th></tr></thead>
+            <tbody>
+              <tr><td>Vector search</td><td>Extension type on a row engine; tuning shared with OLTP</td><td class="yes">Native HNSW, int8 quantisation, planned by SQL</td></tr>
+              <tr><td>Keyword recall</td><td>Separate search cluster to operate and sync</td><td class="yes">BM25 in the same index, fused per bucket</td></tr>
+              <tr><td>RAG pipeline</td><td>Chunker, embedder, LLM gateway and streamer as separate services</td><td class="yes">Server-side chunk, embed, retrieve and stream over one SSE call</td></tr>
+              <tr><td>Embedding cost</td><td>Cache built per application, if at all</td><td class="yes">LRU + Redis tiers with hit/miss metrics</td></tr>
+              <tr><td>AI agents</td><td>Custom tool wrappers per framework</td><td class="yes">MCP server with 24 typed tools, auth passed through</td></tr>
+              <tr><td>Restart</td><td>In-memory vector indexes rebuilt from source</td><td class="yes">Snapshot + WAL replay, no re-embedding</td></tr>
+              <tr><td>Multi-region</td><td>Replicate each component separately</td><td class="yes">Home-region XDCR for documents and vectors together</td></tr>
+              <tr><td>Runtime</td><td>Mixed: C, JVM, Python, Node</td><td class="yes">One Rust binary, no GC</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================= quickstart -->
+    <section class="section" id="quickstart">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">Quick start</p>
+          <h2>Running in one command</h2>
+          <p>The start script picks free ports, builds the stack, pulls local models through Ollama, seeds a corpus and prints the URLs. No external AI API is required.</p>
+        </div>
+        <div class="grid grid-2">
+          <div class="code reveal">
+            <div class="code-bar"><span class="dots"><i></i><i></i><i></i></span>terminal<button class="copy-btn" type="button">copy</button></div>
+<pre>git clone https://github.com/bwalia/nebuladb
+cd nebuladb
+./scripts/start.sh                 <span class="c"># tinyllama + nomic-embed-text</span>
+./scripts/start.sh --model llama3  <span class="c"># a larger chat model</span></pre>
+          </div>
+          <div class="code reveal">
+            <div class="code-bar"><span class="dots"><i></i><i></i><i></i></span>docker / helm<button class="copy-btn" type="button">copy</button></div>
+<pre>docker pull bwalia/nebula-server:latest
+docker pull bwalia/nebula-showcase:latest
+
+helm install nebula deploy/helm/nebuladb</pre>
+          </div>
+        </div>
+        <ol class="steps" style="margin-top:32px">
+          <li class="reveal"><h4>Ingest</h4><p><code>POST /api/v1/bucket/docs/document</code> chunks and embeds server-side.</p></li>
+          <li class="reveal"><h4>Search</h4><p><code>POST /api/v1/ai/search</code>, vector or hybrid.</p></li>
+          <li class="reveal"><h4>Answer</h4><p><code>POST /api/v1/ai/rag</code> streams context then tokens.</p></li>
+          <li class="reveal"><h4>Query</h4><p><code>psql -p 5433</code> with <code>semantic_match()</code>.</p></li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- =========================================================== limits -->
+    <section class="section" id="limits">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">Honest limits</p>
+          <h2>What NebulaDB does not do yet</h2>
+          <p>Knowing where a system stops is part of choosing it. These are documented in the repository and return clear errors rather than surprising results.</p>
+        </div>
+        <ul class="limits">
+          <li><strong>SQL subset</strong>No <code>OR</code> in <code>WHERE</code>, outer joins, subqueries, CTEs or <code>HAVING</code>. Unsupported syntax returns <code>400 sql_unsupported</code> (SQLSTATE 42601 on pgwire).</li>
+          <li><strong>Simple query protocol only</strong><code>psql</code> works; drivers that require the extended protocol (prepare / bind) do not yet.</li>
+          <li><strong>One writer per bucket</strong>Multi-region is active-active per cluster, with each bucket homed in one region. No multi-master writes to the same bucket.</li>
+          <li><strong>No cross-document transactions</strong>Each upsert is its own durable commit.</li>
+          <li><strong>Coarse access control</strong>API keys and JWT grant API access; there are no row- or field-level ACLs inside search results.</li>
+          <li><strong>Index in RAM</strong>The working index lives in memory with snapshots on disk; there is no cold-storage tiering for rarely used vectors.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============================================================ night -->
+    <section class="night" aria-labelledby="cta-title">
+      <div class="wrap">
+        <div>
+          <p class="eyebrow" style="color:#7d8088">Showcase</p>
+          <h2 id="cta-title">See it on a live corpus</h2>
+          <p>The showcase runs NebulaDB over real data: Companies House due diligence, a shop catalogue, Talent Match, Incident Copilot, Contract Review and Support Desk, plus cluster, rebalance and backup views.</p>
+        </div>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://showcase.nebuladb.net">Open the showcase</a>
+          <a class="btn btn-secondary" href="https://github.com/bwalia/nebuladb">Read the code</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <div>
+          <a class="brand" href="/" aria-label="NebulaDB home">
+            <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+              <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+              <circle class="cell-on" cx="29" cy="3" r="3"/>
+            </svg>
+            NebulaDB
+          </a>
+          <p style="margin-top:12px;max-width:40ch">The enterprise AI database, written in Rust. SQL, documents, vectors, RAG and agents in one binary.</p>
+        </div>
+        <div>
+          <h4>Product</h4>
+          <ul>
+            <li><a href="/features.html">Features</a></li>
+            <li><a href="/architecture.html">Architecture</a></li>
+            <li><a href="/#demos">Demos</a></li>
+            <li><a href="https://showcase.nebuladb.net">Live showcase</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Developers</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb">GitHub</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/openapi.yaml">OpenAPI spec</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/tree/main/docs/design">Design docs</a></li>
+            <li><a href="https://hub.docker.com/r/bwalia/nebula-server">Docker images</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Read</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/PROBLEMS_SOLVED.md">Problems solved</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/USE_CASES.md">Use cases</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/technotes/active-active-xdcr.md">Multi-region XDCR</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-base">
+        <span>© <span id="year">2026</span> NebulaDB · nebuladb.net</span>
+        <span>Built in Rust · hosted on GitHub Pages</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/assets/site.js" defer></script>
+  <script src="/assets/demos.js" defer></script>
+</body>
+</html>

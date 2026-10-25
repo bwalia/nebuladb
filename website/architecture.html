@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en-GB" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Architecture — NebulaDB</title>
+  <meta name="description" content="How NebulaDB turns a request into durable, searchable, replicated data: middleware chain, write, read and RAG paths, WAL recovery, XDCR and swap rebalance." />
+  <link rel="canonical" href="https://nebuladb.net/architecture.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://nebuladb.net/architecture.html" />
+  <meta property="og:title" content="Architecture — NebulaDB" />
+  <meta property="og:description" content="How NebulaDB turns a request into durable, searchable, replicated data: middleware chain, write, read and RAG paths, WAL recovery, XDCR and swap rebalance." />
+  <meta property="og:image" content="https://nebuladb.net/assets/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("nebula-theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" aria-label="NebulaDB home">
+        <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+          <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+          <circle class="cell-on" cx="29" cy="3" r="3"/>
+        </svg>
+        NebulaDB
+      </a>
+      <nav class="nav" id="site-nav" aria-label="Primary">
+        <a href="/features.html">Features</a>
+        <a href="/#why-rust">Why Rust</a>
+        <a href="/#demos">Demos</a>
+        <a href="/architecture.html" aria-current="page">Architecture</a>
+        <a href="https://github.com/bwalia/nebuladb">GitHub</a>
+      </nav>
+      <div class="header-actions">
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="Switch colour theme">
+          <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <a class="btn btn-primary btn-sm" href="https://showcase.nebuladb.net">Live showcase</a>
+        <button class="icon-btn menu-btn" type="button" data-menu aria-controls="site-nav" aria-expanded="false" aria-label="Menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+    <main id="main">
+    <section class="hero" style="padding-bottom:2rem">
+      <div class="wrap">
+        <p class="eyebrow">Architecture</p>
+        <h1>How a request becomes durable, searchable, replicated data</h1>
+        <p class="lead">One process, one index, many front ends. This page follows a write, a query and a RAG call through NebulaDB, then shows how nodes and regions stay in step.</p>
+      </div>
+    </section>
+
+    <!-- request chain -->
+    <section class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">01 · The front door</p>
+          <h2>Every request passes the same middleware chain</h2>
+          <p>Ordering is deliberate. Audit runs before the follower guard and auth, so rejected writes are still recorded. Health and metrics bypass the chain so probes survive an abusive client.</p>
+        </div>
+        <div class="diagram reveal">
+          <svg viewBox="0 0 960 150" role="img" aria-labelledby="mw-t">
+            <title id="mw-t">Middleware chain: rate limit, audit, follower write guard, auth, body limit and trace, handler</title>
+            <defs><marker id="ah1" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="arrow" d="M0 0L8 4L0 8z"/></marker></defs>
+            <rect class="box" x="10" y="30" width="135" height="64" rx="10"/><text class="t" x="24" y="56">Rate limit</text><text class="tm" x="24" y="76">token bucket</text>
+            <rect class="box" x="170" y="30" width="135" height="64" rx="10"/><text class="t" x="184" y="56">Audit</text><text class="tm" x="184" y="76">mutations logged</text>
+            <rect class="box" x="330" y="30" width="135" height="64" rx="10"/><text class="t" x="344" y="56">Follower guard</text><text class="tm" x="344" y="76">409 on followers</text>
+            <rect class="box" x="490" y="30" width="135" height="64" rx="10"/><text class="t" x="504" y="56">Auth</text><text class="tm" x="504" y="76">API key · JWT</text>
+            <rect class="box" x="650" y="30" width="135" height="64" rx="10"/><text class="t" x="664" y="56">Limits · trace</text><text class="tm" x="664" y="76">tower-http</text>
+            <rect class="box-accent" x="810" y="30" width="140" height="64" rx="10"/><text class="t" x="824" y="56">Handler</text><text class="tm" x="824" y="76">REST · SSE</text>
+            <path class="edge" d="M145 62H166M305 62H326M465 62H486M625 62H646M785 62H806" marker-end="url(#ah1)"/>
+            <text class="tl" x="10" y="130">/healthz AND /metrics ARE MOUNTED OUTSIDE THIS CHAIN</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- paths -->
+    <section class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">02 · Query planes</p>
+          <h2>Three paths through one index</h2>
+        </div>
+        <div class="grid grid-3">
+          <article class="card reveal">
+            <div class="card-top"><span class="card-index">WRITE PATH</span></div>
+            <h3>Ingest a document</h3>
+            <ol style="margin:0;padding-left:1.1em;color:var(--muted)">
+              <li>Pick a chunker for the document type</li>
+              <li>Embed each chunk: LRU, then Redis, then the model</li>
+              <li>Append to the WAL with CRC32 and fsync</li>
+              <li>Apply to HNSW, BM25 and the document store</li>
+              <li>Stream to followers and remote regions</li>
+            </ol>
+            <span class="card-meta">nebula-chunk → nebula-embed → nebula-wal → nebula-index</span>
+          </article>
+          <article class="card reveal">
+            <div class="card-top"><span class="card-index">READ PATH</span></div>
+            <h3>Run SQL</h3>
+            <ol style="margin:0;padding-left:1.1em;color:var(--muted)">
+              <li>Parse into a typed plan tree</li>
+              <li>Check the result cache</li>
+              <li>Run <code>semantic_match</code> as HNSW top-k</li>
+              <li>Apply residual filters, GROUP BY and joins</li>
+              <li>Shape rows for REST, gRPC or pgwire</li>
+            </ol>
+            <span class="card-meta">nebula-sql → nebula-index → nebula-pgwire</span>
+          </article>
+          <article class="card reveal">
+            <div class="card-top"><span class="card-index">AI PATH</span></div>
+            <h3>Answer a question</h3>
+            <ol style="margin:0;padding-left:1.1em;color:var(--muted)">
+              <li>Expand the query, embed it</li>
+              <li>Hybrid retrieve, optionally rerank</li>
+              <li>Emit <code>context</code> events</li>
+              <li>Build the guarded prompt, stream LLM tokens</li>
+              <li>Record time-to-first-token in metrics</li>
+            </ol>
+            <span class="card-meta">nebula-rerank → nebula-bm25 + nebula-vector → nebula-llm</span>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- durability -->
+    <section class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">03 · Durability</p>
+          <h2>Write-ahead log, snapshots, recovery</h2>
+          <p>The index in RAM is a cache of the log. If the process dies at any instant, the next boot reconstructs exactly the acknowledged state.</p>
+        </div>
+        <div class="grid grid-2">
+          <div class="code reveal">
+            <div class="code-bar">WAL frame</div>
+<pre>┌─────────────┬─────────────┬───────────────────────┐
+│ len (u32 LE)│ crc32 (u32) │ bincode(WalRecord)    │
+└─────────────┴─────────────┴───────────────────────┘
+
+<span class="c">/var/lib/nebula/&lt;node&gt;/</span>
+  wal/0000000001.nwal
+  wal/0000000002.nwal
+  snapshots/snap-00042.nsnap
+  cluster/follower.cursor</pre>
+          </div>
+          <ol class="steps" style="grid-template-columns:1fr">
+            <li class="reveal"><h4>Load the newest committed snapshot</h4><p>Snapshots are written to a temporary file and atomically renamed, so a partial snapshot is never visible.</p></li>
+            <li class="reveal"><h4>Replay WAL segments past the snapshot</h4><p>Vectors are in the records, so no embedding calls are made during recovery.</p></li>
+            <li class="reveal"><h4>Truncate a torn tail</h4><p>A frame whose length or CRC does not check out is cut back to the last good record.</p></li>
+            <li class="reveal"><h4>Serve</h4><p><code>/admin/durability</code> reports segments, size and sequence range.</p></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- HA -->
+    <section class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">04 · Multi-region</p>
+          <h2>Home regions and XDCR</h2>
+          <p>Each region accepts writes only for the buckets it homes, replicates both ways, and serves every read locally. There is one writer per bucket, so there is nothing to merge across oceans.</p>
+        </div>
+        <div class="diagram reveal">
+          <svg viewBox="0 0 960 300" role="img" aria-labelledby="mr-t mr-d">
+            <title id="mr-t">Two regions with leaders, followers and XDCR</title>
+            <desc id="mr-d">Region us-east-1 has a leader homing bucket A and a follower. Region eu-west-1 has a leader homing bucket B and a follower. Followers tail their local leader's WAL. XDCR streams run in both directions between the leaders. A client writing bucket B to us-east receives 421 and retries in eu-west.</desc>
+            <defs>
+              <marker id="ah2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="arrow" d="M0 0L8 4L0 8z"/></marker>
+              <marker id="ah2a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="arrow-accent" d="M0 0L8 4L0 8z"/></marker>
+            </defs>
+            <rect x="10" y="20" width="380" height="260" rx="16" fill="none" stroke="var(--line)" stroke-dasharray="4 4"/>
+            <text class="tl" x="28" y="44">REGION US-EAST-1</text>
+            <rect class="box-accent" x="30" y="64" width="160" height="70" rx="10"/><text class="t" x="46" y="90">Leader</text><text class="tm" x="46" y="108">home: bucket A</text><text class="tm" x="46" y="123">writes A · reads all</text>
+            <rect class="box" x="30" y="184" width="160" height="70" rx="10"/><text class="t" x="46" y="210">Follower</text><text class="tm" x="46" y="228">tails WAL · reads</text><text class="tm" x="46" y="243">promote on failure</text>
+            <path class="edge flow" d="M110 134V180" marker-end="url(#ah2)" style="stroke:var(--ok)"/>
+            <text class="tm" x="120" y="162">TailWal</text>
+
+            <rect x="570" y="20" width="380" height="260" rx="16" fill="none" stroke="var(--line)" stroke-dasharray="4 4"/>
+            <text class="tl" x="588" y="44">REGION EU-WEST-1</text>
+            <rect class="box-accent" x="770" y="64" width="160" height="70" rx="10"/><text class="t" x="786" y="90">Leader</text><text class="tm" x="786" y="108">home: bucket B</text><text class="tm" x="786" y="123">writes B · reads all</text>
+            <rect class="box" x="770" y="184" width="160" height="70" rx="10"/><text class="t" x="786" y="210">Follower</text><text class="tm" x="786" y="228">tails WAL · reads</text><text class="tm" x="786" y="243">promote on failure</text>
+            <path class="edge flow" d="M850 134V180" marker-end="url(#ah2)" style="stroke:var(--ok)"/>
+            <text class="tm" x="860" y="162">TailWal</text>
+
+            <path class="edge-accent flow" d="M190 88H766" marker-end="url(#ah2a)"/>
+            <path class="edge-accent flow" d="M770 112H194" marker-end="url(#ah2a)"/>
+            <text class="t" x="430" y="80">XDCR · A →</text>
+            <text class="t" x="430" y="132">← B · XDCR</text>
+
+            <rect class="box" x="400" y="190" width="160" height="62" rx="10"/><text class="t" x="414" y="214">nebula-client</text><text class="tm" x="414" y="232">write B to us-east</text><text class="tm" x="414" y="246">→ 421 → retry eu-west</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- rebalance -->
+    <section class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">05 · Zero-downtime change</p>
+          <h2>Swap rebalance as a state machine</h2>
+          <p>Upgrading or replacing a node is a Kubernetes resource the operator drives through explicit phases, so a stuck step is visible and resumable rather than a half-finished script.</p>
+        </div>
+        <div class="diagram reveal">
+          <svg viewBox="0 0 960 120" role="img" aria-labelledby="rb-t">
+            <title id="rb-t">NebulaRebalance phases: Pending, Preflight, Snapshotting, Rebalancing, Promoting, Draining, Completed</title>
+            <defs><marker id="ah3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="arrow" d="M0 0L8 4L0 8z"/></marker></defs>
+            <rect class="box" x="10" y="30" width="112" height="52" rx="10"/><text class="t" x="24" y="61">Pending</text>
+            <rect class="box" x="146" y="30" width="112" height="52" rx="10"/><text class="t" x="160" y="61">Preflight</text>
+            <rect class="box" x="282" y="30" width="122" height="52" rx="10"/><text class="t" x="294" y="61">Snapshotting</text>
+            <rect class="box-accent" x="428" y="30" width="122" height="52" rx="10"/><text class="t" x="440" y="61">Rebalancing</text>
+            <rect class="box" x="574" y="30" width="112" height="52" rx="10"/><text class="t" x="588" y="61">Promoting</text>
+            <rect class="box" x="710" y="30" width="104" height="52" rx="10"/><text class="t" x="724" y="61">Draining</text>
+            <rect class="box-ok" x="838" y="30" width="112" height="52" rx="10"/><text class="t" x="850" y="61">Completed</text>
+            <path class="edge" d="M122 56H142M258 56H278M404 56H424M550 56H570M686 56H706M814 56H834" marker-end="url(#ah3)"/>
+            <text class="tl" x="10" y="110">ANY PHASE → FAILED, WITH THE REASON ON THE RESOURCE STATUS</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <!-- operator -->
+    <section class="section">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">06 · Kubernetes</p>
+          <h2>Declarative operations</h2>
+        </div>
+        <div class="grid grid-2">
+          <div class="code reveal">
+            <div class="code-bar">operator/examples/cluster-ha.yaml (excerpt)<button class="copy-btn" type="button">copy</button></div>
+<pre><span class="k">apiVersion:</span> nebula.nebuladb.io/v1alpha1
+<span class="k">kind:</span> NebulaCluster
+<span class="k">metadata:</span>
+  <span class="k">name:</span> nebula-prod
+<span class="k">spec:</span>
+  <span class="k">replication:</span>
+    <span class="k">enabled:</span> true
+    <span class="k">followers:</span> 2
+    <span class="k">lagByteThreshold:</span> 104857600   <span class="c"># 100 MiB</span>
+  <span class="k">autoscaling:</span> { <span class="k">enabled:</span> true, <span class="k">minFollowers:</span> 2, <span class="k">maxFollowers:</span> 5 }
+  <span class="k">backup:</span>
+    <span class="k">enabled:</span> true
+    <span class="k">schedule:</span> <span class="s">"0 */6 * * *"</span>
+    <span class="k">retain:</span> 14
+  <span class="k">security:</span>
+    <span class="k">apiKeysSecretRef:</span> { <span class="k">name:</span> nebula-auth, <span class="k">key:</span> api_keys }
+  <span class="k">regions:</span>
+  - <span class="k">name:</span> us-east-1
+  - <span class="k">name:</span> us-west-2</pre>
+          </div>
+          <ul class="limits" style="grid-template-columns:1fr">
+            <li><strong>NebulaCluster</strong>Leader and followers per region, storage, AI configuration, auth and upgrade policy.</li>
+            <li><strong>NebulaBucket</strong>Declarative bucket seeding against a cluster.</li>
+            <li><strong>NebulaRebalance</strong>One-shot rebalance, failover or upgrade.</li>
+            <li><strong>NebulaBackup · NebulaRegionFailover</strong>Scheduled backups and region-level failover.</li>
+          </ul>
+        </div>
+        <p class="stats-note">More examples in <code>operator/examples/</code>: basic cluster, bucket seeding, backup schedule, swap, scale and failover rebalances, region failover.</p>
+      </div>
+    </section>
+
+    <section class="night" aria-labelledby="cta-title">
+      <div class="wrap">
+        <div>
+          <h2 id="cta-title">Go deeper</h2>
+          <p>Design records cover multi-region active-active, backup and restore, Raft, CDC, parallel replay, zero-downtime rebalance, graceful degradation, MCP and Azure AI Search compatibility.</p>
+        </div>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/bwalia/nebuladb/tree/main/docs/design">Read the design docs</a>
+          <a class="btn btn-secondary" href="/features.html">All features</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <div>
+          <a class="brand" href="/" aria-label="NebulaDB home">
+            <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+              <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+              <circle class="cell-on" cx="29" cy="3" r="3"/>
+            </svg>
+            NebulaDB
+          </a>
+          <p style="margin-top:12px;max-width:40ch">The enterprise AI database, written in Rust. SQL, documents, vectors, RAG and agents in one binary.</p>
+        </div>
+        <div>
+          <h4>Product</h4>
+          <ul>
+            <li><a href="/features.html">Features</a></li>
+            <li><a href="/architecture.html">Architecture</a></li>
+            <li><a href="/#demos">Demos</a></li>
+            <li><a href="https://showcase.nebuladb.net">Live showcase</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Developers</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb">GitHub</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/openapi.yaml">OpenAPI spec</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/tree/main/docs/design">Design docs</a></li>
+            <li><a href="https://hub.docker.com/r/bwalia/nebula-server">Docker images</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Read</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/PROBLEMS_SOLVED.md">Problems solved</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/USE_CASES.md">Use cases</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/technotes/active-active-xdcr.md">Multi-region XDCR</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-base">
+        <span>© <span id="year">2026</span> NebulaDB · nebuladb.net</span>
+        <span>Built in Rust · hosted on GitHub Pages</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

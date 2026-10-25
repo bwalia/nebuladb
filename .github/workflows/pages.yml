@@ -1,0 +1,69 @@
+# Publishes the static marketing site (website/) to GitHub Pages at
+# https://nebuladb.net (apex) and https://www.nebuladb.net (redirects to apex).
+#
+# One-time setup (repo admin):
+#   Settings → Pages → Source: "GitHub Actions"; custom domain nebuladb.net;
+#   tick "Enforce HTTPS" once the certificate is issued.
+# DNS (Cloudflare zone nebuladb.net, DNS only / grey cloud):
+#   A     @    185.199.108.153, 185.199.109.153, 185.199.110.153, 185.199.111.153
+#   AAAA  @    2606:50c0:8000::153, 2606:50c0:8001::153, 2606:50c0:8002::153, 2606:50c0:8003::153
+#   CNAME www  bwalia.github.io
+#
+# website/CNAME pins the custom domain so a deploy never clears it.
+# The site is plain HTML/CSS/JS: no build step, the folder is uploaded as is.
+name: Deploy website to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Publish website/
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check links to local files
+        run: |
+          set -euo pipefail
+          cd website
+          missing=0
+          for f in *.html; do
+            for ref in $(grep -oE '(href|src)="/[^"#?]*' "$f" | sed -E 's/^(href|src)="//' | sort -u); do
+              path="${ref#/}"
+              [ -z "$path" ] && path="index.html"
+              if [ ! -e "$path" ]; then echo "::error file=website/$f::missing $ref"; missing=1; fi
+            done
+          done
+          exit "$missing"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en-GB" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Features — NebulaDB</title>
+  <meta name="description" content="Every NebulaDB capability with the crate, endpoint or setting that implements it: SQL, vectors, hybrid search, RAG, MCP, durability, HA, security and Kubernetes." />
+  <link rel="canonical" href="https://nebuladb.net/features.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://nebuladb.net/features.html" />
+  <meta property="og:title" content="Features — NebulaDB" />
+  <meta property="og:description" content="Every NebulaDB capability with the crate, endpoint or setting that implements it: SQL, vectors, hybrid search, RAG, MCP, durability, HA, security and Kubernetes." />
+  <meta property="og:image" content="https://nebuladb.net/assets/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("nebula-theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" aria-label="NebulaDB home">
+        <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+          <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+          <circle class="cell-on" cx="29" cy="3" r="3"/>
+        </svg>
+        NebulaDB
+      </a>
+      <nav class="nav" id="site-nav" aria-label="Primary">
+        <a href="/features.html" aria-current="page">Features</a>
+        <a href="/#why-rust">Why Rust</a>
+        <a href="/#demos">Demos</a>
+        <a href="/architecture.html">Architecture</a>
+        <a href="https://github.com/bwalia/nebuladb">GitHub</a>
+      </nav>
+      <div class="header-actions">
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="Switch colour theme">
+          <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <a class="btn btn-primary btn-sm" href="https://showcase.nebuladb.net">Live showcase</a>
+        <button class="icon-btn menu-btn" type="button" data-menu aria-controls="site-nav" aria-expanded="false" aria-label="Menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+    <main id="main">
+    <section class="hero" style="padding-bottom:2rem">
+      <div class="wrap">
+        <p class="eyebrow">Features</p>
+        <h1>Every capability, and where it lives in the code</h1>
+        <p class="lead">NebulaDB is a single Rust workspace. Each feature below names the crate, endpoint or setting that implements it, so you can check the claim against the source.</p>
+      </div>
+    </section>
+
+    <nav class="feature-nav" aria-label="Feature groups">
+      <div class="wrap">
+        <a href="#sql">SQL and documents</a>
+        <a href="#search">Vector and hybrid search</a>
+        <a href="#rag">RAG and AI</a>
+        <a href="#agents">Agents and MCP</a>
+        <a href="#durability">Durability and backup</a>
+        <a href="#ha">High availability</a>
+        <a href="#ops">Operations</a>
+        <a href="#security">Security</a>
+        <a href="#k8s">Kubernetes</a>
+        <a href="#dx">Developer experience</a>
+      </div>
+    </nav>
+
+    <div class="wrap">
+      <!-- SQL -->
+      <section class="feature-group" id="sql">
+        <header>
+          <p class="eyebrow">01 · Data</p>
+          <h2>SQL and documents</h2>
+          <p>Documents with JSON metadata live in buckets. A SQL dialect with AI-native functions queries them over REST, gRPC or the Postgres wire protocol.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>Buckets and documents</h4><p>Insert, upsert, fetch and delete by <code>(bucket, id)</code>. Long text is chunked into parent/child documents and fetched back in order.</p><span class="ref">POST /api/v1/bucket/:b/document · nebula-index</span></li>
+          <li><h4>AI-native SQL</h4><p><code>semantic_match(column, 'query')</code> and <code>vector_distance(column, [vector])</code> plan as retrieval steps inside ordinary <code>SELECT</code> statements.</p><span class="ref">POST /api/v1/query · nebula-sql</span></li>
+          <li><h4>Residual filters</h4><p><code>=</code>, <code>&lt;&gt;</code>, ranges, <code>IN (...)</code> and <code>array_contains()</code> on metadata, with SQL <code>NULL</code> semantics: a type mismatch never matches.</p><span class="ref">nebula-sql/executor</span></li>
+          <li><h4>Aggregates and joins</h4><p><code>COUNT</code>, <code>SUM</code>, <code>GROUP BY</code>, <code>ORDER BY</code> and inner joins where each side runs its own retrieval.</p><span class="ref">nebula-sql/plan</span></li>
+          <li><h4>EXPLAIN and result cache</h4><p>See the plan without running it. Results are cached in an LRU with a TTL, configurable per deployment.</p><span class="ref">NEBULA_SQL_CACHE · NEBULA_SQL_CACHE_TTL_SECS</span></li>
+          <li><h4>Postgres wire protocol</h4><p><code>psql</code> and simple-query drivers connect directly. Errors map to SQLSTATE codes, such as 42601 for unsupported syntax.</p><span class="ref">NEBULA_PG_BIND · nebula-pgwire</span></li>
+          <li><h4>Bucket export and import</h4><p>Move a bucket between clusters or environments as a file, or empty it in place.</p><span class="ref">/admin/bucket/:bucket/export · /import · /empty</span></li>
+          <li><h4>Azure AI Search compatibility</h4><p>Index definitions and document search with the Azure AI Search request shape, translated onto HNSW and BM25, so existing clients can point at NebulaDB.</p><span class="ref">nebula-search · docs/compat/registry.yaml</span></li>
+        </ul>
+      </section>
+
+      <!-- Search -->
+      <section class="feature-group" id="search">
+        <header>
+          <p class="eyebrow">02 · Retrieval</p>
+          <h2>Vector and hybrid search</h2>
+          <p>Dense and lexical retrieval in one index, fused with tunable weights and refined by optional expansion and reranking stages.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>HNSW index</h4><p>Hierarchical navigable small-world graph with a dense vector arena and per-node, per-layer locks so searches run during inserts. <code>ef</code> can be set per query.</p><span class="ref">nebula-vector/hnsw</span></li>
+          <li><h4>Three distance metrics</h4><p>Cosine, squared L2 and negative dot product, written to auto-vectorise at the dimensions in common use: 384, 768 and 1536.</p><span class="ref">nebula-vector/distance</span></li>
+          <li><h4>int8 quantisation</h4><p>Symmetric per-vector quantisation with dequantisation fused into the distance loop, cutting vector memory by four.</p><span class="ref">nebula-vector::quantize</span></li>
+          <li><h4>BM25 lexical retrieval</h4><p>Okapi BM25 (k1 = 1.2, b = 0.75) over an inverted index, for error codes, SKUs, names and acronyms that embeddings blur.</p><span class="ref">nebula-bm25</span></li>
+          <li><h4>Hybrid fusion</h4><p>Min-max normalised vector and BM25 scores combined by weighted sum, with a global default and per-bucket overrides.</p><span class="ref">"hybrid": true · NEBULA_HYBRID_WEIGHTS_&lt;BUCKET&gt;</span></li>
+          <li><h4>Query expansion and reranking</h4><p>A built-in abbreviation expander (VPN → virtual private network) and an HTTP reranker stage for a cross-encoder sidecar, kept out of the core binary.</p><span class="ref">NEBULA_QUERY_EXPAND · nebula-rerank</span></li>
+          <li><h4>Search explain</h4><p>Per-hit breakdown of how a result was scored, for tuning weights against your own queries.</p><span class="ref">search_text_explained · showcase Explain view</span></li>
+          <li><h4>Search by vector</h4><p>Bring your own embeddings and search with a raw vector of the index dimension.</p><span class="ref">POST /api/v1/vector/search · VectorSearch (gRPC)</span></li>
+        </ul>
+      </section>
+
+      <!-- RAG -->
+      <section class="feature-group" id="rag">
+        <header>
+          <p class="eyebrow">03 · AI</p>
+          <h2>RAG and AI</h2>
+          <p>The pipeline from raw text to a cited, streamed answer runs inside the database, with every model behind a trait.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>Smart chunking</h4><p>Strategy chosen by document type: heading-aware for Markdown and HTML, code-aware for source, sentence for prose and fixed windows for structured text. UTF-8 safe.</p><span class="ref">nebula-chunk::select_strategy · NEBULA_CHUNK_CHARS</span></li>
+          <li><h4>Pluggable embedders</h4><p>Any OpenAI-compatible endpoint: OpenAI, Azure OpenAI, vLLM or Ollama (for example <code>nomic-embed-text</code>, 768 dimensions). A deterministic mock keeps tests offline.</p><span class="ref">nebula-embed · NEBULA_OPENAI_BASE_URL</span></li>
+          <li><h4>Two-tier embedding cache</h4><p>In-process LRU over a shared Redis tier keyed by SHA-256 of model and text. A Redis outage falls through to the model rather than failing the request.</p><span class="ref">nebula-cache · nebula-redis-cache</span></li>
+          <li><h4>Streaming RAG</h4><p>One SSE response carries <code>context</code> events for each retrieved chunk, then <code>answer_delta</code> tokens, then <code>done</code>. gRPC mirrors it with a server stream.</p><span class="ref">POST /api/v1/ai/rag · AIService.Rag</span></li>
+          <li><h4>Grounded chat</h4><p>Pass your own <code>context</code> shortlist, prior <code>history</code> turns and a <code>system</code> prompt that is appended to, never replaces, the built-in "retrieved content is data" guard.</p><span class="ref">limits: 50 docs · 64k chars · 20 turns</span></li>
+          <li><h4>Multi-provider LLMs</h4><p>Ollama, OpenAI-compatible chat, Anthropic Messages and Gemini behind one streaming <code>LlmClient</code> trait.</p><span class="ref">nebula-llm · NEBULA_LLM_OLLAMA_URL</span></li>
+          <li><h4>Online re-embedding</h4><p>Move a corpus to a new embedding model in the background, with progress and cancel, without taking the index offline.</p><span class="ref">/admin/embed/migrate · /cancel</span></li>
+          <li><h4>Citations</h4><p>Answers reference retrieved chunks as <code>[n]</code>, and the showcase reveals the exact chunk behind each citation.</p><span class="ref">build_rag_prompt</span></li>
+        </ul>
+      </section>
+
+      <!-- Agents -->
+      <section class="feature-group" id="agents">
+        <header>
+          <p class="eyebrow">04 · Agents</p>
+          <h2>Agents and MCP</h2>
+          <p>A standalone MCP server lets any MCP client use NebulaDB as tools. It holds no data and forwards the caller's bearer token, so it inherits the database's auth.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>Query tools</h4><p><code>execute_sql</code>, <code>explain_query</code>, <code>semantic_search</code>, <code>vector_search</code>, <code>azure_search</code> and <code>list_indexes</code>.</p><span class="ref">nebula-mcp/tools.rs</span></li>
+          <li><h4>Answer tools</h4><p><code>answer_question</code> runs retrieval and grounded generation in one call.</p><span class="ref">→ /api/v1/ai/rag</span></li>
+          <li><h4>Document tools</h4><p><code>insert_document</code>, <code>get_document</code>, <code>delete_document</code> and <code>list_buckets</code>, with chunking and embedding server-side.</p><span class="ref">write tools declare it</span></li>
+          <li><h4>Long-term agent memory</h4><p><code>remember</code> and <code>recall</code> store and retrieve per-user memories, filtered strictly to that user and ranked by relevance.</p><span class="ref">user_id is required</span></li>
+          <li><h4>Operations tools</h4><p><code>cluster_health</code>, <code>replication_status</code>, <code>reliability_status</code>, <code>durability_status</code>, <code>server_stats</code> and <code>slow_queries</code>, so an SRE agent can investigate.</p><span class="ref">read_only_hint = true</span></li>
+          <li><h4>Governance tools</h4><p><code>audit_log</code>, <code>list_backups</code> and <code>create_snapshot</code>. A test asserts that every tool declares whether it writes.</p><span class="ref">every_tool_declares_whether_it_writes</span></li>
+          <li><h4>Streamable HTTP transport</h4><p>Point Claude Desktop, an IDE assistant or an agent framework at <code>http://host:8090/mcp</code>.</p><span class="ref">NEBULA_MCP_BIND</span></li>
+          <li><h4>Domain ingest tools</h4><p>Example connectors for UK Companies House search, ingest and website enrichment show how to add tools that load external data for RAG.</p><span class="ref">companies_house_search · companies_house_ingest</span></li>
+        </ul>
+      </section>
+
+      <!-- Durability -->
+      <section class="feature-group" id="durability">
+        <header>
+          <p class="eyebrow">05 · Durability</p>
+          <h2>Durability and backup</h2>
+          <p>Nothing acknowledged is lost on a crash, and every byte can be shipped somewhere safe.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>Write-ahead log</h4><p>Every mutation is framed as length, CRC32 and bincode body, fsynced, then applied. Segments are versioned with a magic header.</p><span class="ref">nebula-wal · NEBULA_DATA_DIR</span></li>
+          <li><h4>Torn-tail recovery</h4><p>On boot the newest snapshot loads and the WAL replays from its boundary. A half-written frame from a crash mid-fsync is truncated automatically.</p><span class="ref">nebula-index/durability.rs</span></li>
+          <li><h4>No re-embedding on restart</h4><p>Resolved vectors are stored in the WAL and snapshots, so recovery never calls the embedding model.</p><span class="ref">TextIndex::open_persistent</span></li>
+          <li><h4>Atomic snapshots</h4><p>Written to a temporary file and renamed into place, on demand or by the scheduler, with WAL compaction afterwards.</p><span class="ref">/admin/snapshot · /admin/wal/compact</span></li>
+          <li><h4>Backup and restore</h4><p>Snapshot and WAL bundled as tar + zstd with a manifest recording the WAL range covered, uploaded to a local target or S3 with multipart upload.</p><span class="ref">nebula-backup · /admin/backup · /admin/restore</span></li>
+          <li><h4>Change data capture</h4><p>Typed change events from the WAL, filtered and handed to consumers such as webhooks and file logs.</p><span class="ref">nebula-cdc</span></li>
+          <li><h4>Safe compaction</h4><p>WAL compaction clamps to the slowest live follower's acknowledged cursor, so a replica never loses segments it still needs.</p><span class="ref">SubscriberHub::min_ack</span></li>
+          <li><h4>Disk-full protection</h4><p>When the volume is critically full, writes are refused with 503 rather than risking a half-written frame. Reads keep working.</p><span class="ref">OperatingMode::DiskCritical</span></li>
+        </ul>
+      </section>
+
+      <!-- HA -->
+      <section class="feature-group" id="ha">
+        <header>
+          <p class="eyebrow">06 · Availability</p>
+          <h2>High availability and multi-region</h2>
+          <p>Within a region, followers tail the leader or join a Raft group. Across regions, each bucket has a home region and XDCR replicates both ways.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>Leader and followers</h4><p>Followers tail the leader's WAL over a gRPC stream with a durable cursor, resuming from the last applied record after a restart.</p><span class="ref">ReplicationService.TailWal · NEBULA_NODE_ROLE</span></li>
+          <li><h4>Raft consensus</h4><p>Opt-in Raft log, state machine and snapshot storage built on openraft, for within-region leader election.</p><span class="ref">nebula-raft · NEBULA_RAFT_PEERS</span></li>
+          <li><h4>Home-region XDCR</h4><p>Every region serves all reads and accepts writes for the buckets it homes. Cross-region replication runs both ways with per-remote lag and health.</p><span class="ref">CrossRegionReplicationService · technote</span></li>
+          <li><h4>Region-aware client</h4><p>Writes sent to the wrong region get 421 with the correct home; the Rust client retries there transparently.</p><span class="ref">nebula-client</span></li>
+          <li><h4>Follower write guard</h4><p>Mutating requests to a follower return 409 <code>read_only_follower</code> before auth, so a misrouted client cannot cause divergence.</p><span class="ref">guard_writes_on_follower</span></li>
+          <li><h4>Promotion and failover</h4><p>Promote a follower on demand. The operator's region-failover resource re-homes buckets when a region is lost.</p><span class="ref">/admin/promote · NebulaRegionFailover</span></li>
+          <li><h4>Swap rebalance</h4><p>Zero-downtime node replacement through Preflight, Snapshotting, Rebalancing, Promoting and Draining phases, tracked as a Kubernetes resource.</p><span class="ref">NebulaRebalance</span></li>
+          <li><h4>Replication visibility</h4><p>Role-aware lag: the leader's WAL tip, the follower's applied cursor, <code>lag_bytes</code> and a <code>behind</code> flag, plus a peer probe of every node.</p><span class="ref">/admin/replication · /admin/cluster/nodes</span></li>
+        </ul>
+      </section>
+
+      <!-- Ops -->
+      <section class="feature-group" id="ops">
+        <header>
+          <p class="eyebrow">07 · Operations</p>
+          <h2>Observability and reliability</h2>
+          <p>Built for the person on call: every subsystem reports its state, and the node degrades predictably under pressure.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>Prometheus metrics</h4><p>Request counts and latency percentiles, embedding-cache hits and misses, RAG time-to-first-token and replication lag.</p><span class="ref">GET /metrics</span></li>
+          <li><h4>Grafana dashboards</h4><p>Dashboards for the server, backups, reliability and the stack, provisioned from the repository and deployed on merge.</p><span class="ref">deploy/grafana/dashboards</span></li>
+          <li><h4>Live log streaming</h4><p>An SSE endpoint replays a 256-event ring and then tails live, with level and target filters. No shell into the pod needed.</p><span class="ref">/admin/logs/stream</span></li>
+          <li><h4>Slow-query log</h4><p>A bounded top-N of the slowest queries since boot, above a configurable floor.</p><span class="ref">/admin/slow · NEBULA_SLOW_QUERY_THRESHOLD_MS</span></li>
+          <li><h4>Graceful degradation</h4><p>Memory, CPU and disk readings become pressure levels and one operating mode, with hysteresis so a single spike never flips behaviour.</p><span class="ref">nebula-resource · /admin/reliability</span></li>
+          <li><h4>Probes that survive abuse</h4><p><code>/healthz</code> and <code>/metrics</code> sit outside rate limiting and auth, so a noisy client cannot get healthy pods killed.</p><span class="ref">build_router layer order</span></li>
+          <li><h4>Durability report</h4><p>Whether writes are persisted, the data directory, WAL segment count, size and sequence range.</p><span class="ref">/admin/durability</span></li>
+          <li><h4>Stats and version</h4><p>Document counts, request and error counters, cache ratios, search and RAG counts, and the running build.</p><span class="ref">/admin/stats · /admin/version</span></li>
+        </ul>
+      </section>
+
+      <!-- Security -->
+      <section class="feature-group" id="security">
+        <header>
+          <p class="eyebrow">08 · Security</p>
+          <h2>Security</h2>
+          <p>Access is enforced at the server and carried through to every protocol front end and the MCP server.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>API keys</h4><p>A bearer-token allowlist for service clients. Leave it empty for local development.</p><span class="ref">NEBULA_API_KEYS</span></li>
+          <li><h4>JWT</h4><p>HS256 tokens with optional issuer and audience checks.</p><span class="ref">NEBULA_JWT_SECRET · NEBULA_JWT_ISS · NEBULA_JWT_AUD</span></li>
+          <li><h4>Rate limiting</h4><p>A token bucket per key with configurable burst and refill.</p><span class="ref">NEBULA_RATE_LIMIT_BURST · NEBULA_RATE_LIMIT_RPS</span></li>
+          <li><h4>Audit log</h4><p>Every mutating request recorded with method, path, a hashed principal fingerprint, status and time, including rejected ones.</p><span class="ref">/admin/audit · audit_writes</span></li>
+          <li><h4>Prompt-injection guard</h4><p>The RAG prompt marks retrieved content as data, not instructions, and callers can add to that guard but not remove it.</p><span class="ref">system prompt is appended</span></li>
+          <li><h4>Memory-safe implementation</h4><p>Written in Rust, so buffer overflows, use-after-free and data races are excluded by the compiler rather than by review.</p><span class="ref">clippy -D warnings in CI</span></li>
+        </ul>
+      </section>
+
+      <!-- K8s -->
+      <section class="feature-group" id="k8s">
+        <header>
+          <p class="eyebrow">09 · Deployment</p>
+          <h2>Kubernetes and deployment</h2>
+          <p>Run it on a laptop with Docker Compose or across regions with the operator.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>Kubernetes operator</h4><p>A Go / Kubebuilder operator with <code>NebulaCluster</code>, <code>NebulaBucket</code>, <code>NebulaRebalance</code>, <code>NebulaBackup</code> and <code>NebulaRegionFailover</code> resources and a validating webhook.</p><span class="ref">operator/</span></li>
+          <li><h4>Helm chart</h4><p>Server, showcase, optional bundled Redis and a Prometheus Operator <code>ServiceMonitor</code> in one chart.</p><span class="ref">deploy/helm/nebuladb</span></li>
+          <li><h4>Multi-arch images</h4><p><code>linux/amd64</code> and <code>linux/arm64</code> images published on every main push and release tag.</p><span class="ref">bwalia/nebula-server · bwalia/nebula-showcase</span></li>
+          <li><h4>Docker Compose</h4><p>Server, follower, MCP server, Ollama, Redis, Prometheus, Grafana and the showcase, with a multi-region compose file for XDCR.</p><span class="ref">docker-compose.yml · docker-compose.multiregion.yml</span></li>
+        </ul>
+      </section>
+
+      <!-- DX -->
+      <section class="feature-group" id="dx">
+        <header>
+          <p class="eyebrow">10 · Developers</p>
+          <h2>Developer experience</h2>
+          <p>Every setting is an environment variable, none are required, and the defaults run fully offline.</p>
+        </header>
+        <ul class="feature-list">
+          <li><h4>One-command start</h4><p><code>./scripts/start.sh</code> picks free ports, builds the stack, pulls models, seeds a corpus and prints the URLs.</p><span class="ref">scripts/start.sh</span></li>
+          <li><h4>Offline by default</h4><p>With nothing configured the server boots with a deterministic mock embedder and LLM, suitable for integration tests.</p><span class="ref">cargo run --release -p nebula-server</span></li>
+          <li><h4>OpenAPI and protobuf</h4><p>The REST surface is described in OpenAPI, and gRPC services in one proto file.</p><span class="ref">docs/openapi.yaml · nebula-grpc/proto/nebula.proto</span></li>
+          <li><h4>Tested end to end</h4><p>500+ Rust tests and a clippy gate on every push, plus a nightly job that runs the whole compose stack against real Ollama models.</p><span class="ref">.github/workflows/nightly.yml</span></li>
+          <li><h4>Knowledge Ops showcase</h4><p>A React console covering documents, SQL, search, RAG chat, agents, MCP, cluster, rebalance and operations, plus six end-to-end RAG apps.</p><span class="ref">apps/showcase</span></li>
+          <li><h4>Backup CLI</h4><p><code>nebulactl</code> drives backup and restore with typed flags and a <code>--watch</code> mode; the operator's CronJob runs it on a schedule.</p><span class="ref">crates/nebulactl</span></li>
+        </ul>
+      </section>
+    </div>
+
+    <section class="night" aria-labelledby="cta-title">
+      <div class="wrap">
+        <div>
+          <h2 id="cta-title">Check any of this against the source</h2>
+          <p>Every reference on this page is a crate, endpoint or setting in the public repository.</p>
+        </div>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/bwalia/nebuladb">Open the repository</a>
+          <a class="btn btn-secondary" href="/architecture.html">Read the architecture</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <div>
+          <a class="brand" href="/" aria-label="NebulaDB home">
+            <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+              <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+              <circle class="cell-on" cx="29" cy="3" r="3"/>
+            </svg>
+            NebulaDB
+          </a>
+          <p style="margin-top:12px;max-width:40ch">The enterprise AI database, written in Rust. SQL, documents, vectors, RAG and agents in one binary.</p>
+        </div>
+        <div>
+          <h4>Product</h4>
+          <ul>
+            <li><a href="/features.html">Features</a></li>
+            <li><a href="/architecture.html">Architecture</a></li>
+            <li><a href="/#demos">Demos</a></li>
+            <li><a href="https://showcase.nebuladb.net">Live showcase</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Developers</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb">GitHub</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/openapi.yaml">OpenAPI spec</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/tree/main/docs/design">Design docs</a></li>
+            <li><a href="https://hub.docker.com/r/bwalia/nebula-server">Docker images</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Read</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/PROBLEMS_SOLVED.md">Problems solved</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/USE_CASES.md">Use cases</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/technotes/active-active-xdcr.md">Multi-region XDCR</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-base">
+        <span>© <span id="year">2026</span> NebulaDB · nebuladb.net</span>
+        <span>Built in Rust · hosted on GitHub Pages</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>
