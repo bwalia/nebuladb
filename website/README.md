@@ -52,7 +52,27 @@ cd website && python3 -m http.server 8080
 # open http://localhost:8080
 ```
 
-## Domain
+## Domain and edge
 
-`CNAME` holds `nebuladb.net`. DNS records for the apex and `www` are listed
-at the top of `.github/workflows/pages.yml`.
+nebuladb.net and www.nebuladb.net are served through the wslproxy edge, the
+same way proxy10x.com and vault10x.com are:
+
+```
+browser -> nebuladb.net --(Cloudflare CNAME, grey cloud)--> lon1.pop0.uk
+  -> rule nebuladb-website-pages: 305 to https://bwalia.github.io/nebuladb
+     (Host bwalia.github.io) -> GitHub Pages
+```
+
+GitHub Pages has **no custom domain** (there is no `CNAME` file here): the
+edge owns the hostname. A Pages custom domain would redirect
+bwalia.github.io/nebuladb back to nebuladb.net, which is a loop.
+
+Everything is GitOps:
+
+- Records: `.github/wslproxy/data/rules/prod/nebuladb-website-pages.json` and
+  `.github/wslproxy/data/servers/prod/host:{nebuladb.net,www.nebuladb.net}.json`.
+- `pages.yml` publishes this folder, then calls `register-edge-vhost.yml`
+  with `ENV=website`. That workflow upserts the Cloudflare CNAMEs, imports
+  the records into cp.pop0.uk and installs them on lon1; lon2 mirrors lon1
+  within 5 minutes. A drift run every 30 minutes re-asserts it.
+- Ring Promoter app `nebuladb-website` (one prod ring) dispatches `pages.yml`.

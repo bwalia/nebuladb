@@ -1,17 +1,24 @@
-# Publishes the static marketing site (website/) to GitHub Pages at
-# https://nebuladb.net (apex) and https://www.nebuladb.net (redirects to apex).
+# Publishes the static marketing site (website/) to GitHub Pages, then makes
+# sure https://nebuladb.net and https://www.nebuladb.net serve it through the
+# wslproxy edge, the same way proxy10x.com and vault10x.com are served.
 #
-# One-time setup (repo admin):
-#   Settings → Pages → Source: "GitHub Actions"; custom domain nebuladb.net;
-#   tick "Enforce HTTPS" once the certificate is issued.
-# DNS (Cloudflare zone nebuladb.net, DNS only / grey cloud):
-#   A     @    185.199.108.153, 185.199.109.153, 185.199.110.153, 185.199.111.153
-#   AAAA  @    2606:50c0:8000::153, 2606:50c0:8001::153, 2606:50c0:8002::153, 2606:50c0:8003::153
-#   CNAME www  bwalia.github.io
+# Chain once live:
+#   browser -> nebuladb.net --(Cloudflare CNAME, grey cloud)--> lon1.pop0.uk
+#   (wslproxy edge; terminates TLS with Let's Encrypt, lon2 mirrors lon1)
+#   -> rule nebuladb-website-pages: 305 to https://bwalia.github.io/nebuladb
+#      with Host bwalia.github.io -> GitHub Pages
 #
-# website/CNAME pins the custom domain so a deploy never clears it.
-# The site is plain HTML/CSS/JS: no build step, the folder is uploaded as is.
-name: Deploy website to GitHub Pages
+# GitHub Pages therefore has NO custom domain (no website/CNAME): the edge
+# owns the hostname, Pages only serves bwalia.github.io/nebuladb/. Setting a
+# custom domain on Pages would make it redirect back to nebuladb.net, a loop.
+#
+# Edge records are GitOps: .github/wslproxy/data/{rules,servers}/prod/ and the
+# `website` target of register-edge-vhost.yml (Cloudflare + cp.pop0.uk + lon1).
+#
+# Ring Promoter: app `nebuladb-website` (deploy/edge/ring-promoter-app.yaml)
+# dispatches this workflow with the standard ENV / DEPLOY_BRANCH / DEPLOY_MODE
+# inputs. The site has a single ring (prod).
+name: Deploy website (GitHub Pages + edge)
 
 on:
   push:
@@ -19,7 +26,27 @@ on:
     paths:
       - "website/**"
       - ".github/workflows/pages.yml"
+      - ".github/wslproxy/data/**/nebuladb-website-pages.json"
+      - ".github/wslproxy/data/servers/prod/host:nebuladb.net.json"
+      - ".github/wslproxy/data/servers/prod/host:www.nebuladb.net.json"
   workflow_dispatch:
+    inputs:
+      ENV:
+        description: "Ring (the website only has prod)"
+        required: false
+        default: prod
+        type: choice
+        options: [prod]
+      DEPLOY_BRANCH:
+        description: "Unused — accepted for Ring Promoter dispatch parity"
+        required: false
+        default: main
+        type: string
+      DEPLOY_MODE:
+        description: "full = publish site + edge; edge = edge registration only"
+        required: false
+        default: full
+        type: string
 
 permissions:
   contents: read
@@ -32,7 +59,8 @@ concurrency:
 
 jobs:
   deploy:
-    name: Publish website/
+    name: Publish website/ to Pages
+    if: ${{ github.event.inputs.DEPLOY_MODE != 'edge' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:
@@ -67,3 +95,12 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
+
+  edge:
+    name: Edge (Cloudflare + cp.pop0.uk + lon1)
+    needs: deploy
+    if: ${{ always() && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') }}
+    uses: ./.github/workflows/register-edge-vhost.yml
+    with:
+      ENV: website
+    secrets: inherit

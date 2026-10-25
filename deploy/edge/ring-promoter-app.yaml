@@ -51,3 +51,22 @@
       test: { target_env: test, health_url: "https://test-showcase.nebuladb.net/livez", links: [ { label: "Showcase test", url: "https://test-showcase.nebuladb.net/" } ] }
       acc:  { target_env: acc,  health_url: "https://acc-showcase.nebuladb.net/livez",  links: [ { label: "Showcase acc", url: "https://acc-showcase.nebuladb.net/" } ] }
       prod: { target_env: prod, health_url: "https://showcase.nebuladb.net/livez",      links: [ { label: "Showcase", url: "https://showcase.nebuladb.net/" } ] }
+
+  # Public website nebuladb.net (static, GitHub Pages behind the wslproxy edge).
+  # One ring: pages.yml publishes website/ then runs register-edge-vhost.yml
+  # with ENV=website (Cloudflare CNAME + cp.pop0.uk import + lon1 install).
+  - name: nebuladb-website
+    display_name: "NebulaDB website (nebuladb.net)"
+    location: { lat: 51.5074, lng: -0.1278, city: London, region: GB }
+    deployer: github
+    github:
+      owner: bwalia
+      repo: nebuladb
+      workflow: pages.yml
+      ref: main
+      deploy_mode: full
+      token_env: RP_GITHUB_TOKEN
+      poll_interval: 15s
+      run_lookup_timeout: 90s
+    rings:
+      prod: { target_env: prod, health_url: "https://nebuladb.net/", links: [ { label: "nebuladb.net", url: "https://nebuladb.net/" }, { label: "www", url: "https://www.nebuladb.net/" } ] }
