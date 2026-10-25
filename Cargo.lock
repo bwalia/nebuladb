@@ -2695,6 +2695,8 @@ version = "0.1.55"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
+ "base64",
+ "jsonwebtoken",
  "nebula-core",
  "reqwest",
  "serde",

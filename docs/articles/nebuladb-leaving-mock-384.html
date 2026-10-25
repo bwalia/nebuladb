@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Leaving mock-384 — NebulaDB</title>
+  <style>
+    body { font-family: Georgia, serif; max-width: 42rem; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.55; color: #1a1a1a; }
+    h1 { font-size: 1.75rem; line-height: 1.25; }
+    h2 { font-size: 1.2rem; margin-top: 1.75rem; }
+    code { font-family: ui-monospace, monospace; font-size: 0.9em; background: #f3f3f3; padding: 0.1em 0.35em; border-radius: 3px; }
+    .meta { color: #666; font-size: 0.95rem; }
+    a { color: #0b5fff; }
+  </style>
+</head>
+<body>
+  <p class="meta">NebulaDB engineering · 25 Oct 2026 · also on showcase <code>#/blog/leaving-mock-384</code></p>
+  <h1>Leaving mock-384: real embeddings without tribal wipe lore</h1>
+  <p>
+    For a long time the NebulaDB showcase health chip showed <code>model: mock-384</code>.
+    Chat already used a real Ollama gateway. Vectors did not. Semantic search was a
+    deterministic hash; hybrid and exact lookup still worked, but “find something like this”
+    meant nothing.
+  </p>
+  <h2>Why we stayed on mock</h2>
+  <p>
+    HNSW is single-dimension. Snapshots stamp that dimension. Changing
+    <code>NEBULA_EMBED_DIM</code> from 384 to 768 refuses boot. Export/import copies vectors,
+    so it cannot re-embed. Folklore said wipe the PVC and reload Companies House from CSV —
+    multi-day, multi-region, and the same trap for the next model.
+  </p>
+  <h2>What we shipped</h2>
+  <p>
+    <code>POST /api/v1/admin/embed/migrate</code> dumps live document texts to
+    <code>$NEBULA_DATA_DIR/embed-migrate/docs.jsonl</code>, writes <code>pending.json</code>,
+    then waits. Restart with the public gateway embedder
+    (<code>nomic-embed-text</code> @ 768, <code>x-api-key</code> auth shared with chat).
+    Boot archives the old snapshot/WAL when pending matches, opens empty, and drains the
+    jsonl with a durable cursor.
+  </p>
+  <p>
+    Followers and region-b take a fresh <code>.nsnap</code> via
+    <code>scripts/bootstrap_region_mirror.sh</code> after the leader is done.
+  </p>
+  <h2>Runbook</h2>
+  <p>See <a href="../runbooks/embed-migrate.md">docs/runbooks/embed-migrate.md</a>.</p>
+</body>
+</html>

@@ -381,14 +381,60 @@ impl TextIndex {
             match loaded_snapshot {
                 Some((header, hnsw_snap)) => {
                     if hnsw_snap.dim != dim {
-                        return Err(IndexError::Invalid(format!(
-                            "snapshot dim {} != embedder dim {}",
-                            hnsw_snap.dim, dim
-                        )));
+                        // Embed-migrate cutover: a pending dump at the new
+                        // dim means we intentionally abandon the old
+                        // snapshot + WAL (vectors are wrong-dim) and boot
+                        // empty so the drain worker can re-embed.
+                        let migrate_dir = data_dir.join("embed-migrate");
+                        let pending = migrate_dir.join("pending.json");
+                        let allow_fresh = std::fs::read_to_string(&pending)
+                            .ok()
+                            .and_then(|s| {
+                                let v: serde_json::Value = serde_json::from_str(&s).ok()?;
+                                let tdim = v.get("target_dim")?.as_u64()? as usize;
+                                let tmodel = v.get("target_model")?.as_str()?;
+                                Some(tdim == dim && tmodel == embedder.model())
+                            })
+                            .unwrap_or(false);
+                        if !allow_fresh {
+                            return Err(IndexError::Invalid(format!(
+                                "snapshot dim {} != embedder dim {} \
+                                 (start POST /admin/embed/migrate then restart \
+                                  with matching NEBULA_EMBED_DIM / model)",
+                                hnsw_snap.dim, dim
+                            )));
+                        }
+                        tracing::warn!(
+                            snapshot_dim = hnsw_snap.dim,
+                            embedder_dim = dim,
+                            model = %embedder.model(),
+                            "embed-migrate pending: archiving old snapshot/WAL and booting empty"
+                        );
+                        let stamp = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let archive = migrate_dir.join(format!("archived-{stamp}"));
+                        let _ = std::fs::create_dir_all(&archive);
+                        let _ = std::fs::rename(&snapshots_dir, archive.join("snapshots"));
+                        let _ = std::fs::rename(&wal_dir, archive.join("wal"));
+                        let _ = std::fs::create_dir_all(&wal_dir);
+                        let _ = std::fs::create_dir_all(&snapshots_dir);
+                        let hnsw = Hnsw::new(dim, metric, config.clone())?;
+                        let inner = Inner {
+                            by_key: AHashMap::new(),
+                            docs: AHashMap::new(),
+                            by_bucket: AHashMap::new(),
+                            parents: AHashMap::new(),
+                            bm25: Bm25Index::new(Bm25Params::default()),
+                            next_id: 1,
+                        };
+                        (inner, hnsw, 0)
+                    } else {
+                        let hnsw = Hnsw::restore_from_snapshot(hnsw_snap)?;
+                        let inner = inner_from_serialized(header.docs);
+                        (inner, hnsw, header.wal_seq_at_snapshot)
                     }
-                    let hnsw = Hnsw::restore_from_snapshot(hnsw_snap)?;
-                    let inner = inner_from_serialized(header.docs);
-                    (inner, hnsw, header.wal_seq_at_snapshot)
                 }
                 None => {
                     let hnsw = Hnsw::new(dim, metric, config.clone())?;
@@ -854,6 +900,35 @@ impl TextIndex {
         let g = self.inner.read();
         let key = (bucket.to_string(), external_id.to_string());
         g.by_key.get(&key).and_then(|id| g.docs.get(id)).map(|d| Document::clone(d))
+    }
+
+    /// Call `f` for every live document in `bucket` (no vectors — texts
+    /// only). Used by embed-migrate to stream a durable dump without
+    /// materialising the full export (vectors would 2× RAM).
+    pub fn for_each_doc_in_bucket<F>(&self, bucket: &str, mut f: F) -> usize
+    where
+        F: FnMut(&Document),
+    {
+        let g = self.inner.read();
+        let Some(ids) = g.by_bucket.get(bucket) else {
+            return 0;
+        };
+        let mut n = 0;
+        for id in ids {
+            if let Some(doc) = g.docs.get(id) {
+                f(doc);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Bucket names currently holding at least one live doc.
+    pub fn bucket_names(&self) -> Vec<String> {
+        let g = self.inner.read();
+        let mut names: Vec<_> = g.by_bucket.keys().cloned().collect();
+        names.sort();
+        names
     }
 
     pub fn delete(&self, bucket: &str, external_id: &str) -> Result<()> {

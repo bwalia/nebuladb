@@ -17,16 +17,15 @@ server:
     tag: "latest"
     pullPolicy: IfNotPresent
 
-  # Embeddings: live PVC still has 384-d snapshots. Clear chart's
-  # Ollama@768 defaults (`null`) so deploy boots on mock-384 until
-  # wipe + reingest. Target after migration:
-  #   NEBULA_OPENAI_* → http://192.168.1.177:11437/v1 + nomic-embed-text
-  #   NEBULA_EMBED_DIM → "768"
+  # Embeddings: public Ollama gateway (same as prod). Cutover from
+  # mock-384 uses POST /admin/embed/migrate then restart — see
+  # docs/runbooks/embed-migrate.md.
   env:
     NEBULA_OPENAI_API_KEY: null
-    NEBULA_OPENAI_BASE_URL: null
-    NEBULA_OPENAI_MODEL: null
-    NEBULA_EMBED_DIM: "384"
+    NEBULA_OPENAI_BASE_URL: "https://ollama.workstation.co.uk/v1"
+    NEBULA_OPENAI_MODEL: "nomic-embed-text"
+    NEBULA_OPENAI_AUTH: "x-api-key"
+    NEBULA_EMBED_DIM: "768"
 
   # Durable database: WAL + snapshots on a PVC (k3s local-path).
   # Recreate strategy + single replica are already the chart defaults.

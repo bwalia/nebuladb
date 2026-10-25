@@ -178,7 +178,26 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         let _ = axum::serve(boot_listener, boot_router).await;
     });
 
-    let raw_embedder: Arc<dyn Embedder> = match std::env::var("NEBULA_OPENAI_API_KEY").ok() {
+    // Prefer NEBULA_OPENAI_API_KEY; for the public Ollama gateway fall
+    // back to NEBULA_LLM_OLLAMA_TOKEN so one Vault secret covers chat +
+    // embeddings (same HMAC → x-api-key JWT).
+    let openai_key = std::env::var("NEBULA_OPENAI_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let auth = std::env::var("NEBULA_OPENAI_AUTH").unwrap_or_default();
+            if matches!(
+                auth.to_ascii_lowercase().as_str(),
+                "x-api-key" | "x_api_key" | "gateway"
+            ) {
+                std::env::var("NEBULA_LLM_OLLAMA_TOKEN")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
+            }
+        });
+    let raw_embedder: Arc<dyn Embedder> = match openai_key {
         Some(key) => {
             let base_url = std::env::var("NEBULA_OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".into());
@@ -188,12 +207,25 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(1536);
+            // Public Ollama gateway (ollama.workstation.co.uk) wants
+            // `x-api-key` JWTs, not Bearer — same as NEBULA_LLM_*.
+            let auth_style = match std::env::var("NEBULA_OPENAI_AUTH")
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "x-api-key" | "x_api_key" | "gateway" => {
+                    nebula_embed::OpenAiAuthStyle::XApiKey
+                }
+                _ => nebula_embed::OpenAiAuthStyle::Bearer,
+            };
             let cfg = OpenAiEmbedderConfig {
                 base_url,
                 api_key: Some(key),
                 model,
                 dim,
                 timeout: Duration::from_secs(30),
+                auth_style,
             };
             Arc::new(OpenAiEmbedder::new(cfg)?)
         }
@@ -773,6 +805,13 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(rh) = raft_handle.as_ref() {
         state = state.with_raft(Arc::clone(rh));
     }
+
+    // Embed migrate: if a prior dump left pending.json matching this
+    // process's embedder, drain docs.jsonl into the (fresh) index.
+    let _embed_migrate_drain = nebula_server::embed_migrate::spawn_drain_if_pending(
+        Arc::clone(&state.index),
+        state.embed_migrate.clone(),
+    );
 
     // Slow-query log: default capacity 32, threshold 10 ms. Dev
     // stacks on MockEmbedder are fast enough that nothing crosses

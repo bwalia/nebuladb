@@ -361,6 +361,8 @@ pub struct AppState {
     pub compat_registry: Arc<nebula_search::CompatRegistry>,
     /// UK Companies House API proxy for the showcase demo.
     pub companies_house: crate::companies_house::CompaniesHouseClient,
+    /// Embed model/dim migration job (dump → restart → drain).
+    pub embed_migrate: crate::embed_migrate::EmbedMigrateHub,
 }
 
 /// One cached `/admin/buckets` response. See
@@ -437,7 +439,18 @@ impl AppState {
             search,
             compat_registry,
             companies_house: crate::companies_house::CompaniesHouseClient::from_env(),
+            embed_migrate: crate::embed_migrate::EmbedMigrateHub::new(
+                std::env::var("NEBULA_DATA_DIR").ok().map(std::path::PathBuf::from),
+            ),
         }
+    }
+
+    pub fn with_embed_migrate(
+        mut self,
+        hub: crate::embed_migrate::EmbedMigrateHub,
+    ) -> Self {
+        self.embed_migrate = hub;
+        self
     }
 
     pub fn with_snapshot_scheduler_enabled(mut self, enabled: bool) -> Self {
