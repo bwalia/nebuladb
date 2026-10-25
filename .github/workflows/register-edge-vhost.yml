@@ -26,8 +26,8 @@ name: Register edge vhost (Cloudflare + wslproxy)
 #
 # Secrets: CLOUDFLARE_API_TOKEN, WSLPROXY_API_BASE (https://cp.pop0.uk),
 # WSLPROXY_ADMIN_EMAIL / WSLPROXY_ADMIN_PASSWORD, and EDGE_LON1_SSH_KEY
-# (private key for root@lon1.pop0.uk; host keys pinned in
-# deploy/edge/lon1.known_hosts). Without EDGE_LON1_SSH_KEY the lon1 step is
+# (key for root@lon1.pop0.uk restricted to a forced command that only
+# installs the website records; host keys pinned in deploy/edge/lon1.known_hosts). Without EDGE_LON1_SSH_KEY the lon1 step is
 # skipped with a warning.
 #
 # DIFFERENCE 1 — upsert, not create-if-absent. jobshout uses
@@ -234,7 +234,6 @@ jobs:
           SSH_KEY: ${{ secrets.EDGE_LON1_SSH_KEY }}
           FILES: ${{ steps.files.outputs.files }}
           LON1: root@lon1.pop0.uk
-          DATA: /opt/nginx/data
         run: |
           set -euo pipefail
           # Only servers that opt in with pop_ids containing "lon1" (the
@@ -257,24 +256,11 @@ jobs:
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SSH_KEY" >~/.ssh/lon1 && chmod 600 ~/.ssh/lon1
           grep -v '^#' deploy/edge/lon1.known_hosts >~/.ssh/known_hosts
-          ssh_lon1() { ssh -i ~/.ssh/lon1 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$LON1" "$@"; }
-          # scp/sftp are disabled on lon1: upload a tar over ssh, then install.
-          # Unchanged files are left alone (no backup churn on the 30-min drift
-          # run); changed ones are backed up first. Records are read from disk
-          # per request, so no reload is needed.
-          T=$( (cd "$stage" && tar cf - $rels) | ssh_lon1 'T=$(mktemp -d) && tar xf - -C "$T" && echo "$T"')
-          ssh_lon1 bash -s -- "$T" "$DATA" $rels <<'REMOTE'
-          set -euo pipefail
-          T="$1"; DATA="$2"; shift 2
-          for r in "$@"; do
-            if [ -e "$DATA/$r" ] && cmp -s "$T/$r" "$DATA/$r"; then echo "unchanged $r"; continue; fi
-            if [ -e "$DATA/$r" ]; then cp "$DATA/$r" "$DATA/$r.bak.$(date +%s)"; fi
-            install -o 33 -g 0 -m 0777 "$T/$r" "$DATA/$r.tmp"
-            mv -f "$DATA/$r.tmp" "$DATA/$r"
-            echo "installed $r"
-          done
-          rm -rf "$T"
-          REMOTE
+          # The key is bound on lon1 to a forced command
+          # (deploy/edge/lon1-nebuladb-edge-install.sh) that only accepts the
+          # nebuladb website records, so the archive on stdin is all we send.
+          (cd "$stage" && tar cf - $rels) | ssh -i ~/.ssh/lon1 -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$LON1" nebuladb-edge-install
 
       - name: Verify public health
         env:
