@@ -52,7 +52,9 @@ gh run watch <run-id> --exit-status
    `kill -CONT <pid>` only after the doc count is back to full (see below).
 5. **Never change `NEBULA_EMBED_DIM` / the embedder in a normal deploy.** The server
    refuses to boot when the snapshot dimension differs from the embedder's
-   (`crates/nebula-index/src/lib.rs`). Changing it is a wipe + reingest migration.
+   (`crates/nebula-index/src/lib.rs`). Use **`POST /api/v1/admin/embed/migrate`**
+   then restart with matching env — see [embed-migrate.md](embed-migrate.md).
+   Do not hand-wipe PVCs for a model change.
 
 ## What a normal rollout looks like
 

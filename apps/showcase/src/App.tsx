@@ -306,7 +306,7 @@ function TopBar({
         <div className="flex items-center gap-2.5">
           <Mark />
           <div className="flex items-baseline gap-2">
-            <span className="text-base font-semibold tracking-tight text-black dark:text-ink">
+            <span className="font-display text-base font-semibold tracking-tight text-black dark:text-ink">
               NebulaDB
             </span>
             <span className="eyebrow hidden sm:inline">Knowledge Ops</span>
@@ -464,7 +464,7 @@ function StatusBar({ health, err }: { health: Health | null; err: string | null 
   return (
     <footer className="border-t border-gray-200 dark:border-edge bg-white/80 dark:bg-carbon-950/90 backdrop-blur">
       <div className="px-4 py-2 flex items-center gap-5 overflow-x-auto">
-        <span className="text-xs font-semibold text-black dark:text-ink shrink-0">NebulaDB</span>
+        <span className="font-display text-xs font-semibold text-black dark:text-ink shrink-0">NebulaDB</span>
         {err ? (
           <span className="metachip text-bad">
             <span className="dot dot-bad" /> server unreachable

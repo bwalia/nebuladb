@@ -22,6 +22,7 @@ pub mod companies_house;
 pub mod shop_catalog;
 pub mod website_enrich;
 pub mod cross_region_status;
+pub mod embed_migrate;
 pub mod error;
 pub mod home_region;
 pub mod jwt;

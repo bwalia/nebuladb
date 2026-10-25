@@ -18,7 +18,7 @@ mod openai;
 use async_trait::async_trait;
 
 pub use mock::MockEmbedder;
-pub use openai::{OpenAiEmbedder, OpenAiEmbedderConfig};
+pub use openai::{OpenAiAuthStyle, OpenAiEmbedder, OpenAiEmbedderConfig};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EmbedError {

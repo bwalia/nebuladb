@@ -59,14 +59,18 @@ server:
       cpu: "500m"
       memory: "8Gi"
 
-  # Embeddings: keep mock-384 until wipe+reingest (see values-int.yaml).
-  # LLM: public gateway only in prod (no LAN IP). Token lives in
-  # nebuladb-secrets as NEBULA_LLM_OLLAMA_TOKEN (HMAC → x-api-key JWT).
+  # Embeddings: public Ollama gateway nomic-embed-text @ 768.
+  # Auth: NEBULA_OPENAI_AUTH=x-api-key + NEBULA_LLM_OLLAMA_TOKEN (same
+  # HMAC secret as chat). Cutover from mock-384: dump via
+  # POST /admin/embed/migrate BEFORE applying this embed dim, then
+  # restart so drain can re-embed (docs/runbooks/embed-migrate.md).
+  # LLM: public gateway only in prod (no LAN IP).
   env:
     NEBULA_OPENAI_API_KEY: null
-    NEBULA_OPENAI_BASE_URL: null
-    NEBULA_OPENAI_MODEL: null
-    NEBULA_EMBED_DIM: "384"
+    NEBULA_OPENAI_BASE_URL: "https://ollama.workstation.co.uk/v1"
+    NEBULA_OPENAI_MODEL: "nomic-embed-text"
+    NEBULA_OPENAI_AUTH: "x-api-key"
+    NEBULA_EMBED_DIM: "768"
     NEBULA_LLM_OLLAMA_URL: "https://ollama.workstation.co.uk"
     NEBULA_LLM_MODEL: "llama3.2:3b-dash"
     NEBULA_LLM_READ_TIMEOUT_SECS: "90"

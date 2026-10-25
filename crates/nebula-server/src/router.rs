@@ -149,6 +149,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/bucket/:bucket/export", get(admin_export_bucket))
         .route("/admin/bucket/:bucket/import", post(admin_import_bucket))
         .route("/admin/bucket/:bucket/home-region", get(admin_home_region))
+        .route("/admin/embed", get(admin_embed_status))
+        .route("/admin/embed/migrate", get(admin_embed_migrate_status).post(admin_embed_migrate_start))
+        .route("/admin/embed/migrate/cancel", post(admin_embed_migrate_cancel))
         .route(
             "/admin/backup",
             post(crate::backup_routes::admin_backup_start),
@@ -2683,6 +2686,62 @@ struct StatsResponse {
 struct EmptyBucketResponse {
     bucket: String,
     removed: usize,
+}
+
+#[derive(Serialize)]
+struct AdminEmbedResponse {
+    model: String,
+    dim: usize,
+    migrate: crate::embed_migrate::MigrateStatus,
+}
+
+async fn admin_embed_status(State(s): State<AppState>) -> Json<AdminEmbedResponse> {
+    Json(AdminEmbedResponse {
+        model: s.index.embedder_model().to_string(),
+        dim: s.index.dim(),
+        migrate: s.embed_migrate.status(),
+    })
+}
+
+async fn admin_embed_migrate_status(
+    State(s): State<AppState>,
+) -> Json<crate::embed_migrate::MigrateStatus> {
+    Json(s.embed_migrate.status())
+}
+
+#[derive(Deserialize)]
+struct EmbedMigrateStartRequest {
+    target_model: String,
+    target_dim: usize,
+    #[serde(default)]
+    buckets: Option<Vec<String>>,
+}
+
+async fn admin_embed_migrate_start(
+    State(s): State<AppState>,
+    Json(body): Json<EmbedMigrateStartRequest>,
+) -> Result<Json<crate::embed_migrate::MigrateStatus>, ApiError> {
+    let idx = std::sync::Arc::clone(&s.index);
+    let hub = s.embed_migrate.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        hub.start_dump(
+            &idx,
+            body.target_model,
+            body.target_dim,
+            body.buckets,
+        )
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("embed migrate task: {e}")))?
+    .map_err(ApiError::BadRequest)?;
+    Ok(Json(status))
+}
+
+async fn admin_embed_migrate_cancel(
+    State(s): State<AppState>,
+) -> Json<crate::embed_migrate::MigrateStatus> {
+    s.embed_migrate.cancel();
+    Json(s.embed_migrate.status())
 }
 
 /// Tombstone every doc in a bucket. "Empty" rather than "drop"

@@ -126,10 +126,10 @@ server:
     # Idle-byte timeout on the LLM stream (binary default 60s).
     NEBULA_LLM_READ_TIMEOUT_SECS: "90"
 
-    # Embedder: chart default targets LAN Ollama nomic-embed-text @ 768.
-    # Live rings (int/test/acc/prod) still have 384-d snapshots — each
-    # values-<env>.yaml clears these with `null` and pins NEBULA_EMBED_DIM
-    # to 384 (mock) until wipe + reingest. Do not re-enable here alone.
+    # Embedder: OpenAI-compat `/v1/embeddings`. Live rings use the public
+    # Ollama gateway (see values-int/prod). Cutover from mock-384 requires
+    # POST /admin/embed/migrate then restart with matching dim/model —
+    # see docs/runbooks/embed-migrate.md.
     NEBULA_OPENAI_API_KEY: "ollama"
     NEBULA_OPENAI_BASE_URL: "http://192.168.1.177:11437/v1"
     NEBULA_OPENAI_MODEL: "nomic-embed-text"

@@ -19,6 +19,15 @@ export interface PostMeta {
 
 export const POSTS: PostMeta[] = [
   {
+    slug: "leaving-mock-384",
+    kind: "Blog",
+    title: "Leaving mock-384: real embeddings without tribal wipe lore",
+    date: "2026-10-25",
+    readMins: 4,
+    summary:
+      "Prod ran deterministic mock-384 vectors for years because changing dim meant wiping 8M+ docs. We shipped POST /admin/embed/migrate — dump texts, flip to Ollama nomic-embed-text@768, drain with a durable cursor — so the next model change is an API, not a war story.",
+  },
+  {
     slug: "48gi-without-a-restart",
     kind: "Blog",
     title: "We gave a live NebulaDB leader 16 GB more RAM, without a restart",
@@ -75,7 +84,9 @@ export function BlogTab() {
         ← All posts
       </button>
       <PostHeader post={post} />
-      {post.slug === "48gi-without-a-restart" ? (
+      {post.slug === "leaving-mock-384" ? (
+        <LeavingMockPost />
+      ) : post.slug === "48gi-without-a-restart" ? (
         <BlogPost onOpen={open} />
       ) : (
         <TechNote />
@@ -434,7 +445,66 @@ function ThroughputFigure() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Post 1: blog item                                                    */
+/* Post: leaving mock-384                                               */
+/* ------------------------------------------------------------------ */
+
+function LeavingMockPost() {
+  return (
+    <>
+      <div className="grid gap-2.5 sm:grid-cols-4">
+        <Stat label="Before" before="—" after="mock-384" />
+        <Stat label="After" before="—" after="nomic@768" />
+        <Stat label="Corpus" before="—" after="~8.3M docs" />
+        <Stat label="Path" before="wipe PVC" after="admin migrate" />
+      </div>
+      <Prose>
+        <p>
+          For a long time the NebulaDB showcase told a quiet lie on its health chip:{" "}
+          <C>model: mock-384</C>. Chat already talked to a real Ollama gateway. Vectors did not.
+          Semantic search was a deterministic hash dressed up as an embedding space. Hybrid and exact
+          lookup still worked; “find me something like this” did not mean anything.
+        </p>
+        <H3>Why we stayed on mock</H3>
+        <p>
+          The HNSW index is single-dimension. The on-disk snapshot stamps that dimension. Flip{" "}
+          <C>NEBULA_EMBED_DIM</C> from 384 to 768 and the leader refuses to boot. Export/import
+          copies <em>vectors</em>, so it cannot re-embed either. The only folklore path was wipe the
+          PVC and reload Companies House from CSV — multi-day, multi-region, easy to get wrong, and
+          the same trap waiting for the next model.
+        </p>
+        <H3>What we shipped</H3>
+        <p>
+          A first-class admin job: <C>POST /api/v1/admin/embed/migrate</C>. It streams every live
+          document’s text to <C>$NEBULA_DATA_DIR/embed-migrate/docs.jsonl</C>, writes a{" "}
+          <C>pending.json</C> with the target model and dim, then waits. You restart with the new
+          embedder env (public gateway <C>nomic-embed-text</C> @ 768, <C>x-api-key</C> auth shared
+          with chat). Boot sees the dim mismatch <em>and</em> a matching pending file, archives the
+          old snapshot/WAL, opens empty, and a drain worker re-embeds from the jsonl with a durable
+          cursor.
+        </p>
+        <p>
+          Same path for a same-dim model swap. Progress is on{" "}
+          <C>GET /api/v1/admin/embed/migrate</C>. Cancel between batches if you must. After the
+          leader is done, followers and region-b take a fresh <C>.nsnap</C> via{" "}
+          <C>bootstrap_region_mirror.sh</C> — XDCR still cannot invent compacted history.
+        </p>
+        <H3>What “forever” means here</H3>
+        <p>
+          The next embedder change is an API call and a restart, not a Slack thread of “remember that
+          wipe script?”. Prod drain of ~8.3M docs through Ollama is still wall-clock long; the point
+          is the job survives restarts and the runbook is short. Details live in{" "}
+          <C>docs/runbooks/embed-migrate.md</C>.
+        </p>
+        <Callout tone="info" title="Deep link">
+          Share this post as <C>#/blog/leaving-mock-384</C> on the showcase.
+        </Callout>
+      </Prose>
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Post: 48Gi blog item                                                 */
 /* ------------------------------------------------------------------ */
 
 function BlogPost({ onOpen }: { onOpen: (slug: string) => void }) {
@@ -777,9 +847,17 @@ kubectl -n prod patch pod "$POD" --subresource resize --type json -p \\
             bring that back down.
           </li>
           <li>
-            <strong>Semantic quality.</strong> Prod still uses the <C>mock-384</C> embedder. Exact lookups
-            and hybrid (BM25) search work today; meaning-based search needs a real embedder and a
-            re-embed.
+            <strong>Semantic quality.</strong> Leaving <C>mock-384</C> is now an admin migrate job
+            (Ollama <C>nomic-embed-text</C> @ 768). See the{" "}
+            <button
+              className="font-medium text-accent underline"
+              onClick={() => {
+                window.location.hash = "#/blog/leaving-mock-384";
+              }}
+            >
+              leaving mock-384
+            </button>{" "}
+            post and <C>docs/runbooks/embed-migrate.md</C>.
           </li>
           <li>
             <strong>Follower sizing.</strong> If the follower is ever promoted, it has to fit the leader's

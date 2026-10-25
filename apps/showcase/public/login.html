@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
     <script>
@@ -34,8 +34,9 @@
         --accent-ink: #06332c;
         --danger: #9b2c2c;
         --shadow: 0 24px 60px rgba(20, 17, 15, 0.12);
-        --font: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-        --mono: "IBM Plex Mono", ui-monospace, monospace;
+        --font: "Poppins", "Helvetica Neue", Arial, sans-serif;
+        --display: "Unbounded", "Poppins", sans-serif;
+        --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       html.dark {
         --bg: #0c0b0a;
@@ -98,7 +99,9 @@
       }
       .brand h1 {
         margin: 0;
+        font-family: var(--display);
         font-size: 1.25rem;
+        font-weight: 700;
         letter-spacing: -0.03em;
       }
       .brand p {
