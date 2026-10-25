@@ -9,11 +9,26 @@ name: Register edge vhost (Cloudflare + wslproxy)
 #   test -> test-showcase.nebuladb.net
 #   acc  -> acc-showcase.nebuladb.net
 #   prod -> showcase.nebuladb.net
+#   website -> nebuladb.net + www.nebuladb.net (GitHub Pages site, see pages.yml)
 #
 # Steps:
-#   1. Cloudflare CNAME  -> lon1.pop0.uk (DNS-only; pop0 terminates TLS)
-#   2. wslproxy server + rule registration
-#   3. Verify the host actually answers through the edge
+#   1. Cloudflare CNAME  -> lon1.pop0.uk (DNS-only; the edge terminates TLS)
+#   2. wslproxy server + rule import into the control plane (cp.pop0.uk)
+#   3. Install the same records on lon1 for servers tagged pop_ids: [lon1]
+#      (CP does not push to POPs; lon2/pop0 mirrors lon1 every 5 min via
+#      wslproxy-edge-sync.timer). Same mechanics as wslproxy's add-domain skill.
+#   4. Verify the host actually answers through the edge
+#
+# Server records per target:
+#   int|test|acc|prod -> deploy/edge/wslproxy-server-<ring>.json
+#   website           -> .github/wslproxy/data/servers/prod/host:{nebuladb.net,www.nebuladb.net}.json
+# Rules: every .github/wslproxy/data/rules/prod/*.json.
+#
+# Secrets: CLOUDFLARE_API_TOKEN, WSLPROXY_API_BASE (https://cp.pop0.uk),
+# WSLPROXY_ADMIN_EMAIL / WSLPROXY_ADMIN_PASSWORD, and EDGE_LON1_SSH_KEY
+# (key for root@lon1.pop0.uk restricted to a forced command that only
+# installs the website records; host keys pinned in deploy/edge/lon1.known_hosts). Without EDGE_LON1_SSH_KEY the lon1 step is
+# skipped with a warning.
 #
 # DIFFERENCE 1 — upsert, not create-if-absent. jobshout uses
 # POST /api/servers, which no-ops when the vhost already exists. Every
@@ -42,7 +57,7 @@ on:
         required: true
         default: int
         type: choice
-        options: [int, test, acc, prod]
+        options: [int, test, acc, prod, website]
       DEPLOY_BRANCH:
         description: "Unused — accepted for Ring Promoter dispatch parity"
         required: false
@@ -84,14 +99,31 @@ jobs:
           set -euo pipefail
           # A scheduled run carries no inputs: re-assert every ring.
           if [ -z "${RING:-}" ]; then
-            echo "rings=int test acc prod" >>"$GITHUB_OUTPUT"
+            echo "rings=int test acc prod website" >>"$GITHUB_OUTPUT"
             echo "Scheduled drift run — asserting all rings."
             exit 0
           fi
           case "$RING" in
-            int|test|acc|prod) echo "rings=$RING" >>"$GITHUB_OUTPUT" ;;
+            int|test|acc|prod|website) echo "rings=$RING" >>"$GITHUB_OUTPUT" ;;
             *) echo "::error::unknown ring '$RING'"; exit 1 ;;
           esac
+
+      - name: Resolve server records
+        id: files
+        env:
+          RINGS: ${{ steps.ring.outputs.rings }}
+        run: |
+          set -euo pipefail
+          files=""
+          for ring in $RINGS; do
+            case "$ring" in
+              website) files="$files .github/wslproxy/data/servers/prod/host:nebuladb.net.json .github/wslproxy/data/servers/prod/host:www.nebuladb.net.json" ;;
+              *)       files="$files deploy/edge/wslproxy-server-${ring}.json" ;;
+            esac
+          done
+          for f in $files; do [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }; done
+          echo "files=${files# }" >>"$GITHUB_OUTPUT"
+          echo "server records: ${files# }"
 
       - name: Ensure Cloudflare CNAME
         env:
@@ -99,13 +131,13 @@ jobs:
           WSL_API: ${{ secrets.WSLPROXY_API_BASE }}
           WSL_EMAIL: ${{ secrets.WSLPROXY_ADMIN_EMAIL }}
           WSL_PASS: ${{ secrets.WSLPROXY_ADMIN_PASSWORD }}
-          RINGS: ${{ steps.ring.outputs.rings }}
+          FILES: ${{ steps.files.outputs.files }}
           ZONE: nebuladb.net
           CNAME_TARGET: lon1.pop0.uk
         run: |
           set -euo pipefail
-          for ring in $RINGS; do
-            HOST=$(jq -r '.server_name' "deploy/edge/wslproxy-server-${ring}.json")
+          for f in $FILES; do
+            HOST=$(jq -r '.server_name' "$f")
 
             if [ -n "${CF_API_TOKEN:-}" ]; then
               api="https://api.cloudflare.com/client/v4"
@@ -152,14 +184,16 @@ jobs:
           WSL_API: ${{ secrets.WSLPROXY_API_BASE }}
           WSL_EMAIL: ${{ secrets.WSLPROXY_ADMIN_EMAIL }}
           WSL_PASS: ${{ secrets.WSLPROXY_ADMIN_PASSWORD }}
-          RINGS: ${{ steps.ring.outputs.rings }}
+          FILES: ${{ steps.files.outputs.files }}
         run: |
           set -euo pipefail
           if [ -z "${WSL_API:-}" ] || [ -z "${WSL_EMAIL:-}" ] || [ -z "${WSL_PASS:-}" ]; then
             echo "::error::WSLPROXY_API_BASE / WSLPROXY_ADMIN_EMAIL / WSLPROXY_ADMIN_PASSWORD must be set."
             exit 1
           fi
-          TOKEN=$(curl -fsS --max-time 30 --connect-timeout 10 -X POST "${WSL_API%/}/api/user/login" \
+          # Cloudflare in front of cp.pop0.uk rejects some default user agents.
+          UA="nebuladb-edge-register/1.0"
+          TOKEN=$(curl -fsS --max-time 30 --connect-timeout 10 -A "$UA" -X POST "${WSL_API%/}/api/user/login" \
             -H 'Content-Type: application/json' \
             -d "$(jq -nc --arg e "$WSL_EMAIL" --arg p "$WSL_PASS" '{email:$e,password:$p}')" \
             | jq -r '.data.accessToken // empty')
@@ -168,11 +202,12 @@ jobs:
 
           import() {
             local dtype="$1" arr="$2" body resp code
-            body=$(jq -cn --argjson data "$arr" --arg dt "$dtype" '{data:$data, dataType:$dt}')
-            resp=$(curl -sS --max-time 60 --connect-timeout 10 -w "\n%{http_code}" \
+            body=$(jq -cn --argjson data "$arr" --arg dt "$dtype" '{data:$data, dataType:$dt, envProfile:"prod"}')
+            # import keeps the committed ids, so CP, lon1 and git agree
+            resp=$(curl -sS --max-time 60 --connect-timeout 10 -A "$UA" -w "\n%{http_code}" \
               -X POST "${WSL_API%/}/api/projects/import?_format=json" \
               -H "Authorization: Bearer $TOKEN" \
-              -H "x-platform: react-admin" \
+              -H "x-platform: openresty-admin-next" \
               -H "Content-Type: application/json" \
               --data-raw "$body")
             code=$(echo "$resp" | tail -n1)
@@ -188,21 +223,53 @@ jobs:
 
           # Strip the local-only _ring marker before sending.
           SERVERS_ARR='[]'
-          for ring in $RINGS; do
-            SERVERS_ARR=$(jq -c --argjson acc "$SERVERS_ARR" \
-              'del(._ring) | $acc + [.]' "deploy/edge/wslproxy-server-${ring}.json")
+          for f in $FILES; do
+            SERVERS_ARR=$(jq -c --argjson acc "$SERVERS_ARR" 'del(._ring) | $acc + [.]' "$f")
           done
           import servers "$SERVERS_ARR"
           echo "registered $(echo "$SERVERS_ARR" | jq 'length') vhost(s)"
 
+      - name: Install records on lon1 (lon2 mirrors)
+        env:
+          SSH_KEY: ${{ secrets.EDGE_LON1_SSH_KEY }}
+          FILES: ${{ steps.files.outputs.files }}
+          LON1: root@lon1.pop0.uk
+        run: |
+          set -euo pipefail
+          # Only servers that opt in with pop_ids containing "lon1" (the
+          # website). The showcase rings are managed on lon1 already.
+          stage=$(mktemp -d)
+          mkdir -p "$stage/servers/prod" "$stage/rules/prod"
+          for f in $FILES; do
+            if jq -e '(.pop_ids // []) | index("lon1")' "$f" >/dev/null; then
+              jq 'del(._ring)' "$f" >"$stage/servers/prod/$(basename "$f")"
+              rule=$(jq -r '.rules' "$f")
+              cp ".github/wslproxy/data/rules/prod/${rule}.json" "$stage/rules/prod/${rule}.json"
+            fi
+          done
+          rels=$(cd "$stage" && find servers rules -type f | sort)
+          if [ -z "$rels" ]; then echo "no lon1-tagged servers in this run"; exit 0; fi
+          if [ -z "${SSH_KEY:-}" ]; then
+            echo "::warning::EDGE_LON1_SSH_KEY not set — lon1 not updated for: $(echo $rels)"
+            exit 0
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" >~/.ssh/lon1 && chmod 600 ~/.ssh/lon1
+          grep -v '^#' deploy/edge/lon1.known_hosts >~/.ssh/known_hosts
+          # The key is bound on lon1 to a forced command
+          # (deploy/edge/lon1-nebuladb-edge-install.sh) that only accepts the
+          # nebuladb website records, so the archive on stdin is all we send.
+          (cd "$stage" && tar cf - $rels) | ssh -i ~/.ssh/lon1 -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 "$LON1" nebuladb-edge-install
+
       - name: Verify public health
         env:
-          RINGS: ${{ steps.ring.outputs.rings }}
+          FILES: ${{ steps.files.outputs.files }}
         run: |
           set -euo pipefail
           fail=0
-          for ring in $RINGS; do
-            HOST=$(jq -r '.server_name' "deploy/edge/wslproxy-server-${ring}.json")
+          for f in $FILES; do
+            HOST=$(jq -r '.server_name' "$f")
             ok=0
             for i in $(seq 1 12); do
               # -o /dev/null with --max-redirs 0: a vhost stuck in a redirect

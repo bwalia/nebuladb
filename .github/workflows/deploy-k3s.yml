@@ -37,6 +37,10 @@ name: deploy-k3s
 on:
   push:
     branches: [main]
+    # The static site (website/) deploys through pages.yml only.
+    paths-ignore:
+      - "website/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
     inputs:
       TARGET_ENV:

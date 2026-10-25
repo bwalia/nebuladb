@@ -1,0 +1,3 @@
+# lon1 edge (lon1.pop0.uk) SSH host keys, pinned so the edge workflow never trusts on first use.
+lon1.pop0.uk,195.20.255.201 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM26A98I3Fs24JbsaPoJBbpWWa6xXPqCNvf9DDH7Bu1F
+lon1.pop0.uk,195.20.255.201 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDXRVbs/J6G3s8nRbP9Ta6iYjVx+PeKAVa74tM4EzLqWw7wB7pdZOURUbMbsDuo0r5i9RA4MD1hwZpX+LIJ9M4o=

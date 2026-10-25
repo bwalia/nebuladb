@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://nebuladb.net/sitemap.xml

@@ -21,6 +21,7 @@ on:
       - '.github/workflows/**'
       - '!.github/workflows/deploy.yml'
       - 'prompt-showcase/**'
+      - 'website/**'
       - 'LICENSE*'
       - '.gitignore'
   workflow_dispatch:

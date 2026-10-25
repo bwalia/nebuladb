@@ -1,0 +1,106 @@
+# Publishes the static marketing site (website/) to GitHub Pages, then makes
+# sure https://nebuladb.net and https://www.nebuladb.net serve it through the
+# wslproxy edge, the same way proxy10x.com and vault10x.com are served.
+#
+# Chain once live:
+#   browser -> nebuladb.net --(Cloudflare CNAME, grey cloud)--> lon1.pop0.uk
+#   (wslproxy edge; terminates TLS with Let's Encrypt, lon2 mirrors lon1)
+#   -> rule nebuladb-website-pages: 305 to https://bwalia.github.io/nebuladb
+#      with Host bwalia.github.io -> GitHub Pages
+#
+# GitHub Pages therefore has NO custom domain (no website/CNAME): the edge
+# owns the hostname, Pages only serves bwalia.github.io/nebuladb/. Setting a
+# custom domain on Pages would make it redirect back to nebuladb.net, a loop.
+#
+# Edge records are GitOps: .github/wslproxy/data/{rules,servers}/prod/ and the
+# `website` target of register-edge-vhost.yml (Cloudflare + cp.pop0.uk + lon1).
+#
+# Ring Promoter: app `nebuladb-website` (deploy/edge/ring-promoter-app.yaml)
+# dispatches this workflow with the standard ENV / DEPLOY_BRANCH / DEPLOY_MODE
+# inputs. The site has a single ring (prod).
+name: Deploy website (GitHub Pages + edge)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - ".github/workflows/pages.yml"
+      - ".github/wslproxy/data/**/nebuladb-website-pages.json"
+      - ".github/wslproxy/data/servers/prod/host:nebuladb.net.json"
+      - ".github/wslproxy/data/servers/prod/host:www.nebuladb.net.json"
+  workflow_dispatch:
+    inputs:
+      ENV:
+        description: "Ring (the website only has prod)"
+        required: false
+        default: prod
+        type: choice
+        options: [prod]
+      DEPLOY_BRANCH:
+        description: "Unused — accepted for Ring Promoter dispatch parity"
+        required: false
+        default: main
+        type: string
+      DEPLOY_MODE:
+        description: "full = publish site + edge; edge = edge registration only"
+        required: false
+        default: full
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Publish website/ to Pages
+    if: ${{ github.event.inputs.DEPLOY_MODE != 'edge' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check links to local files
+        run: |
+          set -euo pipefail
+          cd website
+          missing=0
+          for f in *.html; do
+            for ref in $(grep -oE '(href|src)="/[^"#?]*' "$f" | sed -E 's/^(href|src)="//' | sort -u); do
+              path="${ref#/}"
+              [ -z "$path" ] && path="index.html"
+              if [ ! -e "$path" ]; then echo "::error file=website/$f::missing $ref"; missing=1; fi
+            done
+          done
+          exit "$missing"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  edge:
+    name: Edge (Cloudflare + cp.pop0.uk + lon1)
+    needs: deploy
+    if: ${{ always() && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') }}
+    uses: ./.github/workflows/register-edge-vhost.yml
+    with:
+      ENV: website
+    secrets: inherit
