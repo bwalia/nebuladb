@@ -158,11 +158,20 @@ ha:
       size: 50Gi
     # Same full corpus as the leader (~40Gi+ RSS). Cap at 64Gi while the
     # local-path PVC is pinned to debian004 (~64Gi allocatable); move the
-    # PVC to a larger node before matching the leader's 96Gi limit.
+    # PVC to a larger node (cloud003 ~192Gi) before matching the leader's
+    # 96Gi limit. Snapshot peaks on this node OOM-kill region-b (exit 137)
+    # and surface as XDCR "transport: transport error" on the east leader.
+    # Disable time/size snapshot triggers until the PVC is migrated —
+    # region-b can still be re-bootstrapped from the east .nsnap.
+    extraEnv:
+      - name: NEBULA_SNAPSHOT_INTERVAL_SECS
+        value: "0"
+      - name: NEBULA_SNAPSHOT_WAL_BYTES
+        value: "0"
     resources:
       limits:
         cpu: "4"
-        memory: "64Gi"
+        memory: "56Gi"
       requests:
         cpu: "500m"
         memory: "8Gi"

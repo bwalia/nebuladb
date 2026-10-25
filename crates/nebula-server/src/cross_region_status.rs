@@ -85,6 +85,9 @@ impl nebula_grpc::cross_region::StatusSink for CrossRegionStatusHub {
     fn register(&self, region: &str, grpc_url: &str) {
         CrossRegionStatusHub::register(self, region, grpc_url);
     }
+    fn record_connected(&self, region: &str) {
+        CrossRegionStatusHub::record_connected(self, region);
+    }
     fn record_apply(&self, region: &str, segment: u64, byte_offset: u64) {
         CrossRegionStatusHub::record_apply(self, region, segment, byte_offset);
     }
@@ -105,6 +108,20 @@ impl CrossRegionStatusHub {
         let mut g = self.inner.write().expect("cross-region status poisoned");
         g.entry(region.to_string())
             .or_insert_with(|| RemoteRegionStatus::new(region.to_string(), grpc_url.to_string()));
+    }
+
+    /// Called when the gRPC tail stream opens successfully. Clears
+    /// error counters so a quiet remote (connected, zero applies) does
+    /// not keep advertising the previous transport failure.
+    pub fn record_connected(&self, region: &str) {
+        if let Ok(mut g) = self.inner.write() {
+            if let Some(s) = g.get_mut(region) {
+                s.healthy = true;
+                s.consecutive_errors = 0;
+                s.last_error = None;
+                s.last_error_at = None;
+            }
+        }
     }
 
     /// Called after each successfully-applied record. Updates the
@@ -253,6 +270,21 @@ mod tests {
         assert!(snap[0].healthy);
         assert_eq!(snap[0].consecutive_errors, 0);
         assert!(snap[0].last_error.is_none());
+    }
+
+    #[test]
+    fn connected_clears_transport_errors_without_apply() {
+        let hub = CrossRegionStatusHub::new();
+        hub.register("us-west-2", "http://a:50051");
+        hub.record_error("us-west-2", "transport: transport error");
+        hub.record_error("us-west-2", "transport: transport error");
+        assert_eq!(hub.snapshot()[0].consecutive_errors, 2);
+        hub.record_connected("us-west-2");
+        let snap = hub.snapshot();
+        assert!(snap[0].healthy);
+        assert_eq!(snap[0].consecutive_errors, 0);
+        assert!(snap[0].last_error.is_none());
+        assert_eq!(snap[0].applied_records, 0);
     }
 
     #[test]

@@ -48,6 +48,11 @@ pub const STALE_EPOCH: &str = "stale_home_epoch";
 /// implementation lives in server's `cross_region_status.rs`).
 pub trait StatusSink: Send + Sync + 'static {
     fn register(&self, region: &str, grpc_url: &str);
+    /// Stream opened successfully. Clears transport/backoff error state
+    /// even when the remote is quiet (no records yet) — otherwise the
+    /// admin UI stays stuck on "N errs / transport error" after the
+    /// peer recovers until the next west-homed write.
+    fn record_connected(&self, region: &str);
     fn record_apply(&self, region: &str, segment: u64, byte_offset: u64);
     fn record_error(&self, region: &str, err: &str);
 }
@@ -194,6 +199,11 @@ async fn tail_once(
         .await
         .map_err(|s| CrossRegionError::Rpc(format!("{s}")))?
         .into_inner();
+
+    // Mark healthy as soon as the stream is open — quiet remotes (no
+    // local WAL of their own yet) never call record_apply, and without
+    // this the UI keeps advertising the last transport error forever.
+    status.record_connected(&peer.region);
 
     while let Some(item) = stream.next().await {
         let entry = item.map_err(|s| CrossRegionError::Rpc(format!("{s}")))?;

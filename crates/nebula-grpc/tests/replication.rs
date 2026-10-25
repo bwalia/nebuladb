@@ -542,6 +542,7 @@ async fn cross_region_consumer_mirrors_source_writes() {
     }
     impl StatusSink for TestSink {
         fn register(&self, _r: &str, _u: &str) {}
+        fn record_connected(&self, _r: &str) {}
         fn record_apply(&self, _r: &str, _s: u64, _o: u64) {
             *self.applies.lock().unwrap() += 1;
         }

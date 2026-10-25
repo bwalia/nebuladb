@@ -438,3 +438,5 @@ ha:
     resources: {}
     persistence: {}
     nodeSelector: {}
+    # Extra env for the region-b peer only (e.g. snapshot throttles).
+    extraEnv: []
