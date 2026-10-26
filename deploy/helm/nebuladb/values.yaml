@@ -107,6 +107,11 @@ server:
     timeoutSeconds: 3
     failureThreshold: 3
 
+  # Explicit `env:` entries on the leader, follower and region-b
+  # containers ([{name, value}]). They beat the ConfigMap (envFrom), so
+  # Helm owns these names even if they were once set with kubectl.
+  extraEnv: []
+
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -322,6 +327,19 @@ examples:
         cpu: "5m"
         memory: "16Mi"
   extraEnv: []
+
+# ---------------------------------------------------------------------------
+# Outbound Service to Ollama on the LAN (selector-less). One EndpointSlice
+# per endpoint, so connections spread across every Ollama instance listed
+# (kube-proxy picks one per connection). Point NEBULA_OPENAI_BASE_URL at
+# http://<release>-ollama-lan:<port>/v1.
+# ---------------------------------------------------------------------------
+ollamaLan:
+  enabled: false
+  port: 11434
+  endpoints: []
+  #  - { ip: 192.168.1.177, port: 11434 }
+  #  - { ip: 192.168.1.177, port: 11437 }
 
 # ---------------------------------------------------------------------------
 # Redis (bundled Bitnami subchart)

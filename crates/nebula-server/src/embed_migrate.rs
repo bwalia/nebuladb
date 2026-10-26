@@ -173,9 +173,9 @@ impl EmbedMigrateHub {
         target_dim: usize,
         buckets: Option<Vec<String>>,
     ) -> Result<MigrateStatus, String> {
-        let dir = self
-            .migrate_dir()
-            .ok_or_else(|| "embed migrate requires durable data_dir (NEBULA_DATA_DIR)".to_string())?;
+        let dir = self.migrate_dir().ok_or_else(|| {
+            "embed migrate requires durable data_dir (NEBULA_DATA_DIR)".to_string()
+        })?;
         let _guard = self
             .inner
             .dump_lock
@@ -366,10 +366,48 @@ pub fn spawn_drain_if_pending(
     }))
 }
 
+type Row = (String, String, String, serde_json::Value);
+// (bucket, id, text, metadata) — grouped by bucket for upsert_text_bulk
+
+/// Drain tuning. The embedder is the bottleneck, so the drain keeps
+/// `concurrency` batches of `batch` docs in flight at once.
+#[derive(Debug, Clone, Copy)]
+struct DrainConfig {
+    batch: usize,
+    concurrency: usize,
+}
+
+impl DrainConfig {
+    fn from_env() -> Self {
+        let read = |k: &str, d: usize| {
+            std::env::var(k)
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(d)
+        };
+        Self {
+            batch: read("NEBULA_EMBED_MIGRATE_BATCH", DEFAULT_BATCH),
+            concurrency: read("NEBULA_EMBED_MIGRATE_CONCURRENCY", 1),
+        }
+    }
+}
+
+const FLUSH_ATTEMPTS: u32 = 6;
+
 async fn drain_loop(
     index: Arc<TextIndex>,
     hub: EmbedMigrateHub,
     dir: PathBuf,
+) -> Result<(), String> {
+    drain_loop_with(index, hub, dir, DrainConfig::from_env()).await
+}
+
+async fn drain_loop_with(
+    index: Arc<TextIndex>,
+    hub: EmbedMigrateHub,
+    dir: PathBuf,
+    cfg: DrainConfig,
 ) -> Result<(), String> {
     let docs_path = dir.join(DOCS_FILE);
     let file = File::open(&docs_path).map_err(|e| format!("open dump: {e}"))?;
@@ -378,11 +416,21 @@ async fn drain_loop(
     pending.state = MigrateState::Draining;
     write_pending(&dir, &pending)?;
     hub.set_draining(pending.drained);
+    info!(
+        drained = pending.drained,
+        batch = cfg.batch,
+        concurrency = cfg.concurrency,
+        "embed migrate drain starting"
+    );
 
     let mut skip = pending.drained;
     let mut drained = pending.drained;
-    let mut batch: Vec<(String, String, String, serde_json::Value)> = Vec::with_capacity(DEFAULT_BATCH);
-    // (bucket, id, text, metadata) — group by bucket for upsert_text_bulk
+    // One group = up to `concurrency` batches flushed together. `drained`
+    // only advances after the whole group lands, so a crash resumes at a
+    // group boundary and re-upserts at most one group (upserts are
+    // idempotent by (bucket, id)).
+    let group_cap = cfg.batch * cfg.concurrency;
+    let mut group: Vec<Row> = Vec::with_capacity(group_cap);
 
     for line in reader.lines() {
         if hub.inner.cancel.load(Ordering::SeqCst) {
@@ -397,14 +445,15 @@ async fn drain_loop(
             continue;
         }
         let row: DumpLine = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-        batch.push((row.bucket, row.id, row.text, row.metadata));
+        group.push((row.bucket, row.id, row.text, row.metadata));
 
-        if batch.len() >= DEFAULT_BATCH {
-            drained = flush_batch(&index, &hub, &dir, &mut pending, drained, &mut batch).await?;
+        if group.len() >= group_cap {
+            drained =
+                flush_group(&index, &hub, &dir, &mut pending, drained, &mut group, cfg).await?;
         }
     }
-    if !batch.is_empty() {
-        drained = flush_batch(&index, &hub, &dir, &mut pending, drained, &mut batch).await?;
+    if !group.is_empty() {
+        drained = flush_group(&index, &hub, &dir, &mut pending, drained, &mut group, cfg).await?;
     }
 
     // Snapshot so a crash after clearing pending does not lose the corpus.
@@ -423,35 +472,63 @@ async fn drain_loop(
     Ok(())
 }
 
-async fn flush_batch(
+async fn flush_group(
     index: &Arc<TextIndex>,
     hub: &EmbedMigrateHub,
     dir: &Path,
     pending: &mut PendingFile,
-    mut drained: u64,
-    batch: &mut Vec<(String, String, String, serde_json::Value)>,
+    drained: u64,
+    group: &mut Vec<Row>,
+    cfg: DrainConfig,
 ) -> Result<u64, String> {
-    // Group by bucket.
-    use std::collections::HashMap;
-    let mut by_bucket: HashMap<String, Vec<(String, String, serde_json::Value)>> = HashMap::new();
-    for (bucket, id, text, meta) in batch.drain(..) {
-        by_bucket
-            .entry(bucket)
-            .or_default()
-            .push((id, text, meta));
+    let rows = std::mem::take(group);
+    let n = rows.len() as u64;
+    let mut tasks = Vec::with_capacity(cfg.concurrency);
+    let mut it = rows.into_iter().peekable();
+    while it.peek().is_some() {
+        let batch: Vec<Row> = it.by_ref().take(cfg.batch).collect();
+        let index = Arc::clone(index);
+        // Spawned so each batch's HNSW insert (block_in_place) runs on
+        // its own worker while the other batches wait on the embedder.
+        tasks.push(tokio::spawn(
+            async move { flush_batch(&index, batch).await },
+        ));
     }
-    for (bucket, items) in by_bucket {
-        index
-            .upsert_text_bulk(&bucket, &items)
-            .await
-            .map_err(|e| format!("upsert_text_bulk({bucket}): {e}"))?;
-        drained += items.len() as u64;
+    for t in tasks {
+        t.await.map_err(|e| format!("drain task: {e}"))??;
     }
+    let drained = drained + n;
     pending.drained = drained;
     pending.state = MigrateState::Draining;
     write_pending(dir, pending)?;
     hub.set_draining(drained);
     Ok(drained)
+}
+
+/// Upsert one batch, retrying transient embedder failures (timeouts,
+/// 5xx, an overloaded Ollama returning 400) with exponential backoff.
+async fn flush_batch(index: &Arc<TextIndex>, batch: Vec<Row>) -> Result<(), String> {
+    use std::collections::HashMap;
+    let mut by_bucket: HashMap<String, Vec<(String, String, serde_json::Value)>> = HashMap::new();
+    for (bucket, id, text, meta) in batch {
+        by_bucket.entry(bucket).or_default().push((id, text, meta));
+    }
+    for (bucket, items) in by_bucket {
+        let mut attempt = 0;
+        loop {
+            match index.upsert_text_bulk(&bucket, &items).await {
+                Ok(_) => break,
+                Err(e) if attempt + 1 < FLUSH_ATTEMPTS => {
+                    attempt += 1;
+                    let wait = std::time::Duration::from_millis(500u64 << attempt);
+                    warn!(%bucket, attempt, error = %e, ?wait, "embed migrate: batch failed, retrying");
+                    tokio::time::sleep(wait).await;
+                }
+                Err(e) => return Err(format!("upsert_text_bulk({bucket}): {e}")),
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -465,13 +542,9 @@ mod tests {
     async fn dump_writes_pending_and_jsonl() {
         let dir = tempfile::tempdir().unwrap();
         let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(8));
-        let idx = TextIndex::open_persistent(
-            emb,
-            Metric::Cosine,
-            HnswConfig::default(),
-            dir.path(),
-        )
-        .unwrap();
+        let idx =
+            TextIndex::open_persistent(emb, Metric::Cosine, HnswConfig::default(), dir.path())
+                .unwrap();
         idx.upsert_text("b", "1", "hello", serde_json::json!({}))
             .await
             .unwrap();
@@ -490,5 +563,65 @@ mod tests {
         assert_eq!(pending.target_model, "nomic-embed-text");
         let lines = std::fs::read_to_string(dir.path().join(MIGRATE_DIR).join(DOCS_FILE)).unwrap();
         assert_eq!(lines.lines().count(), 2);
+    }
+
+    /// Dump 11 docs, then drain them into a fresh index with several
+    /// batches in flight, resuming from a mid-dump checkpoint.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_drain_resumes_and_lands_every_doc() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(8));
+        let src = TextIndex::open_persistent(
+            Arc::clone(&emb),
+            Metric::Cosine,
+            HnswConfig::default(),
+            src_dir.path(),
+        )
+        .unwrap();
+        for i in 0..11 {
+            let bucket = if i % 2 == 0 { "a" } else { "b" };
+            src.upsert_text(
+                bucket,
+                &i.to_string(),
+                &format!("doc {i}"),
+                serde_json::json!({ "i": i }),
+            )
+            .await
+            .unwrap();
+        }
+        let src_hub = EmbedMigrateHub::new(Some(src_dir.path().to_path_buf()));
+        let model = src.embedder_model().to_string();
+        src_hub.start_dump(&src, model, 8, None).unwrap();
+
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst = Arc::new(
+            TextIndex::open_persistent(emb, Metric::Cosine, HnswConfig::default(), dst_dir.path())
+                .unwrap(),
+        );
+        let mig = src_dir.path().join(MIGRATE_DIR);
+        // Pretend a previous run already landed the first 3 lines.
+        let mut p = read_pending(&mig).unwrap();
+        p.drained = 3;
+        write_pending(&mig, &p).unwrap();
+
+        let hub = EmbedMigrateHub::new(Some(src_dir.path().to_path_buf()));
+        drain_loop_with(
+            Arc::clone(&dst),
+            hub.clone(),
+            mig.clone(),
+            DrainConfig {
+                batch: 2,
+                concurrency: 3,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(hub.status().state, MigrateState::Done);
+        assert_eq!(hub.status().drained, 11);
+        let landed =
+            dst.for_each_doc_in_bucket("a", |_| {}) + dst.for_each_doc_in_bucket("b", |_| {});
+        assert_eq!(landed, 8, "lines 4..=11 re-embedded, first 3 skipped");
+        assert!(mig.join("pending.done.json").exists());
     }
 }
