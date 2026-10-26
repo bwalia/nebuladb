@@ -3,7 +3,7 @@
 # Installed at /usr/local/bin/nebuladb-edge-install; authorized_keys entry:
 #   command="/usr/local/bin/nebuladb-edge-install",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 ... nebuladb-edge-gha
 #
-# Reads a tar on stdin and installs ONLY the nebuladb website records into
+# Reads a tar on stdin and installs ONLY the nebuladb website and api records into
 # /opt/nginx/data. Anything else in the archive aborts the run before any
 # file is written. Unchanged files are left alone; changed ones are backed
 # up first. OpenResty reads servers/rules from disk per request; the one
@@ -13,7 +13,7 @@
 # mirrors lon1 every 5 minutes.
 set -euo pipefail
 DATA=/opt/nginx/data
-ALLOWED="servers/prod/host:nebuladb.net.json servers/prod/host:www.nebuladb.net.json rules/prod/nebuladb-website-pages.json"
+ALLOWED="servers/prod/host:nebuladb.net.json servers/prod/host:www.nebuladb.net.json rules/prod/nebuladb-website-pages.json servers/prod/host:api.nebuladb.net.json rules/prod/nebuladb-api-prod.json"
 
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
@@ -24,7 +24,7 @@ if [ -n "$(find . ! -type d ! -type f)" ]; then echo "refused: archive has links
 files=$(find . -type f | sed 's#^\./##' | sort)
 [ -n "$files" ] || { echo "refused: empty archive" >&2; exit 1; }
 for r in $files; do
-  case " $ALLOWED " in *" $r "*) ;; *) echo "refused: $r is not a nebuladb website record" >&2; exit 1 ;; esac
+  case " $ALLOWED " in *" $r "*) ;; *) echo "refused: $r is not a nebuladb website/api record" >&2; exit 1 ;; esac
   python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$r" || { echo "refused: $r is not valid JSON" >&2; exit 1; }
 done
 

@@ -121,6 +121,13 @@ server:
           - showcase.nebuladb.net
         secretName: nebuladb-prod-tls
 
+# api.nebuladb.net -> nebula-server REST, gated by NEBULA_API_KEYS (bearer).
+# The edge (lon1/lon2) terminates TLS and forwards to the k3s1 ingress.
+apiIngress:
+  enabled: true
+  className: traefik
+  host: api.nebuladb.net
+
 showcase:
   enabled: true
   image:

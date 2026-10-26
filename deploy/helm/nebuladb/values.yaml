@@ -342,6 +342,19 @@ ollamaLan:
   #  - { ip: 192.168.1.177, port: 11437 }
 
 # ---------------------------------------------------------------------------
+# Public API host for external apps (templates/api-ingress.yaml). Routes
+# /api/v1 and /healthz straight at the server, bypassing the showcase's
+# sign-in; the server's NEBULA_API_KEYS bearer check is the only gate, so
+# enable it only when nebuladb-secrets holds NEBULA_API_KEYS. Put the
+# showcase's own key first: nginx and the follower probe use the first.
+# ---------------------------------------------------------------------------
+apiIngress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+
+# ---------------------------------------------------------------------------
 # Redis (bundled Bitnami subchart)
 # ---------------------------------------------------------------------------
 redis:
