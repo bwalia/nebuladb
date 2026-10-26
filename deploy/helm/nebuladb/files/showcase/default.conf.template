@@ -126,6 +126,12 @@ server {
     listen 80;
     server_name _;
 
+    # TLS ends at the wslproxy edge, so this server only ever sees http.
+    # Absolute redirects would then point at http:// (an extra hop
+    # through the edge's 301, painful on slow mobile links). Relative
+    # Location headers keep the browser on the scheme it used: https.
+    absolute_redirect off;
+
     root /usr/share/nginx/html;
     index index.html;
 
