@@ -59,21 +59,41 @@ server:
       cpu: "500m"
       memory: "8Gi"
 
-  # Embeddings: public Ollama gateway nomic-embed-text @ 768.
-  # Auth: NEBULA_OPENAI_AUTH=x-api-key + NEBULA_LLM_OLLAMA_TOKEN (same
-  # HMAC secret as chat). Cutover from mock-384: dump via
-  # POST /admin/embed/migrate BEFORE applying this embed dim, then
-  # restart so drain can re-embed (docs/runbooks/embed-migrate.md).
-  # LLM: public gateway only in prod (no LAN IP).
+  # Embeddings: LAN Ollama nomic-embed-text @ 768 through the outbound
+  # Service below (both Ollama instances on 192.168.1.177). It is ~3x the
+  # public gateway's throughput, which matters for embed-migrate drains.
+  # Cutover from mock-384: dump via POST /admin/embed/migrate BEFORE
+  # applying this embed dim, then restart so drain can re-embed
+  # (docs/runbooks/embed-migrate.md).
+  # LLM: public gateway (NEBULA_LLM_OLLAMA_TOKEN → x-api-key JWT).
   env:
-    NEBULA_OPENAI_API_KEY: null
-    NEBULA_OPENAI_BASE_URL: "https://ollama.workstation.co.uk/v1"
+    NEBULA_OPENAI_API_KEY: "ollama"
+    NEBULA_OPENAI_BASE_URL: "http://nebuladb-ollama-lan:11434/v1"
     NEBULA_OPENAI_MODEL: "nomic-embed-text"
-    NEBULA_OPENAI_AUTH: "x-api-key"
+    NEBULA_OPENAI_AUTH: "bearer"
     NEBULA_EMBED_DIM: "768"
     NEBULA_LLM_OLLAMA_URL: "https://ollama.workstation.co.uk"
     NEBULA_LLM_MODEL: "llama3.2:3b-dash"
     NEBULA_LLM_READ_TIMEOUT_SECS: "90"
+
+  # The Oct 2026 cutover set these with `kubectl set env` on all three
+  # server Deployments; explicit env beats the ConfigMap, so Helm must
+  # render them explicitly to take them back.
+  extraEnv:
+    - name: NEBULA_OPENAI_BASE_URL
+      value: "http://nebuladb-ollama-lan:11434/v1"
+    - name: NEBULA_OPENAI_MODEL
+      value: "nomic-embed-text"
+    - name: NEBULA_OPENAI_AUTH
+      value: "bearer"
+    - name: NEBULA_EMBED_DIM
+      value: "768"
+    # Embed-migrate drain: 4 batches of 64 in flight. Measured on the
+    # LAN GPU: ~25-30 docs/s across both instances (vs ~8 via gateway).
+    - name: NEBULA_EMBED_MIGRATE_CONCURRENCY
+      value: "4"
+    - name: NEBULA_EMBED_MIGRATE_BATCH
+      value: "64"
 
   persistence:
     enabled: true
@@ -180,4 +200,9 @@ ha:
         cpu: "500m"
         memory: "8Gi"
 
-
+ollamaLan:
+  enabled: true
+  port: 11434
+  endpoints:
+    - { ip: 192.168.1.177, port: 11434 }
+    - { ip: 192.168.1.177, port: 11437 }

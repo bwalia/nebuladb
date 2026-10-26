@@ -87,6 +87,10 @@ spec:
             - name: NEBULA_REGION
               value: {{ .Values.ha.crossRegion.region | quote }}
             {{- end }}
+            {{- with .Values.server.extraEnv }}
+            # Explicit env beats envFrom, so these win over the ConfigMap.
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.ha.withinRegion.livenessProbe }}
           livenessProbe: {{- toYaml . | nindent 12 }}
           {{- end }}

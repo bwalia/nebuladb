@@ -81,6 +81,10 @@ spec:
               value: {{ include "nebuladb.crossRegion.peersRegionB" . | quote }}
             - name: NEBULA_PEERS
               value: {{ printf "leader=http://%s:%d" (include "nebuladb.server.fullname" .) (int .Values.server.service.restPort) | quote }}
+            {{- with .Values.server.extraEnv }}
+            # Explicit env beats envFrom, so these win over the ConfigMap.
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
             {{- with .Values.ha.crossRegion.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

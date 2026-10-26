@@ -1,0 +1,38 @@
+{{- if .Values.ollamaLan.enabled }}
+{{- $name := printf "%s-ollama-lan" (include "nebuladb.fullname" .) }}
+# Outbound Service to Ollama outside the cluster (no selector). Each
+# endpoint gets its own EndpointSlice because a slice carries one port,
+# and the instances listen on different ports of the same host.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "nebuladb.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.ollamaLan.port }}
+      protocol: TCP
+{{- range $i, $ep := .Values.ollamaLan.endpoints }}
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: {{ printf "%s-%d" $name $i }}
+  labels:
+    kubernetes.io/service-name: {{ $name }}
+    endpointslice.kubernetes.io/managed-by: helm
+    {{- include "nebuladb.labels" $ | nindent 4 }}
+addressType: IPv4
+ports:
+  - name: http
+    port: {{ $ep.port }}
+    protocol: TCP
+endpoints:
+  - addresses: [{{ $ep.ip | quote }}]
+    conditions:
+      ready: true
+{{- end }}
+{{- end }}

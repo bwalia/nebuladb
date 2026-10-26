@@ -114,6 +114,10 @@ spec:
             - name: NEBULA_PEERS
               value: {{ $peers | quote }}
             {{- end }}
+            {{- with .Values.server.extraEnv }}
+            # Explicit env beats envFrom, so these win over the ConfigMap.
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.server.startupProbe }}
           startupProbe: {{- toYaml . | nindent 12 }}
           {{- end }}
