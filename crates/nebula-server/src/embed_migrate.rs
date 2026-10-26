@@ -360,8 +360,23 @@ pub fn spawn_drain_if_pending(
     }
 
     Some(tokio::spawn(async move {
-        if let Err(e) = drain_loop(index, hub.clone(), dir).await {
-            hub.fail(&e);
+        // Supervisor: a drain error (I/O, a bug, anything flush_batch did
+        // not absorb) restarts the drain from pending.json after a pause
+        // instead of leaving the migration stuck until the next deploy.
+        // Only an operator cancel stops it.
+        loop {
+            match drain_loop(Arc::clone(&index), hub.clone(), dir.clone()).await {
+                Ok(()) => break,
+                Err(e) if hub.inner.cancel.load(Ordering::SeqCst) => {
+                    hub.fail(&e);
+                    break;
+                }
+                Err(e) => {
+                    hub.fail(&e);
+                    warn!(error = %e, "embed migrate: drain stopped, restarting in 60s");
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+            }
         }
     }))
 }
@@ -392,8 +407,6 @@ impl DrainConfig {
         }
     }
 }
-
-const FLUSH_ATTEMPTS: u32 = 6;
 
 async fn drain_loop(
     index: Arc<TextIndex>,
@@ -488,11 +501,13 @@ async fn flush_group(
     while it.peek().is_some() {
         let batch: Vec<Row> = it.by_ref().take(cfg.batch).collect();
         let index = Arc::clone(index);
+        let hub = hub.clone();
+        let dir = dir.to_path_buf();
         // Spawned so each batch's HNSW insert (block_in_place) runs on
         // its own worker while the other batches wait on the embedder.
-        tasks.push(tokio::spawn(
-            async move { flush_batch(&index, batch).await },
-        ));
+        tasks.push(tokio::spawn(async move {
+            flush_batch(&index, &hub, &dir, batch).await
+        }));
     }
     for t in tasks {
         t.await.map_err(|e| format!("drain task: {e}"))??;
@@ -505,30 +520,142 @@ async fn flush_group(
     Ok(drained)
 }
 
-/// Upsert one batch, retrying transient embedder failures (timeouts,
-/// 5xx, an overloaded Ollama returning 400) with exponential backoff.
-async fn flush_batch(index: &Arc<TextIndex>, batch: Vec<Row>) -> Result<(), String> {
+/// How the drain treats a failed upsert.
+#[derive(Debug, PartialEq, Eq)]
+enum Failure {
+    /// Embedder unreachable, overloaded or erroring, or a local write
+    /// error: wait and retry, forever.
+    Transient,
+    /// The embedder answered but rejected the input (4xx, bad shape).
+    /// Ollama also answers 400 when overloaded, so this gets a few
+    /// retries before it is treated as the input's fault.
+    Rejected,
+}
+
+fn classify(e: &nebula_index::IndexError) -> Failure {
+    use nebula_embed::EmbedError;
+    use nebula_index::IndexError;
+    match e {
+        IndexError::Embed(EmbedError::Http(_)) => Failure::Transient,
+        IndexError::Embed(EmbedError::Provider { status, .. })
+            if *status >= 500 || *status == 408 || *status == 429 =>
+        {
+            Failure::Transient
+        }
+        IndexError::Embed(_) | IndexError::Invalid(_) => Failure::Rejected,
+        _ => Failure::Transient,
+    }
+}
+
+const REJECT_RETRIES: u32 = 3;
+const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
+const SKIPPED_FILE: &str = "skipped.jsonl";
+
+#[cfg(not(test))]
+const BACKOFF_BASE_MS: u64 = 500;
+#[cfg(test)]
+const BACKOFF_BASE_MS: u64 = 1;
+
+fn backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(BACKOFF_BASE_MS << attempt.min(10)).min(MAX_BACKOFF)
+}
+
+enum RetryEnd {
+    Cancelled,
+    Rejected(String),
+}
+
+/// Upsert `items` into `bucket`. Transient failures retry until they
+/// succeed; gives up only on cancel or after [`REJECT_RETRIES`]
+/// rejections in a row.
+async fn upsert_retrying(
+    index: &Arc<TextIndex>,
+    hub: &EmbedMigrateHub,
+    bucket: &str,
+    items: &[(String, String, serde_json::Value)],
+) -> Result<(), RetryEnd> {
+    let mut attempt = 0u32;
+    let mut rejected = 0u32;
+    loop {
+        if hub.inner.cancel.load(Ordering::SeqCst) {
+            return Err(RetryEnd::Cancelled);
+        }
+        let e = match index.upsert_text_bulk(bucket, items).await {
+            Ok(_) => return Ok(()),
+            Err(e) => e,
+        };
+        attempt += 1;
+        if classify(&e) == Failure::Rejected {
+            rejected += 1;
+            if rejected >= REJECT_RETRIES {
+                return Err(RetryEnd::Rejected(e.to_string()));
+            }
+        } else {
+            rejected = 0;
+        }
+        let wait = backoff(attempt);
+        warn!(%bucket, n = items.len(), attempt, error = %e, ?wait, "embed migrate: upsert failed, retrying");
+        tokio::time::sleep(wait).await;
+    }
+}
+
+/// Upsert one batch. Transient embedder failures retry forever. A batch
+/// the embedder keeps rejecting is retried one doc at a time, and a doc
+/// it still rejects goes to `skipped.jsonl` so the drain moves on.
+async fn flush_batch(
+    index: &Arc<TextIndex>,
+    hub: &EmbedMigrateHub,
+    dir: &Path,
+    batch: Vec<Row>,
+) -> Result<(), String> {
     use std::collections::HashMap;
     let mut by_bucket: HashMap<String, Vec<(String, String, serde_json::Value)>> = HashMap::new();
     for (bucket, id, text, meta) in batch {
         by_bucket.entry(bucket).or_default().push((id, text, meta));
     }
     for (bucket, items) in by_bucket {
-        let mut attempt = 0;
-        loop {
-            match index.upsert_text_bulk(&bucket, &items).await {
-                Ok(_) => break,
-                Err(e) if attempt + 1 < FLUSH_ATTEMPTS => {
-                    attempt += 1;
-                    let wait = std::time::Duration::from_millis(500u64 << attempt);
-                    warn!(%bucket, attempt, error = %e, ?wait, "embed migrate: batch failed, retrying");
-                    tokio::time::sleep(wait).await;
+        match upsert_retrying(index, hub, &bucket, &items).await {
+            Ok(()) => continue,
+            Err(RetryEnd::Cancelled) => return Err("cancelled during drain".into()),
+            Err(RetryEnd::Rejected(e)) => {
+                warn!(%bucket, n = items.len(), error = %e, "embed migrate: batch rejected, retrying doc by doc");
+            }
+        }
+        for item in &items {
+            match upsert_retrying(index, hub, &bucket, std::slice::from_ref(item)).await {
+                Ok(()) => {}
+                Err(RetryEnd::Cancelled) => return Err("cancelled during drain".into()),
+                Err(RetryEnd::Rejected(e)) => {
+                    warn!(%bucket, id = %item.0, error = %e, "embed migrate: doc rejected, skipped");
+                    record_skipped(dir, &bucket, item, &e);
                 }
-                Err(e) => return Err(format!("upsert_text_bulk({bucket}): {e}")),
             }
         }
     }
     Ok(())
+}
+
+fn record_skipped(
+    dir: &Path,
+    bucket: &str,
+    item: &(String, String, serde_json::Value),
+    error: &str,
+) {
+    let line = serde_json::json!({
+        "bucket": bucket,
+        "id": item.0,
+        "text": item.1,
+        "metadata": item.2,
+        "error": error,
+    });
+    let res = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(SKIPPED_FILE))
+        .and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = res {
+        warn!(error = %e, "embed migrate: could not record skipped doc");
+    }
 }
 
 #[cfg(test)]
@@ -623,5 +750,104 @@ mod tests {
             dst.for_each_doc_in_bucket("a", |_| {}) + dst.for_each_doc_in_bucket("b", |_| {});
         assert_eq!(landed, 8, "lines 4..=11 re-embedded, first 3 skipped");
         assert!(mig.join("pending.done.json").exists());
+    }
+
+    /// Fails the first `transient` calls with 503, and always answers 400
+    /// for any batch containing the text "REJECT".
+    struct FlakyEmbedder {
+        inner: MockEmbedder,
+        transient: std::sync::Mutex<u32>,
+    }
+
+    #[async_trait::async_trait]
+    impl Embedder for FlakyEmbedder {
+        fn dim(&self) -> usize {
+            self.inner.dim()
+        }
+        fn model(&self) -> &str {
+            self.inner.model()
+        }
+        async fn embed(&self, inputs: &[String]) -> nebula_embed::Result<Vec<Vec<f32>>> {
+            let busy = {
+                let mut left = self.transient.lock().unwrap();
+                let busy = *left > 0;
+                *left = left.saturating_sub(1);
+                busy
+            };
+            if busy {
+                return Err(nebula_embed::EmbedError::Provider {
+                    status: 503,
+                    body: "busy".into(),
+                });
+            }
+            if inputs.iter().any(|t| t.contains("REJECT")) {
+                return Err(nebula_embed::EmbedError::Provider {
+                    status: 400,
+                    body: "bad input".into(),
+                });
+            }
+            self.inner.embed(inputs).await
+        }
+    }
+
+    /// The drain rides out embedder outages and skips only the doc the
+    /// embedder rejects, recording it in skipped.jsonl.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drain_retries_transient_and_skips_rejected_doc() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let mock: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(8));
+        let src = TextIndex::open_persistent(
+            Arc::clone(&mock),
+            Metric::Cosine,
+            HnswConfig::default(),
+            src_dir.path(),
+        )
+        .unwrap();
+        for i in 0..6 {
+            let text = if i == 4 {
+                "REJECT me".to_string()
+            } else {
+                format!("doc {i}")
+            };
+            src.upsert_text("a", &i.to_string(), &text, serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        let hub = EmbedMigrateHub::new(Some(src_dir.path().to_path_buf()));
+        let model = src.embedder_model().to_string();
+        hub.start_dump(&src, model, 8, None).unwrap();
+
+        let flaky: Arc<dyn Embedder> = Arc::new(FlakyEmbedder {
+            inner: MockEmbedder::new(8),
+            transient: std::sync::Mutex::new(5),
+        });
+        let dst_dir = tempfile::tempdir().unwrap();
+        let dst = Arc::new(
+            TextIndex::open_persistent(
+                flaky,
+                Metric::Cosine,
+                HnswConfig::default(),
+                dst_dir.path(),
+            )
+            .unwrap(),
+        );
+        let mig = src_dir.path().join(MIGRATE_DIR);
+        drain_loop_with(
+            Arc::clone(&dst),
+            hub.clone(),
+            mig.clone(),
+            DrainConfig {
+                batch: 3,
+                concurrency: 2,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(hub.status().state, MigrateState::Done);
+        assert_eq!(dst.for_each_doc_in_bucket("a", |_| {}), 5);
+        let skipped = std::fs::read_to_string(mig.join(SKIPPED_FILE)).unwrap();
+        assert_eq!(skipped.lines().count(), 1);
+        assert!(skipped.contains("\"id\":\"4\""), "{skipped}");
     }
 }
