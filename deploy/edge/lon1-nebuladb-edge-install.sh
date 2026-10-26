@@ -6,8 +6,11 @@
 # Reads a tar on stdin and installs ONLY the nebuladb website records into
 # /opt/nginx/data. Anything else in the archive aborts the run before any
 # file is written. Unchanged files are left alone; changed ones are backed
-# up first. OpenResty reads servers/rules from disk per request, so no
-# reload is needed. lon2 (pop0) mirrors lon1 every 5 minutes.
+# up first. OpenResty reads servers/rules from disk per request; the one
+# exception is auto-SSL, which admits a domain only after ssl_init reconciles
+# servers/ at startup. So when a host has no data/ssl/<name>.json yet, this
+# validates the config and reloads OpenResty once (graceful). lon2 (pop0)
+# mirrors lon1 every 5 minutes.
 set -euo pipefail
 DATA=/opt/nginx/data
 ALLOWED="servers/prod/host:nebuladb.net.json servers/prod/host:www.nebuladb.net.json rules/prod/nebuladb-website-pages.json"
@@ -32,3 +35,17 @@ for r in $files; do
   mv -f "$DATA/$r.tmp" "$DATA/$r"
   echo "installed $r"
 done
+
+# First time a host is seen: reload so ssl_init writes its SSL record and
+# admits it for Let's Encrypt. Later runs find the record and skip this.
+need_reload=0
+for r in $files; do
+  case "$r" in servers/prod/host:*.json) ;; *) continue ;; esac
+  name=${r#servers/prod/host:}; name=${name%.json}
+  [ -e "$DATA/ssl/$name.json" ] || need_reload=1
+done
+if [ "$need_reload" = 1 ]; then
+  /usr/local/openresty/nginx/sbin/nginx -t -q
+  systemctl reload openresty
+  echo "reloaded openresty (new SSL domains)"
+fi

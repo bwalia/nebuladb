@@ -81,12 +81,12 @@ on:
     - cron: "*/30 * * * *"
 
 concurrency:
-  group: edge-register-${{ github.event.inputs.ENV || 'all' }}
+  group: edge-register-${{ inputs.ENV || 'all' }}
   cancel-in-progress: false
 
 jobs:
   register:
-    name: "Register ${{ github.event.inputs.ENV || 'all rings' }} on the edge"
+    name: "Register ${{ inputs.ENV || 'all rings' }} on the edge"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -94,7 +94,7 @@ jobs:
       - name: Resolve ring -> host
         id: ring
         env:
-          RING: ${{ github.event.inputs.ENV || inputs.ENV }}
+          RING: ${{ inputs.ENV }}
         run: |
           set -euo pipefail
           # A scheduled run carries no inputs: re-assert every ring.
