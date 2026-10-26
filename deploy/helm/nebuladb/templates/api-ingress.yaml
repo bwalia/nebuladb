@@ -1,0 +1,49 @@
+{{- if .Values.apiIngress.enabled -}}
+{{- $fullName := include "nebuladb.fullname" . -}}
+{{- /* Refuse to publish an open server. lookup is empty under
+       `helm template`, so the guard only bites against a live cluster. */ -}}
+{{- $secret := lookup "v1" "Secret" .Release.Namespace (printf "%s-secrets" $fullName) -}}
+{{- if and $secret (not (index ($secret.data | default dict) "NEBULA_API_KEYS")) -}}
+{{- fail (printf "apiIngress.enabled needs NEBULA_API_KEYS in secret %s-secrets; without it the server runs with auth off" $fullName) -}}
+{{- end }}
+# Public API host for external apps (e.g. api.nebuladb.net). Routes
+# straight at the server's REST port, without the showcase's Google
+# sign-in, so the server's own bearer check (NEBULA_API_KEYS / JWT) is
+# the gate. Never enable this unless the server has keys configured:
+# with none, the server runs open.
+#
+# Only /api/v1 and the bare /healthz are routed. /metrics, /healthz/*
+# and everything else stay cluster-internal.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}-api
+  labels:
+    {{- include "nebuladb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.apiIngress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.apiIngress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ required "apiIngress.host is required" .Values.apiIngress.host | quote }}
+      http:
+        paths:
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "nebuladb.server.fullname" . }}
+                port:
+                  name: rest
+          - path: /healthz
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "nebuladb.server.fullname" . }}
+                port:
+                  name: rest
+{{- end -}}

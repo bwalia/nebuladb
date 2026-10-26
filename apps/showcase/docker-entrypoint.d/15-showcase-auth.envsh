@@ -15,6 +15,11 @@
 # Also writes /usr/share/nginx/html/login-config.json so the public
 # login page knows which methods to show.
 
+# nginx injects `Authorization: Bearer ${NEBULA_API_KEYS}` upstream. The
+# server takes a comma-separated list (the showcase's own key first, then
+# one per external API client), but a bearer is a single key: keep the first.
+export NEBULA_API_KEYS="${NEBULA_API_KEYS%%,*}"
+
 showcase_htpasswd=/etc/nginx/showcase.htpasswd
 oauth_gate=/etc/nginx/showcase-oauth-gate.conf
 login_config=/usr/share/nginx/html/login-config.json

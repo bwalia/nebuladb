@@ -10,6 +10,7 @@ name: Register edge vhost (Cloudflare + wslproxy)
 #   acc  -> acc-showcase.nebuladb.net
 #   prod -> showcase.nebuladb.net
 #   website -> nebuladb.net + www.nebuladb.net (GitHub Pages site, see pages.yml)
+#   api     -> api.nebuladb.net (public REST, bearer keys; see apiIngress in the chart)
 #
 # Steps:
 #   1. Cloudflare CNAME  -> lon1.pop0.uk (DNS-only; the edge terminates TLS)
@@ -22,6 +23,7 @@ name: Register edge vhost (Cloudflare + wslproxy)
 # Server records per target:
 #   int|test|acc|prod -> deploy/edge/wslproxy-server-<ring>.json
 #   website           -> .github/wslproxy/data/servers/prod/host:{nebuladb.net,www.nebuladb.net}.json
+#   api               -> .github/wslproxy/data/servers/prod/host:api.nebuladb.net.json
 # Rules: every .github/wslproxy/data/rules/prod/*.json.
 #
 # Secrets: CLOUDFLARE_API_TOKEN, WSLPROXY_API_BASE (https://cp.pop0.uk),
@@ -57,7 +59,7 @@ on:
         required: true
         default: int
         type: choice
-        options: [int, test, acc, prod, website]
+        options: [int, test, acc, prod, website, api]
       DEPLOY_BRANCH:
         description: "Unused — accepted for Ring Promoter dispatch parity"
         required: false
@@ -99,12 +101,12 @@ jobs:
           set -euo pipefail
           # A scheduled run carries no inputs: re-assert every ring.
           if [ -z "${RING:-}" ]; then
-            echo "rings=int test acc prod website" >>"$GITHUB_OUTPUT"
+            echo "rings=int test acc prod website api" >>"$GITHUB_OUTPUT"
             echo "Scheduled drift run — asserting all rings."
             exit 0
           fi
           case "$RING" in
-            int|test|acc|prod|website) echo "rings=$RING" >>"$GITHUB_OUTPUT" ;;
+            int|test|acc|prod|website|api) echo "rings=$RING" >>"$GITHUB_OUTPUT" ;;
             *) echo "::error::unknown ring '$RING'"; exit 1 ;;
           esac
 
@@ -118,6 +120,7 @@ jobs:
           for ring in $RINGS; do
             case "$ring" in
               website) files="$files .github/wslproxy/data/servers/prod/host:nebuladb.net.json .github/wslproxy/data/servers/prod/host:www.nebuladb.net.json" ;;
+              api)     files="$files .github/wslproxy/data/servers/prod/host:api.nebuladb.net.json" ;;
               *)       files="$files deploy/edge/wslproxy-server-${ring}.json" ;;
             esac
           done
@@ -237,7 +240,8 @@ jobs:
         run: |
           set -euo pipefail
           # Only servers that opt in with pop_ids containing "lon1" (the
-          # website). The showcase rings are managed on lon1 already.
+          # website and api.nebuladb.net). The showcase rings are managed on
+          # lon1 already.
           stage=$(mktemp -d)
           mkdir -p "$stage/servers/prod" "$stage/rules/prod"
           for f in $FILES; do
@@ -280,8 +284,9 @@ jobs:
               if grep -qi 'Host not configured' /tmp/body 2>/dev/null; then
                 sleep 10; continue
               fi
-              # 200 = serving; 401/403 = vhost exists and the app is gating.
-              if [ "$code" = "200" ] || [ "$code" = "401" ] || [ "$code" = "403" ]; then
+              # 200 = serving; 401/403 = vhost exists and the app is gating;
+              # 404 = api.nebuladb.net, which routes only /api/v1 and /healthz.
+              if [ "$code" = "200" ] || [ "$code" = "401" ] || [ "$code" = "403" ] || [ "$code" = "404" ]; then
                 echo "✅ ${HOST} live through the edge (HTTP ${code})"; ok=1; break
               fi
               if [ "$code" = "301" ] || [ "$code" = "302" ]; then
