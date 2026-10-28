@@ -35,6 +35,17 @@ import { LookalikeTab } from "./tabs/LookalikeTab";
 import { FraudTab } from "./tabs/FraudTab";
 import { RecommendTab } from "./tabs/RecommendTab";
 import { BlogTab } from "./tabs/BlogTab";
+import { UseCaseDemo, type UseCaseSpec } from "./usecases/UseCaseDemo";
+import { clinicalSpec } from "./usecases/specs/clinical";
+import { complianceSpec } from "./usecases/specs/compliance";
+import { earningsSpec } from "./usecases/specs/earnings";
+import { claimsSpec } from "./usecases/specs/claims";
+import { fieldServiceSpec } from "./usecases/specs/fieldService";
+import { codeSearchSpec } from "./usecases/specs/codeSearch";
+import { propertySpec } from "./usecases/specs/property";
+import { semanticCacheSpec } from "./usecases/specs/semanticCache";
+import { priorArtSpec } from "./usecases/specs/priorArt";
+import { voiceOfCustomerSpec } from "./usecases/specs/voiceOfCustomer";
 
 type TabId =
   | "executive"
@@ -57,6 +68,7 @@ type TabId =
   | "lookalike"
   | "fraud"
   | "recommend"
+  | IndustryTabId
   | "rag"
   | "hybrid"
   | "agents"
@@ -66,12 +78,28 @@ type TabId =
   | "metrics"
   | "admin";
 
+/** Config-driven industry demos — one spec each, rendered by UseCaseDemo. */
+const INDUSTRY_SPECS = {
+  clinical: clinicalSpec,
+  compliance: complianceSpec,
+  earnings: earningsSpec,
+  claims: claimsSpec,
+  fieldservice: fieldServiceSpec,
+  codesearch: codeSearchSpec,
+  property: propertySpec,
+  semcache: semanticCacheSpec,
+  priorart: priorArtSpec,
+  voc: voiceOfCustomerSpec,
+} satisfies Record<string, UseCaseSpec>;
+
+type IndustryTabId = keyof typeof INDUSTRY_SPECS;
+
 interface NavItem {
   id: TabId;
   label: string;
   hint: string;
   icon: string;
-  group: "home" | "data" | "ai" | "apps" | "use" | "cluster" | "ops";
+  group: "home" | "data" | "ai" | "apps" | "use" | "industry" | "cluster" | "ops";
 }
 
 const NAV: NavItem[] = [
@@ -99,6 +127,16 @@ const NAV: NavItem[] = [
   { id: "lookalike", label: "Lookalike Accounts", hint: "Won ICP → similar prospects with industry filters", icon: "◈", group: "use" },
   { id: "fraud", label: "Fraud Neighbours", hint: "Alert → labelled tx neighbourhood → risk vote (no LLM)", icon: "⚡", group: "use" },
   { id: "recommend", label: "Recommendations", hint: "Basket → in-stock SKUs under price/category filters", icon: "↝", group: "use" },
+  { id: "clinical", label: "Clinical Guidelines", hint: "Bedside question → trust pathways by specialty → cited answer", icon: "✚", group: "industry" },
+  { id: "compliance", label: "Compliance Mapper", hint: "Internal control → GDPR / DORA / EU AI Act / NIS2 obligations → gap analysis", icon: "⚖", group: "industry" },
+  { id: "earnings", label: "Earnings Analyst", hint: "Earnings-call excerpts by ticker and quarter → cited research notes", icon: "↗", group: "industry" },
+  { id: "claims", label: "Claims Assist", hint: "First notice of loss → policy wording + precedent claims → coverage view", icon: "☂", group: "industry" },
+  { id: "fieldservice", label: "Field Service", hint: "Fault on site → manuals, fault codes, past jobs → step-by-step fix", icon: "⚒", group: "industry" },
+  { id: "codesearch", label: "Code Search", hint: "Natural-language questions over code, migrations, config and ADRs", icon: "{}", group: "industry" },
+  { id: "property", label: "Property Finder", hint: "Plain-English brief + price / bedroom filters in one SQL query", icon: "⌂", group: "industry" },
+  { id: "semcache", label: "Semantic LLM Cache", hint: "Serve cached answers for paraphrased prompts above a similarity threshold", icon: "⟳", group: "industry" },
+  { id: "priorart", label: "Prior-Art Search", hint: "Invention disclosure → nearest patents → novelty screen (no LLM)", icon: "⌕", group: "industry" },
+  { id: "voc", label: "Voice of Customer", hint: "Theme → nearest reviews → sentiment, rating and product mix (no LLM)", icon: "☊", group: "industry" },
   { id: "cluster", label: "Cluster", hint: "Topology, regions, failover", icon: "⬢", group: "cluster" },
   { id: "rebalance", label: "Rebalance", hint: "Zero-downtime node swap", icon: "⇄", group: "cluster" },
   { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },
@@ -111,6 +149,7 @@ const GROUP_LABELS: Record<NavItem["group"], string> = {
   ai: "AI",
   apps: "RAG apps",
   use: "Applied use cases",
+  industry: "Industry use cases",
   cluster: "Cluster",
   ops: "Operations",
 };
@@ -219,7 +258,7 @@ export function App() {
                 <p className="mt-1 text-sm text-gray-500 dark:text-muted">{active.hint}</p>
               </div>
             )}
-            {active?.group === "apps" && health && /mock/i.test(health.model) && (
+            {(active?.group === "apps" || active?.group === "industry") && health && /mock/i.test(health.model) && (
               <div className="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-gray-700 dark:text-muted">
                 <span className="font-semibold text-warn">Mock embedder.</span> This server embeds with{" "}
                 <code>{health.model}</code> (a deterministic hash, not a language model), so semantic
@@ -257,6 +296,9 @@ export function App() {
               {tab === "lookalike" && <LookalikeTab />}
               {tab === "fraud" && <FraudTab />}
               {tab === "recommend" && <RecommendTab />}
+              {tab in INDUSTRY_SPECS && (
+                <UseCaseDemo spec={INDUSTRY_SPECS[tab as IndustryTabId]} />
+              )}
               {tab === "rag" && <RagTab />}
               {tab === "hybrid" && <HybridTab />}
               {tab === "agents" && <AgentsTab />}
