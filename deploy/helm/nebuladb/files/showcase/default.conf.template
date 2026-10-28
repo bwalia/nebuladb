@@ -168,17 +168,6 @@ server {
         default_type application/json;
         add_header Cache-Control "no-store";
     }
-    # Basic-auth credential check for the password form (non-Google envs).
-    # Override the server 401→/login rewrite so the form gets a real 401/204.
-    location = /login/basic-check {
-        auth_request off;
-        # Keep the original 401 + WWW-Authenticate (do not rewrite to /login).
-        error_page 401 =401;
-        access_log off;
-        default_type text/plain;
-        return 204;
-    }
-
     # oauth2-proxy (sidecar on :4180). Used when SHOWCASE_GOOGLE_AUTH=true.
     location /oauth2/ {
         auth_basic off;

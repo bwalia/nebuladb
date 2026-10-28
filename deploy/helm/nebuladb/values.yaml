@@ -246,6 +246,15 @@ showcase:
       storeKind: ClusterSecretStore
       key: ""
       refreshInterval: "1m"
+  # Password sign-in with a real session, no Google: runs the same
+  # oauth2-proxy sidecar as googleAuth but only for its htpasswd form
+  # (credentials = the auth Secret above). /login shows just the
+  # password form and the sidecar's cookie keeps the user signed in.
+  # The cookie secret is chart-generated (`<release>-showcase-session`),
+  # so nothing extra goes in Vault. Prefer this over plain basic auth,
+  # whose only sign-in is the browser's native prompt.
+  sessionLogin:
+    enabled: false
   # Google OAuth via oauth2-proxy sidecar + nginx auth_request. When
   # enabled, nginx basic auth is forced off and unauthenticated users
   # land on /login (Continue with Google + optional email/password).

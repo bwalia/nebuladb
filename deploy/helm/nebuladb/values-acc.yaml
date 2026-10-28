@@ -47,11 +47,14 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
-  # Basic auth (default on); credentials from WSLVault path
-  # nebuladb/acc/showcase-auth (SHOWCASE_AUTH_USERNAME / _PASSWORD).
+  # Password sign-in on /login, kept by an oauth2-proxy session cookie
+  # (no Google). Credentials from WSLVault path nebuladb/acc/showcase-auth
+  # (SHOWCASE_AUTH_USERNAME / _PASSWORD); cookie secret is chart-generated.
   auth:
     vault:
       enabled: true
+  sessionLogin:
+    enabled: true
 
 examples:
   enabled: true

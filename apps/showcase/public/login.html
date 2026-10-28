@@ -235,6 +235,11 @@
         font-family: var(--mono);
         text-align: center;
       }
+      a.submit {
+        display: block;
+        text-align: center;
+        text-decoration: none;
+      }
       .hidden {
         display: none !important;
       }
@@ -287,6 +292,8 @@
           <button class="submit" type="submit" id="submit">Sign in</button>
         </form>
 
+        <a id="basic" class="submit hidden" href="/">Continue to sign in</a>
+
         <p class="meta" id="meta">Loading sign-in options…</p>
       </section>
     </main>
@@ -302,6 +309,7 @@
         var form = document.getElementById("password-form");
         var meta = document.getElementById("meta");
         var submit = document.getElementById("submit");
+        var basic = document.getElementById("basic");
 
         function showErr(msg) {
           errEl.textContent = msg;
@@ -320,6 +328,14 @@
             return { google: true, password: false, mode: "google" };
           })
           .then(function (cfg) {
+            // Basic mode: nginx basic auth has no session cookie, so a form
+            // can't sign anyone in — hand off to the browser's own prompt.
+            if (cfg.mode === "basic") {
+              basic.classList.remove("hidden");
+              basic.setAttribute("href", rd);
+              meta.textContent = "Your browser will ask for this environment's username and password";
+              return;
+            }
             var hasGoogle = !!cfg.google;
             var hasPassword = !!cfg.password;
             if (hasGoogle) {
@@ -354,16 +370,7 @@
             return;
           }
 
-          fetch("/login-config.json", { credentials: "same-origin", cache: "no-store" })
-            .then(function (r) {
-              return r.ok ? r.json() : { mode: "google" };
-            })
-            .then(function (cfg) {
-              if (cfg.mode === "basic") {
-                return basicLogin(user, pass);
-              }
-              return oauthPasswordLogin(user, pass);
-            })
+          oauthPasswordLogin(user, pass)
             .then(function () {
               window.location.replace(rd);
             })
@@ -384,36 +391,18 @@
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: body.toString(),
             redirect: "manual",
-          }).then(function (res) {
-            // oauth2-proxy returns 302 on success; 200 with form on failure.
-            if (res.status === 302 || res.status === 303 || res.status === 0) {
-              return;
-            }
-            if (res.ok && (res.url || "").indexOf("/oauth2/") === -1) {
-              return;
-            }
-            throw new Error("Invalid email/username or password.");
-          });
-        }
-
-        function basicLogin(user, pass) {
-          var token = btoa(unescape(encodeURIComponent(user + ":" + pass)));
-          // Establish the basic-auth realm, then authenticate so the
-          // browser caches credentials for same-origin navigations.
-          return fetch("/login/basic-check", { credentials: "same-origin" })
-            .catch(function () {
-              return { status: 401 };
-            })
+          })
             .then(function () {
-              return fetch("/login/basic-check", {
-                credentials: "same-origin",
-                headers: { Authorization: "Basic " + token },
-              });
+              // oauth2-proxy redirects on success AND on a wrong password
+              // (to the provider), so the status says nothing. Ask whether
+              // a session cookie was actually issued: 202 yes, 401 no.
+              return fetch("/oauth2/auth", { credentials: "same-origin", cache: "no-store" });
             })
             .then(function (res) {
               if (!res.ok) throw new Error("Invalid email/username or password.");
             });
         }
+
       })();
     </script>
   </body>
