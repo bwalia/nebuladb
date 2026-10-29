@@ -169,7 +169,17 @@ environment: prod
 ha:
   withinRegion:
     enabled: true
-    followers: 1
+    # Oct 29: parked at 0. The mirror needs the leader's full working set
+    # (~41Gi and growing) but its local-path PVC pins it to debian002 (30Gi
+    # RAM): it grew to ~24Gi, the kernel OOM-killed it four times in an hour
+    # and each one starved debian002 enough to fail the Longhorn volumes of
+    # its neighbours (patroni, minio). No node fits it: debworker00 holds
+    # the leader (snapshot peaks would OOM both), and cloud003 can't reach
+    # LAN pods. 0 rather than enabled=false, because enabled flips the
+    # leader's NEBULA_NODE_ROLE/NEBULA_PEERS and restarts it (~45 min cold
+    # recovery). To bring it back, set 1 plus a nodeSelector for a node with
+    # ~64Gi free, and delete the old nebuladb-follower-data PVC first.
+    followers: 0
     persistence:
       size: 50Gi
     # Mirror needs the same working set as the leader (~full index).
