@@ -63,14 +63,14 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
-  # Basic auth (default on); credentials from WSLVault path
-  # nebuladb/int/showcase-auth (SHOWCASE_AUTH_USERNAME / _PASSWORD).
-  # Path is not seeded yet (ESO SecretSyncedError) — deploy-k3s does
-  # not --wait on the ExternalSecret so the rest of the release can
-  # still roll; seed the Vault path when int auth is needed.
+  # Password sign-in on /login, kept by an oauth2-proxy session cookie
+  # (no Google). Credentials from WSLVault path nebuladb/int/showcase-auth
+  # (SHOWCASE_AUTH_USERNAME / _PASSWORD); cookie secret is chart-generated.
   auth:
     vault:
       enabled: true
+  sessionLogin:
+    enabled: true
 
 # Claude agents example suite (MCP → NebulaDB), exposed at /examples.
 examples:

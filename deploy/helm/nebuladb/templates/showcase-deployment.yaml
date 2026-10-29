@@ -1,4 +1,8 @@
 {{- if .Values.showcase.enabled -}}
+{{- /* oauth2-proxy runs for Google sign-in, or for password-only
+       sessions (sessionLogin) where it only serves the htpasswd form. */ -}}
+{{- $google := .Values.showcase.googleAuth.enabled -}}
+{{- $oauth := or $google .Values.showcase.sessionLogin.enabled -}}
 {{- if and .Values.showcase.googleAuth.enabled (not .Values.showcase.googleAuth.redirectUrl) -}}
 {{- fail "showcase.googleAuth.enabled=true needs showcase.googleAuth.redirectUrl (e.g. https://showcase.nebuladb.net)" -}}
 {{- end -}}
@@ -79,8 +83,10 @@ spec:
             - name: SHOWCASE_AUTH_DISABLED
               value: {{ (not .Values.showcase.auth.enabled) | quote }}
             - name: SHOWCASE_GOOGLE_AUTH
-              value: {{ .Values.showcase.googleAuth.enabled | quote }}
-            {{- if or .Values.showcase.auth.enabled .Values.showcase.googleAuth.enabled }}
+              value: {{ $google | quote }}
+            - name: SHOWCASE_SESSION_LOGIN
+              value: {{ .Values.showcase.sessionLogin.enabled | quote }}
+            {{- if or .Values.showcase.auth.enabled $oauth }}
             # optional: password form works when these keys exist in Vault
             # even if basic auth is disabled (Google + email/password).
             - name: SHOWCASE_AUTH_USERNAME
@@ -119,12 +125,12 @@ spec:
               mountPath: /etc/nginx/templates/default.conf.template
               subPath: default.conf.template
               readOnly: true
-            {{- if .Values.showcase.googleAuth.enabled }}
+            {{- if $oauth }}
             - name: oauth2-htpasswd
               mountPath: /shared/oauth2
             {{- end }}
-        {{- if .Values.showcase.googleAuth.enabled }}
-        # Google OAuth (+ optional htpasswd): nginx auth_request → sidecar.
+        {{- if $oauth }}
+        # Google OAuth and/or htpasswd sessions: nginx auth_request → sidecar.
         - name: oauth2-proxy
           image: "{{ .Values.showcase.googleAuth.image.repository }}:{{ .Values.showcase.googleAuth.image.tag }}"
           imagePullPolicy: {{ .Values.showcase.googleAuth.image.pullPolicy }}
@@ -133,7 +139,14 @@ spec:
             - --http-address=127.0.0.1:4180
             - --upstream=static://202
             - --email-domain={{ .Values.showcase.googleAuth.emailDomains }}
+            {{- if $google }}
             - --redirect-url={{ .Values.showcase.googleAuth.redirectUrl }}/oauth2/callback
+            {{- else }}
+            # Password-only: the provider is never used (/login hides the
+            # Google button) but oauth2-proxy refuses to start without one.
+            - --client-id=password-only
+            - --client-secret=password-only
+            {{- end }}
             - --reverse-proxy=true
             - --set-xauthrequest=true
             - --pass-access-token=false
@@ -146,6 +159,7 @@ spec:
             - --cookie-expire=168h
             - --cookie-refresh=1h
           env:
+            {{- if $google }}
             - name: OAUTH2_PROXY_CLIENT_ID
               valueFrom:
                 secretKeyRef:
@@ -161,6 +175,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "nebuladb.showcase.authSecretName" . }}
                   key: OAUTH2_PROXY_COOKIE_SECRET
+            {{- else }}
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.fullname" . }}-showcase-session
+                  key: OAUTH2_PROXY_COOKIE_SECRET
+            {{- end }}
           volumeMounts:
             - name: oauth2-htpasswd
               mountPath: /shared/oauth2
@@ -196,7 +217,7 @@ spec:
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
         {{- end }}
-      {{- if .Values.showcase.googleAuth.enabled }}
+      {{- if $oauth }}
       # oauth2-proxy only accepts bcrypt/SHA htpasswd (not nginx apr1).
       # httpd image provides `htpasswd -B`; run before oauth2-proxy starts.
       initContainers:
@@ -237,7 +258,7 @@ spec:
         - name: nginx-template
           configMap:
             name: {{ include "nebuladb.fullname" . }}-showcase-nginx
-        {{- if .Values.showcase.googleAuth.enabled }}
+        {{- if $oauth }}
         - name: oauth2-htpasswd
           emptyDir: {}
         {{- end }}

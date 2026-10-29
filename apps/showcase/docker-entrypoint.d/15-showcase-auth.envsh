@@ -12,6 +12,15 @@
 #   When Google is on, nginx basic auth is forced off; password sign-in
 #   goes through oauth2-proxy --htpasswd-file (shared volume).
 #
+# Password-only session (oauth2-proxy sidecar, no Google):
+#   SHOWCASE_SESSION_LOGIN=true   same gate as Google, but /login shows
+#                                 only the password form. The sidecar's
+#                                 cookie is what keeps users signed in.
+#
+# Plain basic auth (neither of the above) has no session cookie, so the
+# branded form can't sign anyone in: 401 is left to the browser's own
+# username/password prompt.
+#
 # Also writes /usr/share/nginx/html/login-config.json so the public
 # login page knows which methods to show.
 
@@ -31,6 +40,10 @@ login_config=/usr/share/nginx/html/login-config.json
 google_on=false
 case "$(printf '%s' "${SHOWCASE_GOOGLE_AUTH:-false}" | tr '[:upper:]' '[:lower:]')" in
   true|1|yes|on) google_on=true ;;
+esac
+session_on=false
+case "$(printf '%s' "${SHOWCASE_SESSION_LOGIN:-false}" | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes|on) session_on=true ;;
 esac
 
 write_htpasswd() {
@@ -52,7 +65,7 @@ if write_htpasswd; then
   password_on=true
   echo "showcase-auth: htpasswd ready for user '$SHOWCASE_AUTH_USERNAME'" >&2
 fi
-if [ "$google_on" = true ]; then
+if [ "$google_on" = true ] || [ "$session_on" = true ]; then
   # 401 → branded /login (not straight to Google). /login is auth-exempt.
   cat >"$oauth_gate" <<'EOF'
     auth_request /oauth2/auth;
@@ -61,9 +74,11 @@ if [ "$google_on" = true ]; then
     auth_request_set $auth_user $upstream_http_x_auth_request_user;
 EOF
   export SHOWCASE_AUTH_BASIC=off
-  printf '{"google":true,"password":%s,"mode":"google"}\n' \
-    "$([ "$password_on" = true ] && echo true || echo false)" >"$login_config"
-  echo "showcase-auth: Google OAuth gate on → /login (password=$password_on)" >&2
+  mode=session
+  [ "$google_on" = true ] && mode=google
+  printf '{"google":%s,"password":%s,"mode":"%s"}\n' "$google_on" \
+    "$([ "$password_on" = true ] && echo true || echo false)" "$mode" >"$login_config"
+  echo "showcase-auth: oauth2-proxy gate on ($mode) → /login (password=$password_on)" >&2
 else
   echo "# google oauth gate off" >"$oauth_gate"
   case "$(printf '%s' "${SHOWCASE_AUTH_DISABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
@@ -77,16 +92,14 @@ else
       if [ "$password_on" != true ]; then
         echo "showcase-auth: basic auth is on but credentials unset; every login will be refused" >&2
       fi
-      # 401 from basic → /login form (location /login/basic-check keeps the realm).
-      cat >"$oauth_gate" <<'EOF'
-    error_page 401 = @showcase_oauth_start;
-EOF
+      # No 401 → /login rewrite: the browser's prompt is the sign-in.
+      echo "# basic auth: browser prompt" >"$oauth_gate"
       printf '{"google":false,"password":%s,"mode":"basic"}\n' \
         "$([ "$password_on" = true ] && echo true || echo false)" >"$login_config"
-      echo "showcase-auth: basic auth on → /login (password=$password_on)" >&2
+      echo "showcase-auth: basic auth on → browser prompt (password=$password_on)" >&2
       ;;
   esac
 fi
 
-unset showcase_htpasswd oauth_gate login_config google_on password_on
+unset showcase_htpasswd oauth_gate login_config google_on session_on mode password_on
 unset -f write_htpasswd
