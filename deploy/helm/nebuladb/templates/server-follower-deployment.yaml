@@ -11,7 +11,9 @@ metadata:
     {{- include "nebuladb.follower.selectorLabels" . | nindent 4 }}
     {{- include "nebuladb.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.ha.withinRegion.followers | default 1 }}
+  {{- /* `| default 1` would turn an explicit 0 into 1; 0 parks the
+       follower without touching the leader (see values-prod.yaml). */}}
+  replicas: {{ if kindIs "invalid" .Values.ha.withinRegion.followers }}1{{ else }}{{ .Values.ha.withinRegion.followers }}{{ end }}
   selector:
     matchLabels:
       {{- include "nebuladb.follower.selectorLabels" . | nindent 6 }}
