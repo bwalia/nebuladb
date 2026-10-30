@@ -70,9 +70,8 @@ impl CompaniesHouseClient {
                 "companies house HTTP {status}: {body}"
             )));
         }
-        serde_json::from_str(&body).map_err(|e| {
-            ApiError::BadRequest(format!("companies house decode error: {e}: {body}"))
-        })
+        serde_json::from_str(&body)
+            .map_err(|e| ApiError::BadRequest(format!("companies house decode error: {e}: {body}")))
     }
 }
 
@@ -238,9 +237,7 @@ pub fn company_to_rag_docs(company: &Value) -> Vec<(String, String, Value)> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("?"),
                 f.get("date").and_then(|v| v.as_str()).unwrap_or("?"),
-                f.get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?")
+                f.get("description").and_then(|v| v.as_str()).unwrap_or("?")
             ));
         }
         docs.push((
@@ -369,11 +366,7 @@ fn company_locality(company: &Value) -> Option<&str> {
     company
         .pointer("/registered_office_address/locality")
         .and_then(|v| v.as_str())
-        .or_else(|| {
-            company
-                .get("address_snippet")
-                .and_then(|v| v.as_str())
-        })
+        .or_else(|| company.get("address_snippet").and_then(|v| v.as_str()))
 }
 
 pub async fn ch_status(State(s): State<AppState>) -> impl IntoResponse {
@@ -429,7 +422,10 @@ pub async fn ch_company(
     if opts.include_extras {
         let officers = s
             .companies_house
-            .get(&format!("/company/{number}/officers"), &[("items_per_page", "35")])
+            .get(
+                &format!("/company/{number}/officers"),
+                &[("items_per_page", "35")],
+            )
             .await
             .unwrap_or(json!({"items": []}));
         let psc = s
@@ -501,7 +497,10 @@ pub async fn ch_ingest_for_rag(
             .await?;
         let officers = s
             .companies_house
-            .get(&format!("/company/{number}/officers"), &[("items_per_page", "35")])
+            .get(
+                &format!("/company/{number}/officers"),
+                &[("items_per_page", "35")],
+            )
             .await
             .unwrap_or(json!({"items": []}));
         let psc = s
@@ -540,7 +539,10 @@ pub async fn ch_ingest_for_rag(
             .and_then(|v| v.as_str())
             .unwrap_or(number.as_str());
         // Fixture shortcut for the showcase demo company when offline.
-        if company.get("fixture").and_then(|v| v.as_bool()).unwrap_or(false)
+        if company
+            .get("fixture")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
             && number == "11641870"
         {
             Some(WebsiteHit {
@@ -600,4 +602,226 @@ pub async fn ch_ingest_for_rag(
         "fixture": company.get("fixture").and_then(|v| v.as_bool()).unwrap_or(false),
         "company": company,
     })))
+}
+
+#[derive(Deserialize)]
+pub struct SyncAddressBody {
+    /// Bucket holding the bulk-loaded register (`{number}-register` docs).
+    #[serde(default = "default_bucket")]
+    pub bucket: String,
+}
+
+/// The live registered office as one line, in the bulk loader's field
+/// order (scripts/load_companies_house.py) so the two read alike.
+fn live_address_line(company: &Value) -> Option<String> {
+    let a = company.get("registered_office_address")?;
+    let f = |k: &str| {
+        a.get(k)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let line1 = match (f("premises"), f("address_line_1")) {
+        (Some(p), Some(l)) => Some(format!("{p} {l}")),
+        (p, l) => p.or(l).map(str::to_string),
+    };
+    let parts: Vec<String> = [
+        f("care_of").map(str::to_string),
+        f("po_box").map(str::to_string),
+        line1,
+        f("address_line_2").map(str::to_string),
+        f("locality").map(str::to_string),
+        f("region").map(str::to_string),
+        f("country").map(str::to_string),
+        f("postal_code").map(str::to_string),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+/// Upper-case letters and digits only, so "12 High St." and "12 HIGH ST" compare equal.
+fn compact(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// The "Registered office: …." sentence of a register doc, as (start, end) byte offsets.
+fn office_span(text: &str) -> Option<(usize, usize)> {
+    const LABEL: &str = "Registered office: ";
+    let start = text.find(LABEL)?;
+    let rest = &text[start..];
+    let end = [
+        " Nature of business",
+        " Accounts category",
+        " Previous names",
+    ]
+    .iter()
+    .filter_map(|m| rest.find(m))
+    .min()
+    .map(|i| start + i)
+    .unwrap_or(text.len());
+    Some((start, end))
+}
+
+/// Has the registered office moved? The bulk CSV and the live API format
+/// addresses differently (case, premises split, country names), so this
+/// compares the postcode plus the first address line rather than the
+/// whole string, which would flag almost every company as changed.
+fn address_changed(local_text: &str, local_postcode: &str, company: &Value) -> bool {
+    let a = match company.get("registered_office_address") {
+        Some(a) => a,
+        None => return false,
+    };
+    let s = |k: &str| a.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    if compact(s("postal_code")) != compact(local_postcode) {
+        return true;
+    }
+    let first_line = compact(&format!("{}{}", s("premises"), s("address_line_1")));
+    let local_office = office_span(local_text)
+        .map(|(b, e)| compact(&local_text[b..e]))
+        .unwrap_or_default();
+    !first_line.is_empty() && !local_office.contains(&first_line)
+}
+
+/// Swap the registered-office sentence for `addr`, or append one.
+fn rewrite_office(text: &str, addr: &str) -> String {
+    let sentence = format!("Registered office: {addr}.");
+    match office_span(text) {
+        Some((b, e)) => format!("{}{}{}", &text[..b], sentence, &text[e..]),
+        None => format!("{} {sentence}", text.trim_end()),
+    }
+}
+
+/// Compare a company's live registered office with the bulk-loaded copy
+/// in the local register bucket, and rewrite the local doc when it moved.
+/// The bulk CSV is a monthly snapshot, so addresses drift between loads.
+pub async fn ch_sync_address(
+    State(s): State<AppState>,
+    Path(number): Path<String>,
+    Json(body): Json<SyncAddressBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let company = if s.companies_house.configured() {
+        s.companies_house
+            .get(&format!("/company/{number}"), &[])
+            .await?
+    } else {
+        fixture_company(&number)
+    };
+    let live = live_address_line(&company);
+    let doc_id = format!("{number}-register");
+    let Some(doc) = s.index.get(&body.bucket, &doc_id) else {
+        return Ok(Json(json!({
+            "status": "not_local",
+            "bucket": body.bucket,
+            "doc_id": doc_id,
+            "live": live,
+        })));
+    };
+    let local_postcode = doc
+        .metadata
+        .get("postcode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let local = office_span(&doc.text).map(|(b, e)| {
+        doc.text[b..e]
+            .trim_start_matches("Registered office: ")
+            .trim_end_matches('.')
+            .to_string()
+    });
+    let Some(live_line) = live.clone() else {
+        return Ok(Json(
+            json!({"status": "unchanged", "doc_id": doc_id, "local": local, "live": live}),
+        ));
+    };
+    if !address_changed(&doc.text, &local_postcode, &company) {
+        return Ok(Json(
+            json!({"status": "unchanged", "doc_id": doc_id, "local": local, "live": live}),
+        ));
+    }
+
+    let addr = &company["registered_office_address"];
+    let mut meta = doc.metadata.clone();
+    if let Some(m) = meta.as_object_mut() {
+        m.insert("previous_postcode".into(), json!(local_postcode));
+        m.insert(
+            "postcode".into(),
+            addr.get("postal_code").cloned().unwrap_or(json!("")),
+        );
+        m.insert(
+            "post_town".into(),
+            addr.get("locality").cloned().unwrap_or(json!("")),
+        );
+        m.insert("address_source".into(), json!("companies_house_api"));
+        m.insert("address_synced_at_ms".into(), json!(crate::audit::now_ms()));
+    }
+    let text = rewrite_office(&doc.text, &live_line);
+    Arc::clone(&s.index)
+        .upsert_text(&body.bucket, &doc_id, &text, meta)
+        .await
+        .map_err(ApiError::Index)?;
+    Ok(Json(json!({
+        "status": "updated",
+        "bucket": body.bucket,
+        "doc_id": doc_id,
+        "local": local,
+        "live": live,
+    })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LOCAL: &str = "ACME LTD (company number 01234567) is a Private Limited Company registered with UK Companies House. \
+        Status: Active. Registered office: 12 HIGH STREET, LEEDS, ENGLAND, LS1 1AA. Nature of business (SIC): 62012.";
+
+    fn live(premises: &str, line1: &str, postcode: &str) -> Value {
+        json!({"registered_office_address": {
+            "premises": premises, "address_line_1": line1, "locality": "Leeds",
+            "country": "England", "postal_code": postcode
+        }})
+    }
+
+    #[test]
+    fn same_address_in_different_format_is_unchanged() {
+        assert!(!address_changed(
+            LOCAL,
+            "LS1 1AA",
+            &live("12", "High Street", "ls11aa")
+        ));
+    }
+
+    #[test]
+    fn new_postcode_or_street_is_a_change() {
+        assert!(address_changed(
+            LOCAL,
+            "LS1 1AA",
+            &live("12", "High Street", "LS2 9JT")
+        ));
+        assert!(address_changed(
+            LOCAL,
+            "LS1 1AA",
+            &live("4", "Park Row", "LS1 1AA")
+        ));
+    }
+
+    #[test]
+    fn rewrite_replaces_only_the_office_sentence() {
+        let out = rewrite_office(LOCAL, "4 Park Row, Leeds, England, LS1 5HD");
+        assert!(out.contains("Status: Active. Registered office: 4 Park Row, Leeds, England, LS1 5HD. Nature of business"));
+        assert!(!out.contains("HIGH STREET"));
+    }
+
+    #[test]
+    fn live_line_joins_premises_and_street() {
+        assert_eq!(
+            live_address_line(&live("12", "High Street", "LS1 1AA")).as_deref(),
+            Some("12 High Street, Leeds, England, LS1 1AA")
+        );
+    }
 }
