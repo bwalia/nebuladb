@@ -205,7 +205,11 @@ impl TextIndex {
     ) -> Result<VectorRun> {
         let started = Instant::now();
         let metric = self.hnsw.metric();
-        let ids = g.by_bucket.get(bucket).cloned().unwrap_or_default();
+        let ids: Vec<nebula_core::Id> = g
+            .by_bucket
+            .get(bucket)
+            .map(|keys| keys.values().copied().collect())
+            .unwrap_or_default();
         let mut scored: Vec<(nebula_core::Id, f32, &crate::StoredDoc)> =
             Vec::with_capacity(ids.len());
         let mut missing = 0;
@@ -305,7 +309,11 @@ impl TextIndex {
         bucket_docs: usize,
     ) -> Bm25Run {
         let started = Instant::now();
-        let ids = g.by_bucket.get(bucket).cloned().unwrap_or_default();
+        let ids: Vec<nebula_core::Id> = g
+            .by_bucket
+            .get(bucket)
+            .map(|keys| keys.values().copied().collect())
+            .unwrap_or_default();
         let mut scored: Vec<(f32, &crate::StoredDoc)> = Vec::with_capacity(ids.len());
         let mut missing = 0;
         for id in &ids {
@@ -668,8 +676,7 @@ impl TextIndex {
             .map(|(i, h)| {
                 let p = run.parts.get(&h.id).copied().unwrap_or_default();
                 let terms = g
-                    .by_key
-                    .get(&(h.bucket.clone(), h.id.clone()))
+                    .lookup(&h.bucket, &h.id)
                     .map(|id| g.bm25.explain_doc(query, id.0, &h.text))
                     .unwrap_or_default()
                     .into_iter()

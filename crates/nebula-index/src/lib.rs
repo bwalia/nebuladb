@@ -162,9 +162,12 @@ impl DocRef<'_> {
     }
 }
 
+/// One bucket's external id → internal id map (see `Inner::by_bucket`).
+type BucketKeys = AHashMap<Box<str>, Id>;
+
 /// Shared `Arc<str>` for `bucket`, reusing `by_bucket`'s key when the
 /// bucket already exists so every doc in it points at one allocation.
-fn intern_bucket(by_bucket: &AHashMap<Arc<str>, AHashSet<Id>>, bucket: &str) -> Arc<str> {
+fn intern_bucket(by_bucket: &AHashMap<Arc<str>, BucketKeys>, bucket: &str) -> Arc<str> {
     match by_bucket.get_key_value(bucket) {
         Some((k, _)) => Arc::clone(k),
         None => Arc::from(bucket),
@@ -242,19 +245,20 @@ fn min_max_normalize(scores: impl Iterator<Item = f32>) -> Vec<f32> {
 /// Rebuild an `Inner` from serialized-on-disk form. Factored out of
 /// `open_persistent` so the crate's tests can drive it directly.
 fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
-    let mut by_key = AHashMap::with_capacity(state.docs.len());
     let mut docs = AHashMap::with_capacity(state.docs.len());
-    let mut by_bucket: AHashMap<Arc<str>, AHashSet<Id>> = AHashMap::new();
+    let mut by_bucket: AHashMap<Arc<str>, BucketKeys> = AHashMap::new();
     // The BM25 index isn't part of the snapshot — rebuild it from the
     // restored `docs` text (design 0008 §6). Same principle as vectors
     // living only in the HNSW arena: we don't persist derivable state.
     let mut bm25 = Bm25Index::new(Bm25Params::default());
     for d in state.docs {
         let id = Id(d.internal_id);
-        by_key.insert((d.bucket.clone(), d.external_id.clone()), id);
         bm25.add(id.0, &d.text);
         let bucket = intern_bucket(&by_bucket, &d.bucket);
-        by_bucket.entry(Arc::clone(&bucket)).or_default().insert(id);
+        by_bucket
+            .entry(Arc::clone(&bucket))
+            .or_default()
+            .insert(d.external_id.as_str().into(), id);
         // Vectors live in the HNSW snapshot, which is the authority
         // for the vector arena — the doc doesn't carry a copy. The
         // metadata JSON is kept verbatim; `StoredDoc::metadata` gives
@@ -280,7 +284,6 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
         );
     }
     Inner {
-        by_key,
         docs,
         by_bucket,
         parents,
@@ -290,10 +293,8 @@ fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
 }
 
 struct Inner {
-    /// External `(bucket, id)` → internal numeric id the HNSW speaks.
-    by_key: AHashMap<(String, String), Id>,
     /// Internal id → document. Tombstoned docs are removed from this
-    /// map and from `by_key`, but the HNSW tombstone stays — so a
+    /// map and from `by_bucket`, but the HNSW tombstone stays — so a
     /// search returning a dead id is skipped at result-assembly time.
     ///
     /// `Arc` so a snapshot can capture a point-in-time view of the
@@ -301,12 +302,18 @@ struct Inner {
     /// millions of docs) and serialize it after releasing — instead of
     /// holding the lock for the multi-minute serialize.
     docs: AHashMap<Id, Arc<StoredDoc>>,
-    /// Bucket → live internal ids. Lets filtered search scan a small
-    /// bucket exactly instead of over-fetching global HNSW/BM25 and
-    /// hoping post-filter keeps anything (fails when one bucket owns
-    /// millions of docs and another owns four). The key `Arc<str>` is
-    /// also each member doc's `StoredDoc::bucket` (see [`intern_bucket`]).
-    by_bucket: AHashMap<Arc<str>, AHashSet<Id>>,
+    /// Bucket → external id → internal numeric id the HNSW speaks.
+    ///
+    /// The one key index: `(bucket, id)` lookups go through it with
+    /// borrowed `&str`s, and a bucket's values are its live ids, which
+    /// lets filtered search scan a small bucket exactly instead of
+    /// over-fetching global HNSW/BM25 and hoping post-filter keeps
+    /// anything (fails when one bucket owns millions of docs and
+    /// another owns four). Nesting stores each bucket name once — the
+    /// `Arc<str>` key is also every member's `StoredDoc::bucket` (see
+    /// [`intern_bucket`]) — where a flat `(String, String)` map kept a
+    /// copy per doc. Maintained only by `insert_doc` / `remove_doc`.
+    by_bucket: AHashMap<Arc<str>, BucketKeys>,
     /// `(bucket, parent_doc_id)` → set of chunk external ids. Lets
     /// `delete_document` find every chunk to tombstone without
     /// scanning the whole `docs` map.
@@ -322,14 +329,23 @@ struct Inner {
 }
 
 impl Inner {
-    /// Insert (or replace) a document, keeping `docs`, `by_bucket`, and
-    /// the BM25 index in sync. The single choke point for adding to the
+    /// Internal id for `(bucket, external_id)`. No allocation.
+    fn lookup(&self, bucket: &str, external_id: &str) -> Option<Id> {
+        self.by_bucket.get(bucket)?.get(external_id).copied()
+    }
+
+    /// Insert a document, keeping `docs`, `by_bucket`, and the BM25
+    /// index in sync. Callers remove any previous doc under the same
+    /// key first. The single choke point for adding to the
     /// corpus — every caller routes through here so the lexical index
     /// and bucket membership can never silently fall behind the doc map.
     fn insert_doc(&mut self, id: Id, doc: Document) {
         self.bm25.add(id.0, &doc.text);
         let bucket = intern_bucket(&self.by_bucket, &doc.bucket);
-        self.by_bucket.entry(Arc::clone(&bucket)).or_default().insert(id);
+        self.by_bucket
+            .entry(Arc::clone(&bucket))
+            .or_default()
+            .insert(doc.external_id.as_str().into(), id);
         self.docs.insert(id, Arc::new(StoredDoc::new(bucket, doc)));
     }
 
@@ -343,9 +359,12 @@ impl Inner {
             // removal finds every posting it created.
             Some(d) => {
                 self.bm25.remove_text(id.0, &d.text);
-                if let Some(set) = self.by_bucket.get_mut(&*d.bucket) {
-                    set.remove(&id);
-                    if set.is_empty() {
+                if let Some(keys) = self.by_bucket.get_mut(&*d.bucket) {
+                    // Only drop the key if it still names this doc.
+                    if keys.get(&*d.external_id) == Some(&id) {
+                        keys.remove(&*d.external_id);
+                    }
+                    if keys.is_empty() {
                         self.by_bucket.remove(&*d.bucket);
                     }
                 }
@@ -395,7 +414,6 @@ impl TextIndex {
             hnsw,
             len_cache: std::sync::atomic::AtomicUsize::new(0),
             inner: RwLock::new(Inner {
-                by_key: AHashMap::new(),
                 docs: AHashMap::new(),
                 by_bucket: AHashMap::new(),
                 parents: AHashMap::new(),
@@ -528,7 +546,6 @@ impl TextIndex {
                         let _ = std::fs::create_dir_all(&snapshots_dir);
                         let hnsw = Hnsw::new(dim, metric, config.clone())?;
                         let inner = Inner {
-                            by_key: AHashMap::new(),
                             docs: AHashMap::new(),
                             by_bucket: AHashMap::new(),
                             parents: AHashMap::new(),
@@ -545,7 +562,6 @@ impl TextIndex {
                 None => {
                     let hnsw = Hnsw::new(dim, metric, config.clone())?;
                     let inner = Inner {
-                        by_key: AHashMap::new(),
                         docs: AHashMap::new(),
                         by_bucket: AHashMap::new(),
                         parents: AHashMap::new(),
@@ -842,16 +858,14 @@ impl TextIndex {
         parent_doc_id: Option<String>,
         chunk_index: Option<usize>,
     ) -> Result<()> {
-        let key = (bucket.to_string(), external_id.to_string());
         let mut g = self.inner.write();
 
-        if let Some(&old_id) = g.by_key.get(&key) {
+        if let Some(old_id) = g.lookup(bucket, external_id) {
             if self.is_unchanged(&g, old_id, text, &vector, &metadata, &parent_doc_id, chunk_index) {
                 return Ok(());
             }
             let _ = self.hnsw.delete(old_id);
             g.remove_doc(old_id);
-            g.by_key.remove(&key);
         }
 
         // Probe insert with the candidate id; only commit `next_id`
@@ -864,7 +878,6 @@ impl TextIndex {
         }
         g.next_id += 1;
 
-        g.by_key.insert(key, new_internal_id);
         g.insert_doc(
             new_internal_id,
             Document {
@@ -965,15 +978,13 @@ impl TextIndex {
             let mut inserted = 0usize;
             let mut g = self.inner.write();
             for ((id, text, meta), vec) in items.iter().zip(vectors.iter()) {
-                let key = (bucket.to_string(), id.clone());
-                if let Some(&old_id) = g.by_key.get(&key) {
+                if let Some(old_id) = g.lookup(bucket, id) {
                     if self.is_unchanged(&g, old_id, text, vec, meta, &None, None) {
                         inserted += 1;
                         continue;
                     }
                     let _ = self.hnsw.delete(old_id);
                     g.remove_doc(old_id);
-                    g.by_key.remove(&key);
                 }
                 // Bump `next_id` only after the HNSW accepts the
                 // insert. Otherwise a failure here permanently burns
@@ -984,7 +995,6 @@ impl TextIndex {
                     continue;
                 }
                 g.next_id += 1;
-                g.by_key.insert(key, new_id);
                 g.insert_doc(
                     new_id,
                     Document {
@@ -1004,8 +1014,9 @@ impl TextIndex {
 
     pub fn get(&self, bucket: &str, external_id: &str) -> Option<Document> {
         let g = self.inner.read();
-        let key = (bucket.to_string(), external_id.to_string());
-        g.by_key.get(&key).and_then(|id| g.docs.get(id)).map(|d| d.to_document())
+        g.lookup(bucket, external_id)
+            .and_then(|id| g.docs.get(&id))
+            .map(|d| d.to_document())
     }
 
     /// Call `f` for every live document in `bucket` (no vectors — texts
@@ -1016,11 +1027,11 @@ impl TextIndex {
         F: FnMut(DocRef<'_>),
     {
         let g = self.inner.read();
-        let Some(ids) = g.by_bucket.get(bucket) else {
+        let Some(keys) = g.by_bucket.get(bucket) else {
             return 0;
         };
         let mut n = 0;
-        for id in ids {
+        for id in keys.values() {
             if let Some(doc) = g.docs.get(id) {
                 f(doc.view());
                 n += 1;
@@ -1048,8 +1059,7 @@ impl TextIndex {
     /// In-memory apply shared by the public path and WAL replay.
     fn delete_internal(&self, bucket: &str, external_id: &str) -> Result<()> {
         let mut g = self.inner.write();
-        let key = (bucket.to_string(), external_id.to_string());
-        let id = g.by_key.remove(&key).ok_or_else(|| IndexError::DocNotFound {
+        let id = g.lookup(bucket, external_id).ok_or_else(|| IndexError::DocNotFound {
             bucket: bucket.to_string(),
             id: external_id.to_string(),
         })?;
@@ -1161,8 +1171,7 @@ impl TextIndex {
         let parent_key = (bucket.to_string(), doc_id.to_string());
         if let Some(existing) = g.parents.remove(&parent_key) {
             for external_id in existing {
-                let key = (bucket.to_string(), external_id.clone());
-                if let Some(id) = g.by_key.remove(&key) {
+                if let Some(id) = g.lookup(bucket, &external_id) {
                     g.remove_doc(id);
                     let _ = self.hnsw.delete(id);
                 }
@@ -1179,8 +1188,7 @@ impl TextIndex {
             let id = Id(g.next_id);
             if let Err(e) = self.hnsw.insert(id, &chunk.vector) {
                 for prev_external in &parent_set {
-                    let pk = (bucket.to_string(), prev_external.clone());
-                    if let Some(prev_id) = g.by_key.remove(&pk) {
+                    if let Some(prev_id) = g.lookup(bucket, prev_external) {
                         g.remove_doc(prev_id);
                         let _ = self.hnsw.delete(prev_id);
                     }
@@ -1188,8 +1196,6 @@ impl TextIndex {
                 return Err(IndexError::Core(e));
             }
             g.next_id += 1;
-            g.by_key
-                .insert((bucket.to_string(), external_id.clone()), id);
             g.insert_doc(
                 id,
                 Document {
@@ -1241,8 +1247,7 @@ impl TextIndex {
         };
         let n = chunks.len();
         for external_id in chunks {
-            let key = (bucket.to_string(), external_id);
-            if let Some(id) = g.by_key.remove(&key) {
+            if let Some(id) = g.lookup(bucket, &external_id) {
                 g.remove_doc(id);
                 let _ = self.hnsw.delete(id);
             }
@@ -1306,8 +1311,6 @@ impl TextIndex {
                 let mut g = self.inner.write();
                 for id in chunk {
                     if let Some(doc) = g.remove_doc(*id) {
-                        let key = (doc.bucket.to_string(), doc.external_id.to_string());
-                        g.by_key.remove(&key);
                         if let Some(parent) = &doc.parent_doc_id {
                             g.parents.remove(&(doc.bucket.to_string(), parent.to_string()));
                         }
@@ -2215,9 +2218,52 @@ mod tests {
         let g = idx.inner.read();
         let (key, ids) = g.by_bucket.get_key_value("shared").unwrap();
         assert_eq!(ids.len(), 3);
-        for id in ids {
+        for id in ids.values() {
             assert!(Arc::ptr_eq(key, &g.docs[id].bucket));
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn key_index_stays_consistent_with_docs() {
+        // `by_bucket` is the only key index and is maintained solely by
+        // insert_doc/remove_doc; every key-changing path must leave it
+        // naming exactly the live docs.
+        fn check(idx: &TextIndex) {
+            let g = idx.inner.read();
+            let mut keyed = 0;
+            for (bucket, keys) in &g.by_bucket {
+                assert!(!keys.is_empty(), "empty bucket {bucket} left behind");
+                for (ext, id) in keys {
+                    let d = &g.docs[id];
+                    assert_eq!((&*d.bucket, &*d.external_id), (&**bucket, &**ext));
+                    keyed += 1;
+                }
+            }
+            assert_eq!(keyed, g.docs.len());
+        }
+        let idx = make_index();
+        let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
+        idx.upsert_text("a", "1", "one", serde_json::json!({})).await.unwrap();
+        idx.upsert_text("a", "1", "one changed", serde_json::json!({})).await.unwrap();
+        idx.upsert_text_bulk("a", &[("2".into(), "two".into(), serde_json::json!({})),
+            ("2".into(), "two again".into(), serde_json::json!({}))]).await.unwrap();
+        idx.upsert_document("b", "d", "aaaaabbbbbccccc", &chunker, serde_json::json!({})).await.unwrap();
+        check(&idx);
+        assert_eq!(idx.get("a", "1").unwrap().text, "one changed");
+        assert_eq!(idx.get("a", "2").unwrap().text, "two again");
+
+        idx.upsert_document("b", "d", "xxxxx", &chunker, serde_json::json!({})).await.unwrap();
+        check(&idx);
+        assert!(idx.get("b", "d#1").is_none(), "replaced chunks are gone");
+        idx.delete("a", "1").unwrap();
+        assert!(idx.delete("a", "1").is_err());
+        check(&idx);
+        idx.delete_document("b", "d").unwrap();
+        check(&idx);
+        assert_eq!(idx.bucket_names(), vec!["a".to_string()]);
+        idx.empty_bucket("a");
+        check(&idx);
+        assert!(idx.bucket_names().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
