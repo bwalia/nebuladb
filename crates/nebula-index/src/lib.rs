@@ -69,6 +69,108 @@ pub struct Document {
     pub chunk_index: Option<usize>,
 }
 
+/// Resident form of a [`Document`] — what `Inner.docs` actually holds.
+///
+/// `Document` is the API shape; keeping it as the in-RAM shape cost
+/// ~4.1 KB/doc on prod (design 0014 §2), most of it the metadata
+/// `serde_json::Value` tree: a BTreeMap node plus an owned key and
+/// value allocation per field, several times its ~340-byte JSON text.
+/// Here metadata is that compact JSON text, parsed only when a caller
+/// needs the value (top-k hit assembly, `get`, export). The bucket is
+/// an `Arc<str>` shared with `Inner.by_bucket`'s key instead of a
+/// per-doc copy of e.g. `"companies_house"`, and the immutable strings
+/// are `Box<str>` so they carry no capacity slack.
+#[derive(Debug)]
+pub(crate) struct StoredDoc {
+    pub(crate) bucket: Arc<str>,
+    pub(crate) external_id: Box<str>,
+    pub(crate) text: Box<str>,
+    /// Compact JSON — the same text the WAL and snapshot carry.
+    pub(crate) metadata_json: Box<str>,
+    pub(crate) parent_doc_id: Option<Box<str>>,
+    pub(crate) chunk_index: Option<usize>,
+}
+
+impl StoredDoc {
+    fn new(bucket: Arc<str>, doc: Document) -> Self {
+        Self {
+            bucket,
+            external_id: doc.external_id.into_boxed_str(),
+            text: doc.text.into_boxed_str(),
+            metadata_json: doc.metadata.to_string().into_boxed_str(),
+            parent_doc_id: doc.parent_doc_id.map(String::into_boxed_str),
+            chunk_index: doc.chunk_index,
+        }
+    }
+
+    /// Parsed metadata. Unparseable JSON reads as `Null`, the same
+    /// fallback snapshot load and WAL replay have always applied.
+    pub(crate) fn metadata(&self) -> serde_json::Value {
+        serde_json::from_str(&self.metadata_json).unwrap_or(serde_json::Value::Null)
+    }
+
+    fn to_document(&self) -> Document {
+        Document {
+            bucket: self.bucket.to_string(),
+            external_id: self.external_id.to_string(),
+            text: self.text.to_string(),
+            metadata: self.metadata(),
+            parent_doc_id: self.parent_doc_id.as_deref().map(str::to_owned),
+            chunk_index: self.chunk_index,
+        }
+    }
+
+    fn view(&self) -> DocRef<'_> {
+        DocRef {
+            bucket: &self.bucket,
+            external_id: &self.external_id,
+            text: &self.text,
+            parent_doc_id: self.parent_doc_id.as_deref(),
+            chunk_index: self.chunk_index,
+            metadata_json: &self.metadata_json,
+        }
+    }
+
+    pub(crate) fn hit(&self, score: f32) -> Hit {
+        Hit {
+            bucket: self.bucket.to_string(),
+            id: self.external_id.to_string(),
+            text: self.text.to_string(),
+            score,
+            metadata: self.metadata(),
+        }
+    }
+}
+
+/// Borrowed view of a stored document, handed to
+/// [`TextIndex::for_each_doc_in_bucket`] callbacks so a full-bucket
+/// walk allocates nothing unless the caller asks for it.
+#[derive(Debug, Clone, Copy)]
+pub struct DocRef<'a> {
+    pub bucket: &'a str,
+    pub external_id: &'a str,
+    pub text: &'a str,
+    pub parent_doc_id: Option<&'a str>,
+    pub chunk_index: Option<usize>,
+    metadata_json: &'a str,
+}
+
+impl DocRef<'_> {
+    /// Parsed metadata (`Null` if unparseable).
+    pub fn metadata(&self) -> serde_json::Value {
+        serde_json::from_str(self.metadata_json).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// Shared `Arc<str>` for `bucket`, reusing `by_bucket`'s key when the
+/// bucket already exists so every doc in it points at one allocation.
+fn intern_bucket(by_bucket: &AHashMap<Arc<str>, AHashSet<Id>>, bucket: &str) -> Arc<str> {
+    match by_bucket.get_key_value(bucket) {
+        Some((k, _)) => Arc::clone(k),
+        None => Arc::from(bucket),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Hit {
     pub bucket: String,
@@ -142,28 +244,30 @@ fn min_max_normalize(scores: impl Iterator<Item = f32>) -> Vec<f32> {
 fn inner_from_serialized(state: durability::SerializedDocState) -> Inner {
     let mut by_key = AHashMap::with_capacity(state.docs.len());
     let mut docs = AHashMap::with_capacity(state.docs.len());
-    let mut by_bucket: AHashMap<String, AHashSet<Id>> = AHashMap::new();
+    let mut by_bucket: AHashMap<Arc<str>, AHashSet<Id>> = AHashMap::new();
     // The BM25 index isn't part of the snapshot — rebuild it from the
     // restored `docs` text (design 0008 §6). Same principle as vectors
     // living only in the HNSW arena: we don't persist derivable state.
     let mut bm25 = Bm25Index::new(Bm25Params::default());
     for d in state.docs {
-        let metadata: serde_json::Value = serde_json::from_str(&d.metadata_json)
-            .unwrap_or(serde_json::Value::Null);
         let id = Id(d.internal_id);
         by_key.insert((d.bucket.clone(), d.external_id.clone()), id);
         bm25.add(id.0, &d.text);
-        by_bucket.entry(d.bucket.clone()).or_default().insert(id);
+        let bucket = intern_bucket(&by_bucket, &d.bucket);
+        by_bucket.entry(Arc::clone(&bucket)).or_default().insert(id);
         // Vectors live in the HNSW snapshot, which is the authority
-        // for the vector arena — `Document` no longer carries a copy.
+        // for the vector arena — the doc doesn't carry a copy. The
+        // metadata JSON is kept verbatim; `StoredDoc::metadata` gives
+        // the same `Null` fallback for a bad string that parsing it
+        // here used to.
         docs.insert(
             id,
-            Arc::new(Document {
-                bucket: d.bucket,
-                external_id: d.external_id,
-                text: d.text,
-                metadata,
-                parent_doc_id: d.parent_doc_id,
+            Arc::new(StoredDoc {
+                bucket,
+                external_id: d.external_id.into_boxed_str(),
+                text: d.text.into_boxed_str(),
+                metadata_json: d.metadata_json.into_boxed_str(),
+                parent_doc_id: d.parent_doc_id.map(String::into_boxed_str),
                 chunk_index: d.chunk_index,
             }),
         );
@@ -196,12 +300,13 @@ struct Inner {
     /// whole corpus by bumping refcounts under the lock (~100ms for
     /// millions of docs) and serialize it after releasing — instead of
     /// holding the lock for the multi-minute serialize.
-    docs: AHashMap<Id, Arc<Document>>,
+    docs: AHashMap<Id, Arc<StoredDoc>>,
     /// Bucket → live internal ids. Lets filtered search scan a small
     /// bucket exactly instead of over-fetching global HNSW/BM25 and
     /// hoping post-filter keeps anything (fails when one bucket owns
-    /// millions of docs and another owns four).
-    by_bucket: AHashMap<String, AHashSet<Id>>,
+    /// millions of docs and another owns four). The key `Arc<str>` is
+    /// also each member doc's `StoredDoc::bucket` (see [`intern_bucket`]).
+    by_bucket: AHashMap<Arc<str>, AHashSet<Id>>,
     /// `(bucket, parent_doc_id)` → set of chunk external ids. Lets
     /// `delete_document` find every chunk to tombstone without
     /// scanning the whole `docs` map.
@@ -223,24 +328,25 @@ impl Inner {
     /// and bucket membership can never silently fall behind the doc map.
     fn insert_doc(&mut self, id: Id, doc: Document) {
         self.bm25.add(id.0, &doc.text);
-        self.by_bucket.entry(doc.bucket.clone()).or_default().insert(id);
-        self.docs.insert(id, Arc::new(doc));
+        let bucket = intern_bucket(&self.by_bucket, &doc.bucket);
+        self.by_bucket.entry(Arc::clone(&bucket)).or_default().insert(id);
+        self.docs.insert(id, Arc::new(StoredDoc::new(bucket, doc)));
     }
 
     /// Remove a document by internal id from `docs`, `by_bucket`, and the
-    /// BM25 index. Returns the removed `Document`, mirroring
+    /// BM25 index. Returns the removed doc, mirroring
     /// `HashMap::remove`, so callers keep their existing control flow.
-    fn remove_doc(&mut self, id: Id) -> Option<Arc<Document>> {
+    fn remove_doc(&mut self, id: Id) -> Option<Arc<StoredDoc>> {
         let doc = self.docs.remove(&id);
         match &doc {
             // `insert_doc` indexed exactly `doc.text`, so the targeted
             // removal finds every posting it created.
             Some(d) => {
                 self.bm25.remove_text(id.0, &d.text);
-                if let Some(set) = self.by_bucket.get_mut(&d.bucket) {
+                if let Some(set) = self.by_bucket.get_mut(&*d.bucket) {
                     set.remove(&id);
                     if set.is_empty() {
-                        self.by_bucket.remove(&d.bucket);
+                        self.by_bucket.remove(&*d.bucket);
                     }
                 }
             }
@@ -254,7 +360,7 @@ impl Inner {
 /// `TextIndex::freeze_for_snapshot`.
 struct FrozenState {
     next_id: u64,
-    docs: Vec<(Id, Arc<Document>)>,
+    docs: Vec<(Id, Arc<StoredDoc>)>,
     parents: AHashMap<(String, String), AHashSet<String>>,
     hnsw: FrozenHnsw,
 }
@@ -711,9 +817,9 @@ impl TextIndex {
         chunk_index: Option<usize>,
     ) -> bool {
         g.docs.get(&old_id).is_some_and(|d| {
-            d.text == text
-                && d.metadata == *metadata
-                && d.parent_doc_id == *parent_doc_id
+            *d.text == *text
+                && d.metadata() == *metadata
+                && d.parent_doc_id.as_deref() == parent_doc_id.as_deref()
                 && d.chunk_index == chunk_index
         }) && self.hnsw.stores_same_vector(old_id, vector)
     }
@@ -899,7 +1005,7 @@ impl TextIndex {
     pub fn get(&self, bucket: &str, external_id: &str) -> Option<Document> {
         let g = self.inner.read();
         let key = (bucket.to_string(), external_id.to_string());
-        g.by_key.get(&key).and_then(|id| g.docs.get(id)).map(|d| Document::clone(d))
+        g.by_key.get(&key).and_then(|id| g.docs.get(id)).map(|d| d.to_document())
     }
 
     /// Call `f` for every live document in `bucket` (no vectors — texts
@@ -907,7 +1013,7 @@ impl TextIndex {
     /// materialising the full export (vectors would 2× RAM).
     pub fn for_each_doc_in_bucket<F>(&self, bucket: &str, mut f: F) -> usize
     where
-        F: FnMut(&Document),
+        F: FnMut(DocRef<'_>),
     {
         let g = self.inner.read();
         let Some(ids) = g.by_bucket.get(bucket) else {
@@ -916,7 +1022,7 @@ impl TextIndex {
         let mut n = 0;
         for id in ids {
             if let Some(doc) = g.docs.get(id) {
-                f(doc);
+                f(doc.view());
                 n += 1;
             }
         }
@@ -926,7 +1032,7 @@ impl TextIndex {
     /// Bucket names currently holding at least one live doc.
     pub fn bucket_names(&self) -> Vec<String> {
         let g = self.inner.read();
-        let mut names: Vec<_> = g.by_bucket.keys().cloned().collect();
+        let mut names: Vec<String> = g.by_bucket.keys().map(|b| b.to_string()).collect();
         names.sort();
         names
     }
@@ -948,9 +1054,9 @@ impl TextIndex {
             id: external_id.to_string(),
         })?;
         if let Some(doc) = g.remove_doc(id) {
-            if let Some(parent) = doc.parent_doc_id.clone() {
+            if let Some(parent) = doc.parent_doc_id.as_deref().map(str::to_owned) {
                 if let Some(set) = g.parents.get_mut(&(bucket.to_string(), parent.clone())) {
-                    set.remove(&doc.external_id);
+                    set.remove(&*doc.external_id);
                     if set.is_empty() {
                         g.parents.remove(&(bucket.to_string(), parent));
                     }
@@ -1189,7 +1295,7 @@ impl TextIndex {
             let g = self.inner.read();
             g.docs
                 .iter()
-                .filter(|(_, d)| d.bucket == bucket)
+                .filter(|(_, d)| *d.bucket == *bucket)
                 .map(|(id, _)| *id)
                 .collect()
         };
@@ -1200,10 +1306,10 @@ impl TextIndex {
                 let mut g = self.inner.write();
                 for id in chunk {
                     if let Some(doc) = g.remove_doc(*id) {
-                        let key = (doc.bucket.clone(), doc.external_id.clone());
+                        let key = (doc.bucket.to_string(), doc.external_id.to_string());
                         g.by_key.remove(&key);
                         if let Some(parent) = &doc.parent_doc_id {
-                            g.parents.remove(&(doc.bucket.clone(), parent.clone()));
+                            g.parents.remove(&(doc.bucket.to_string(), parent.to_string()));
                         }
                     }
                 }
@@ -1234,7 +1340,7 @@ impl TextIndex {
         let g = self.inner.read();
         let mut out = Vec::new();
         for (id, doc) in g.docs.iter() {
-            if doc.bucket != bucket {
+            if *doc.bucket != *bucket {
                 continue;
             }
             // Re-fetch the vector from the HNSW arena. The in-memory
@@ -1243,10 +1349,10 @@ impl TextIndex {
             // is correct in both cases.
             let vector = self.hnsw.get_vector(*id).unwrap_or_default();
             out.push(ExportedDoc {
-                external_id: doc.external_id.clone(),
-                text: doc.text.clone(),
-                metadata: doc.metadata.clone(),
-                parent_doc_id: doc.parent_doc_id.clone(),
+                external_id: doc.external_id.to_string(),
+                text: doc.text.to_string(),
+                metadata: doc.metadata(),
+                parent_doc_id: doc.parent_doc_id.as_deref().map(str::to_owned),
                 chunk_index: doc.chunk_index,
                 vector,
             });
@@ -1573,38 +1679,50 @@ impl TextIndex {
         // guard held the read lock for the whole walk — 3.2s on prod —
         // and with a writer queued behind us parking_lot then blocks
         // every NEW reader (SQL, search) for the duration.
-        let docs: Vec<Arc<Document>> = self.inner.read().docs.values().cloned().collect();
+        let docs: Vec<Arc<StoredDoc>> = self.inner.read().docs.values().cloned().collect();
         // Per-bucket accumulator. A struct is clearer than a 3-tuple
         // and silences clippy::type_complexity.
         //
-        // Everything borrows from `docs`: the previous owned version
-        // cloned the bucket name and every metadata key PER DOC (~10
-        // String allocations × corpus size). Borrowing keeps the walk
-        // allocation-free; we clone only the unique bucket names /
-        // keys once, at output assembly.
+        // Bucket names and parents borrow from `docs`. Metadata is
+        // stored as JSON text, so its keys are parsed out — and only
+        // when the caller asked for them: most callers pass 0 and just
+        // want counts.
         struct Acc<'a> {
             docs: usize,
             parents: AHashSet<&'a str>,
-            keys: AHashMap<&'a str, usize>,
+            keys: AHashMap<String, usize>,
         }
         let mut per_bucket: AHashMap<&str, Acc<'_>> = AHashMap::new();
         for doc in &docs {
-            let entry = per_bucket.entry(doc.bucket.as_str()).or_insert_with(|| Acc {
+            let entry = per_bucket.entry(&*doc.bucket).or_insert_with(|| Acc {
                 docs: 0,
                 parents: AHashSet::new(),
                 keys: AHashMap::new(),
             });
             entry.docs += 1;
             if let Some(parent) = &doc.parent_doc_id {
-                entry.parents.insert(parent.as_str());
+                entry.parents.insert(parent);
+            }
+            if top_metadata_keys == 0 {
+                continue;
             }
             // Count top-level metadata keys only. Nested JSON would
             // require a recursive walk; metadata is conventionally
             // flat, and a deep walk would skew the "popular key"
-            // signal we're actually trying to expose.
-            if let serde_json::Value::Object(map) = &doc.metadata {
-                for k in map.keys() {
-                    *entry.keys.entry(k.as_str()).or_insert(0) += 1;
+            // signal we're actually trying to expose. Values are
+            // skipped unparsed; non-object metadata fails the parse
+            // and contributes no keys, as before.
+            let Ok(map) = serde_json::from_str::<
+                std::collections::BTreeMap<String, serde::de::IgnoredAny>,
+            >(&doc.metadata_json) else {
+                continue;
+            };
+            for k in map.into_keys() {
+                match entry.keys.get_mut(k.as_str()) {
+                    Some(n) => *n += 1,
+                    None => {
+                        entry.keys.insert(k, 1);
+                    }
                 }
             }
         }
@@ -1612,16 +1730,16 @@ impl TextIndex {
         let mut out: Vec<BucketStats> = per_bucket
             .into_iter()
             .map(|(bucket, acc)| {
-                let mut kv: Vec<(&str, usize)> = acc.keys.into_iter().collect();
+                let mut kv: Vec<(String, usize)> = acc.keys.into_iter().collect();
                 // Sort by frequency desc, then key name for stable
                 // output in the UI (no "columns jumping around").
-                kv.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+                kv.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
                 kv.truncate(top_metadata_keys);
                 BucketStats {
                     bucket: bucket.to_owned(),
                     docs: acc.docs,
                     parent_docs: acc.parents.len(),
-                    metadata_keys: kv.into_iter().map(|(k, n)| (k.to_owned(), n)).collect(),
+                    metadata_keys: kv,
                 }
             })
             .collect();
@@ -2053,6 +2171,100 @@ mod tests {
         let b = stats.iter().find(|s| s.bucket == "b").unwrap();
         assert_eq!(b.docs, 1);
         assert_eq!(b.parent_docs, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn metadata_round_trips_through_compact_storage() {
+        // Metadata is stored as compact JSON text and parsed on read;
+        // every reader must get back a `Value` equal to what was written.
+        let idx = make_index();
+        let meta = serde_json::json!({
+            "nested": {"a": [1, 2.5, -3, null, true]},
+            "big": u64::MAX,
+            "quote": "say \"hi\"\n",
+            "unicode": "Zürich ✓",
+        });
+        idx.upsert_text("b", "1", "alpha", meta.clone()).await.unwrap();
+        idx.upsert_text("b", "2", "beta", serde_json::Value::Null).await.unwrap();
+
+        assert_eq!(idx.get("b", "1").unwrap().metadata, meta);
+        assert_eq!(idx.get("b", "2").unwrap().metadata, serde_json::Value::Null);
+        let hits = idx.search_bm25("alpha", Some("b"), 5);
+        assert_eq!(hits[0].metadata, meta);
+        let mut seen = Vec::new();
+        idx.for_each_doc_in_bucket("b", |d| seen.push((d.external_id.to_owned(), d.metadata())));
+        seen.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(seen, vec![("1".into(), meta.clone()), ("2".into(), serde_json::Value::Null)]);
+
+        // An equal re-upsert is still recognised as unchanged.
+        let before = idx.hnsw.len();
+        idx.upsert_text("b", "1", "alpha", meta).await.unwrap();
+        assert_eq!(idx.hnsw.len(), before, "identical metadata must not re-insert");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn docs_share_the_bucket_name_allocation() {
+        // Every doc in a bucket points at the `by_bucket` key instead of
+        // owning its own copy of the name.
+        let idx = make_index();
+        for i in 0..3 {
+            idx.upsert_text("shared", &i.to_string(), "t", serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        let g = idx.inner.read();
+        let (key, ids) = g.by_bucket.get_key_value("shared").unwrap();
+        assert_eq!(ids.len(), 3);
+        for id in ids {
+            assert!(Arc::ptr_eq(key, &g.docs[id].bucket));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bucket_stats_without_keys_still_counts() {
+        let idx = make_index();
+        idx.upsert_text("a", "1", "x", serde_json::json!({"k": 1})).await.unwrap();
+        idx.upsert_text("a", "2", "x", serde_json::json!("not an object")).await.unwrap();
+        let s = idx.bucket_stats(0);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].docs, 2);
+        assert!(s[0].metadata_keys.is_empty());
+        // Non-object metadata contributes no keys when keys are asked for.
+        assert_eq!(idx.bucket_stats(5)[0].metadata_keys, vec![("k".to_string(), 1)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn snapshot_recovery_preserves_documents_and_metadata() {
+        // Snapshot + recovery restores identical documents, chunks and
+        // stats from the compact in-RAM form.
+        let data = tempfile::tempdir().unwrap();
+        let idx = persistent_index(data.path(), None);
+        idx.upsert_text("leads", "l1", "County: Kent", serde_json::json!({"score": 0.25, "tags": ["x"]}))
+            .await
+            .unwrap();
+        idx.upsert_text("leads", "l2", "County: Essex", serde_json::Value::Null).await.unwrap();
+        let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
+        idx.upsert_document("docs", "d", "aaaaabbbbb", &chunker, serde_json::json!({"src": "pdf"}))
+            .await
+            .unwrap();
+        let keys = [("leads", "l1"), ("leads", "l2"), ("docs", "d#0"), ("docs", "d#1")];
+        let before: Vec<_> = keys
+            .iter()
+            .map(|(b, k)| serde_json::to_value(idx.get(b, k).unwrap()).unwrap())
+            .collect();
+        let stats_before = idx.bucket_stats(10);
+        idx.snapshot().unwrap();
+        drop(idx);
+
+        let rec = persistent_index(data.path(), None);
+        let after: Vec<_> = keys
+            .iter()
+            .map(|(b, k)| serde_json::to_value(rec.get(b, k).unwrap()).unwrap())
+            .collect();
+        assert_eq!(before, after);
+        assert_eq!(stats_before, rec.bucket_stats(10));
+        assert_eq!(rec.count_chunks("docs", "d"), 2);
+        assert_eq!(rec.search_bm25("essex", Some("leads"), 3)[0].id, "l2");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

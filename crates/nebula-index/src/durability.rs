@@ -39,7 +39,7 @@ use nebula_core::Id;
 use nebula_vector::{FrozenHnsw, HnswSnapshot};
 use nebula_wal::WalError;
 
-use crate::{Document, IndexError, Result};
+use crate::{IndexError, Result, StoredDoc};
 
 /// File naming + atomic-rename dance:
 ///
@@ -133,11 +133,11 @@ pub struct ParentEntry {
 /// bincode's wire format depends only on field order + element
 /// shape, not on struct names. Existing `.nsnap` files load
 /// unchanged via `load_latest_snapshot`.
-pub fn write_snapshot_streaming(
+pub(crate) fn write_snapshot_streaming(
     dir: &Path,
     wal_seq: u64,
     next_id: u64,
-    docs: &[(Id, Arc<Document>)],
+    docs: &[(Id, Arc<StoredDoc>)],
     parents: &AHashMap<(String, String), AHashSet<String>>,
     hnsw: &FrozenHnsw,
 ) -> Result<PathBuf> {
@@ -233,13 +233,10 @@ struct SerializedDocView<'a> {
     bucket: &'a str,
     external_id: &'a str,
     text: &'a str,
-    /// `serde_json::Value::to_string` allocates a per-doc String. We
-    /// can't borrow here without changing the wire format. The
-    /// allocation lives just long enough to serialize this one doc,
-    /// so peak overhead is bounded by the largest single document's
-    /// metadata — not the whole bucket like the old clone-then-write
-    /// path.
-    metadata_json: String,
+    /// Borrowed straight from `StoredDoc::metadata_json`. bincode
+    /// writes `&str` and `String` identically, so the wire format is
+    /// unchanged and no per-doc string is allocated.
+    metadata_json: &'a str,
     parent_doc_id: Option<&'a str>,
     chunk_index: Option<usize>,
 }
@@ -251,7 +248,7 @@ struct ParentEntryView<'a> {
     external_ids: ExternalIdsSeqView<'a>,
 }
 
-struct DocsSeqView<'a>(&'a [(Id, Arc<Document>)]);
+struct DocsSeqView<'a>(&'a [(Id, Arc<StoredDoc>)]);
 
 impl<'a> Serialize for DocsSeqView<'a> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
@@ -262,7 +259,7 @@ impl<'a> Serialize for DocsSeqView<'a> {
                 bucket: &doc.bucket,
                 external_id: &doc.external_id,
                 text: &doc.text,
-                metadata_json: doc.metadata.to_string(),
+                metadata_json: &doc.metadata_json,
                 parent_doc_id: doc.parent_doc_id.as_deref(),
                 chunk_index: doc.chunk_index,
             })?;
@@ -457,4 +454,84 @@ fn io_to_index(e: std::io::Error) -> IndexError {
 /// transitive `From`.
 pub fn wal_err(e: WalError) -> IndexError {
     IndexError::Invalid(format!("wal: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The borrowed views must emit exactly the bytes the owned
+    /// `SnapshotHeader` would, or existing `.nsnap` files stop loading.
+    #[test]
+    fn streaming_matches_owned() {
+        let docs: Vec<(Id, Arc<StoredDoc>)> = vec![
+            (
+                Id(3),
+                Arc::new(StoredDoc {
+                    bucket: Arc::from("leads"),
+                    external_id: "l-1".into(),
+                    text: "County: Kent".into(),
+                    metadata_json: r#"{"n":1.5,"tags":["a","é"],"x":null}"#.into(),
+                    parent_doc_id: None,
+                    chunk_index: None,
+                }),
+            ),
+            (
+                Id(9),
+                Arc::new(StoredDoc {
+                    bucket: Arc::from("docs"),
+                    external_id: "d#0".into(),
+                    text: "chunk".into(),
+                    metadata_json: "null".into(),
+                    parent_doc_id: Some("d".into()),
+                    chunk_index: Some(0),
+                }),
+            ),
+        ];
+        let mut parents: AHashMap<(String, String), AHashSet<String>> = AHashMap::new();
+        parents.insert(
+            ("docs".into(), "d".into()),
+            ["d#0".to_string()].into_iter().collect(),
+        );
+
+        let view = SnapshotHeaderView {
+            version: 1,
+            wal_seq_at_snapshot: 42,
+            taken_at_ms: 7,
+            docs: SerializedDocStateView {
+                next_id: 10,
+                docs: DocsSeqView(&docs),
+                parents: ParentsSeqView(&parents),
+            },
+        };
+        let owned = SnapshotHeader {
+            version: 1,
+            wal_seq_at_snapshot: 42,
+            taken_at_ms: 7,
+            docs: SerializedDocState {
+                next_id: 10,
+                docs: docs
+                    .iter()
+                    .map(|(id, d)| SerializedDoc {
+                        internal_id: id.0,
+                        bucket: d.bucket.to_string(),
+                        external_id: d.external_id.to_string(),
+                        text: d.text.to_string(),
+                        metadata_json: d.metadata_json.to_string(),
+                        parent_doc_id: d.parent_doc_id.as_deref().map(str::to_owned),
+                        chunk_index: d.chunk_index,
+                    })
+                    .collect(),
+                parents: vec![ParentEntry {
+                    bucket: "docs".into(),
+                    parent_doc_id: "d".into(),
+                    external_ids: vec!["d#0".into()],
+                }],
+            },
+        };
+        assert_eq!(
+            bincode::serialize(&view).unwrap(),
+            bincode::serialize(&owned).unwrap()
+        );
+    }
 }

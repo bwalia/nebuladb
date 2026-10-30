@@ -237,10 +237,10 @@ impl EmbedMigrateHub {
                     return;
                 }
                 let line = DumpLine {
-                    bucket: doc.bucket.clone(),
-                    id: doc.external_id.clone(),
-                    text: doc.text.clone(),
-                    metadata: doc.metadata.clone(),
+                    bucket: doc.bucket.to_owned(),
+                    id: doc.external_id.to_owned(),
+                    text: doc.text.to_owned(),
+                    metadata: doc.metadata(),
                 };
                 if let Ok(js) = serde_json::to_string(&line) {
                     let _ = writeln!(w, "{js}");
