@@ -9,7 +9,7 @@
  * without one the component degrades to a short hint instead of breaking.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GoogleMap, useJsApiLoader, MarkerF, InfoWindowF } from "@react-google-maps/api";
+import { GoogleMap, useJsApiLoader, MarkerF, InfoWindowF, CircleF } from "@react-google-maps/api";
 
 export interface MapCompany {
   company_number?: string;
@@ -18,6 +18,9 @@ export interface MapCompany {
   address_snippet?: string;
   /** UK postcode, used to geocode the pin. */
   postcode?: string;
+  /** Known coordinates; when set the postcode is not geocoded again. */
+  lat?: number;
+  lng?: number;
 }
 
 const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? "";
@@ -27,7 +30,7 @@ const CONTAINER = { width: "100%", height: "20rem" } as const;
 const norm = (p: string) => (p || "").toUpperCase().replace(/\s+/g, "");
 
 /** Bulk-geocode UK postcodes via postcodes.io. Returns normalised-postcode -> {lat,lng}. */
-async function geocodePostcodes(
+export async function geocodePostcodes(
   postcodes: string[],
   signal: AbortSignal,
 ): Promise<Record<string, { lat: number; lng: number }>> {
@@ -67,10 +70,13 @@ export function CompaniesMap({
   companies,
   selected,
   onSelect,
+  circle,
 }: {
   companies: MapCompany[];
   selected: string | null;
   onSelect: (companyNumber: string) => void;
+  /** Optional search radius to draw, e.g. 100 miles around central London. */
+  circle?: { lat: number; lng: number; miles: number };
 }) {
   const { isLoaded } = useJsApiLoader({ id: "companies-house-map", googleMapsApiKey: MAPS_KEY });
   const [coords, setCoords] = useState<Record<string, { lat: number; lng: number }>>({});
@@ -85,7 +91,10 @@ export function CompaniesMap({
 
   useEffect(() => {
     const ctrl = new AbortController();
-    const postcodes = companies.map((c) => c.postcode).filter((p): p is string => !!p);
+    const postcodes = companies
+      .filter((c) => c.lat == null || c.lng == null)
+      .map((c) => c.postcode)
+      .filter((p): p is string => !!p);
     if (postcodes.length === 0) {
       setCoords({});
     } else {
@@ -98,7 +107,12 @@ export function CompaniesMap({
   const pins = useMemo<Pin[]>(() => {
     const out: Pin[] = [];
     for (const c of companies) {
-      const ll = c.postcode ? coords[norm(c.postcode)] : undefined;
+      const ll =
+        c.lat != null && c.lng != null
+          ? { lat: c.lat, lng: c.lng }
+          : c.postcode
+            ? coords[norm(c.postcode)]
+            : undefined;
       if (ll) out.push({ ...c, ...ll });
     }
     return out;
@@ -107,7 +121,15 @@ export function CompaniesMap({
   // Frame all the pins once they (and the map) are ready.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || pins.length === 0) return;
+    if (!map) return;
+    if (circle) {
+      // Frame the whole search area rather than just the pins inside it.
+      const c = new google.maps.Circle({ center: circle, radius: circle.miles * 1609.344 });
+      const b = c.getBounds();
+      if (b) map.fitBounds(b, 16);
+      return;
+    }
+    if (pins.length === 0) return;
     if (pins.length === 1) {
       map.setCenter({ lat: pins[0].lat, lng: pins[0].lng });
       map.setZoom(13);
@@ -116,7 +138,7 @@ export function CompaniesMap({
     const bounds = new google.maps.LatLngBounds();
     for (const p of pins) bounds.extend({ lat: p.lat, lng: p.lng });
     map.fitBounds(bounds, 48);
-  }, [pins]);
+  }, [pins, circle]);
 
   if (!MAPS_KEY) {
     return (
@@ -148,6 +170,20 @@ export function CompaniesMap({
         }}
         options={{ streetViewControl: false, mapTypeControl: false }}
       >
+        {circle && (
+          <CircleF
+            center={{ lat: circle.lat, lng: circle.lng }}
+            radius={circle.miles * 1609.344}
+            options={{
+              strokeColor: "#4C8DFF",
+              strokeOpacity: 0.8,
+              strokeWeight: 1.5,
+              fillColor: "#4C8DFF",
+              fillOpacity: 0.06,
+              clickable: false,
+            }}
+          />
+        )}
         {pins.map((p) => (
           <MarkerF
             key={p.company_number}

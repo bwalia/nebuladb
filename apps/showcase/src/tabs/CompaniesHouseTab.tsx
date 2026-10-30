@@ -3,6 +3,7 @@ import { api, ApiError, type Hit } from "../api";
 import { sseStream } from "../sse";
 import { ErrorBanner, JsonView, Panel, Spinner, Stat } from "../components";
 import { CompaniesMap } from "../CompaniesMap";
+import { CompaniesExplorer } from "./CompaniesExplorer";
 
 interface ChHit {
   company_number?: string;
@@ -23,6 +24,18 @@ interface SourceInfo {
   email?: string | null;
   found?: boolean;
 }
+
+type AddressSync = Awaited<ReturnType<typeof api.companiesHouseSyncAddress>>;
+
+const SEARCH_EXAMPLES = ["Tesco", "Rolls-Royce Holdings", "Monzo Bank", "Octopus Energy", "00445790"];
+
+const QUESTION_EXAMPLES = [
+  "Who are the directors?",
+  "Who has significant control?",
+  "What was filed most recently?",
+  "Where is the registered office?",
+  "What is the company website?",
+];
 
 interface Turn {
   query: string;
@@ -59,6 +72,8 @@ export function CompaniesHouseTab() {
   const [firecrawl, setFirecrawl] = useState<boolean | null>(null);
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [addressSync, setAddressSync] = useState<AddressSync | "checking" | null>(null);
+  const companyRef = useRef<HTMLDivElement | null>(null);
   const [chatBusy, setChatBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   // Scope retrieval to one company: RAG only filters by bucket, so a
@@ -81,11 +96,11 @@ export function CompaniesHouseTab() {
     }).catch(() => setConfigured(false));
   }, []);
 
-  const search = async () => {
+  const search = async (query = q) => {
     setErr(null);
     setBusy(true);
     try {
-      const r = await api.companiesHouseSearch(q);
+      const r = await api.companiesHouseSearch(query);
       setHits((r.items as ChHit[]) ?? []);
       setFixture(Boolean(r.fixture));
       if (r.message) setStatusMsg(String(r.message));
@@ -103,11 +118,19 @@ export function CompaniesHouseTab() {
     setSources([]);
     setWebsite(null);
     setErr(null);
+    setAddressSync(null);
     setBusy(true);
     try {
       const c = await api.companiesHouseCompany(number);
       setCompany(c);
       setFixture(Boolean(c.fixture));
+      requestAnimationFrame(() => companyRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+      // Keep the bulk-loaded register copy in step with the live address.
+      setAddressSync("checking");
+      api
+        .companiesHouseSyncAddress(number)
+        .then(setAddressSync)
+        .catch(() => setAddressSync(null));
     } catch (e) {
       if (e instanceof ApiError) setErr(`${e.code}: ${e.body}`);
       else setErr((e as Error).message);
@@ -145,8 +168,8 @@ export function CompaniesHouseTab() {
     }
   };
 
-  const ask = useCallback(async () => {
-    const query = input.trim();
+  const ask = useCallback(async (asked?: string) => {
+    const query = (asked ?? input).trim();
     if (!query) return;
     setInput("");
     setChatBusy(true);
@@ -227,6 +250,26 @@ export function CompaniesHouseTab() {
             {busy ? <Spinner /> : "Search"}
           </button>
         </div>
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          <span className="eyebrow self-center mr-1">Try</span>
+          {SEARCH_EXAMPLES.map((ex) => (
+            <button
+              key={ex}
+              type="button"
+              onClick={() => {
+                setQ(ex);
+                void search(ex);
+              }}
+              className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                q === ex
+                  ? "border-accent text-accent bg-accent/10"
+                  : "border-gray-200 dark:border-edge text-gray-600 dark:text-muted hover:border-accent/60"
+              }`}
+            >
+              {ex}
+            </button>
+          ))}
+        </div>
         {err && <div className="mt-3"><ErrorBanner err={err} /></div>}
         {hits.length > 0 && (
           <ul className="mt-3 divide-y divide-gray-200 dark:divide-edge max-h-64 overflow-auto">
@@ -263,8 +306,12 @@ export function CompaniesHouseTab() {
         )}
       </Panel>
 
+      <CompaniesExplorer onPick={(n) => void select(n)} />
+
       {company && (
+        <div ref={companyRef}>
         <Panel title={name} subtitle={`Company ${selected}`}>
+          <AddressSyncNote sync={addressSync} />
           <div className="flex flex-wrap gap-3 mb-3 items-end">
             <Stat label="status" value={String(company.company_status ?? "—")} />
             <Stat label="type" value={String(company.type ?? company.company_type ?? "—")} />
@@ -325,6 +372,7 @@ export function CompaniesHouseTab() {
             <JsonView value={company} />
           </details>
         </Panel>
+        </div>
       )}
 
       <Panel
@@ -336,6 +384,21 @@ export function CompaniesHouseTab() {
             <TurnCard key={i} turn={t} />
           ))}
         </div>
+        {selected && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {QUESTION_EXAMPLES.map((ex) => (
+              <button
+                key={ex}
+                type="button"
+                disabled={chatBusy}
+                onClick={() => void ask(ex)}
+                className="rounded-full border border-gray-200 dark:border-edge px-2.5 py-1 text-xs text-gray-600 dark:text-muted hover:border-accent/60 disabled:opacity-50"
+              >
+                {ex}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex gap-2">
           <input
             className="input flex-1"
@@ -357,6 +420,41 @@ export function CompaniesHouseTab() {
         </div>
       </Panel>
     </div>
+  );
+}
+
+/** Result of checking the live registered office against the local register copy. */
+function AddressSyncNote({ sync }: { sync: AddressSync | "checking" | null }) {
+  if (!sync) return null;
+  const box = "mb-3 text-xs rounded border px-3 py-2";
+  if (sync === "checking") {
+    return <p className={`${box} border-gray-200 dark:border-edge opacity-70`}>Checking the registered office against the local register copy…</p>;
+  }
+  if (sync.status === "updated") {
+    return (
+      <div className={`${box} border-amber-400/60 bg-amber-50 dark:bg-amber-950/30`}>
+        <div className="font-medium">Registered office has moved. Local register copy updated.</div>
+        <div className="mt-1 opacity-80">
+          <span className="line-through">{sync.local ?? "—"}</span>
+          <span className="mx-1">→</span>
+          <span>{sync.live}</span>
+        </div>
+        <div className="mt-1 opacity-60 font-mono">{sync.doc_id} re-embedded with the new address</div>
+      </div>
+    );
+  }
+  if (sync.status === "unchanged") {
+    return (
+      <p className={`${box} border-gray-200 dark:border-edge`}>
+        <span className="dot dot-ok mr-1.5" />
+        Local register copy matches Companies House: {sync.live ?? sync.local}
+      </p>
+    );
+  }
+  return (
+    <p className={`${box} border-gray-200 dark:border-edge opacity-70`}>
+      Not in the local register copy ({sync.doc_id}), so there is no address to keep in sync.
+    </p>
   );
 }
 

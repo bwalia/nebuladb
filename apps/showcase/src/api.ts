@@ -496,6 +496,18 @@ export const api = {
       `/api/v1/companies-house/company/${encodeURIComponent(number)}?include_extras=true`
     ),
 
+  /** Compare the live registered office with the bulk-loaded register doc; rewrite it if it moved. */
+  companiesHouseSyncAddress: (number: string, bucket = "companies_house") =>
+    request<{
+      status: "updated" | "unchanged" | "not_local";
+      doc_id: string;
+      local?: string | null;
+      live?: string | null;
+    }>(`/api/v1/companies-house/company/${encodeURIComponent(number)}/sync-address`, {
+      method: "POST",
+      body: JSON.stringify({ bucket }),
+    }),
+
   companiesHouseIngest: (number: string, bucket = "companies_house") =>
     request<{
       upserted?: string[];
