@@ -7,6 +7,7 @@
  * (loader logs, /admin/reliability, kubectl). Nothing is simulated.
  */
 import { useEffect, useState, type ReactNode } from "react";
+import { BLUEPRINTS, GUIDE_BLUEPRINTS, IntentTable, RagArchitectureDiagram } from "../components/RagArchitecture";
 
 export interface PostMeta {
   slug: string;
@@ -18,6 +19,15 @@ export interface PostMeta {
 }
 
 export const POSTS: PostMeta[] = [
+  {
+    slug: "rag-apps-quickly-with-nebula-mcp",
+    kind: "Tech note",
+    title: "How to set up a NebulaDB RAG application quickly, with NebulaDB MCP",
+    date: "2026-10-30",
+    readMins: 10,
+    summary:
+      "One production architecture for shopping, insurance, legal search, estate agents and HMRC Self Assessment: gateway, guardrails, semantic cache, router, RAG, CDC and a human in the loop, and how to stand up the NebulaDB parts from Claude.",
+  },
   {
     slug: "leaving-mock-384",
     kind: "Blog",
@@ -84,7 +94,9 @@ export function BlogTab() {
         ← All posts
       </button>
       <PostHeader post={post} />
-      {post.slug === "leaving-mock-384" ? (
+      {post.slug === "rag-apps-quickly-with-nebula-mcp" ? (
+        <RagGuidePost />
+      ) : post.slug === "leaving-mock-384" ? (
         <LeavingMockPost />
       ) : post.slug === "48gi-without-a-restart" ? (
         <BlogPost onOpen={open} />
@@ -895,6 +907,256 @@ kubectl -n prod patch pod "$POD" --subresource resize --type json -p \\
           </ul>
         </div>
       </nav>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Post: setting up a RAG app quickly with NebulaDB MCP                 */
+/* ------------------------------------------------------------------ */
+
+function UseCaseSwitcher() {
+  const [id, setId] = useState<string>(GUIDE_BLUEPRINTS[0]);
+  const bp = BLUEPRINTS[id];
+  return (
+    <figure className="my-2 space-y-3 rounded-lg border border-gray-200 bg-white p-4 dark:border-edge dark:bg-carbon-950">
+      <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Use case">
+        {GUIDE_BLUEPRINTS.map((b) => (
+          <button
+            key={b}
+            role="tab"
+            aria-selected={b === id}
+            onClick={() => setId(b)}
+            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+              b === id
+                ? "border-accent bg-accent/10 text-accent"
+                : "border-gray-200 text-gray-600 hover:border-gray-400 dark:border-edge dark:text-muted"
+            }`}
+          >
+            {BLUEPRINTS[b].label}
+          </button>
+        ))}
+      </div>
+      <p className="text-sm text-gray-700 dark:text-gray-300">{bp.pitch}</p>
+      <RagArchitectureDiagram bp={bp} />
+      <IntentTable bp={bp} />
+      {bp.notes && (
+        <ul className="list-disc space-y-1 pl-5 text-xs text-gray-600 dark:text-muted">
+          {bp.notes.map((n) => <li key={n}>{n}</li>)}
+        </ul>
+      )}
+      <figcaption className="text-xs leading-relaxed text-gray-500 dark:text-muted">
+        <span className="font-semibold text-gray-700 dark:text-ink">Figure 1.</span> One architecture, five
+        businesses. Only the labels change: the client, the knowledge you ingest, the system of record, the
+        domain API and who the human in the loop is. Blue boxes are NebulaDB; white boxes are your
+        application; amber is a person.
+      </figcaption>
+    </figure>
+  );
+}
+
+function RagGuidePost() {
+  return (
+    <div className="space-y-6">
+      <UseCaseSwitcher />
+      <Prose>
+        <p>
+          Most RAG demos stop at "embed some PDFs and ask a question". Production apps need more around that
+          core: authentication, guardrails on the way in and out, a cache so popular questions do not pay for
+          an LLM call, a router that sends exact questions (price, stock, a balance) to the system of record
+          instead of the model, a way to keep the index fresh, and a person for the decisions software should
+          not make alone.
+        </p>
+        <p>
+          Figure 1 is that architecture. This note shows which parts NebulaDB gives you, which you build, and
+          how to stand up the NebulaDB parts in an afternoon by driving them from Claude through the NebulaDB
+          MCP server.
+        </p>
+
+        <H2 id="who">1. Who provides what</H2>
+        <Table
+          head={["Stage", "Provided by", "How"]}
+          rows={[
+            ["API gateway", "NebulaDB", "Bearer API keys (NEBULA_API_KEYS) and per-key rate limiting on the REST API"],
+            ["Input guardrails", "Your app", "Prompt-injection and topic checks, redaction of account numbers and personal data"],
+            ["Semantic cache", "NebulaDB", "A bucket of answered questions, looked up by similarity before any LLM call"],
+            ["Router (intent)", "Your app or an agent", "Classify the request, then call retrieval, SQL, a domain API or a person"],
+            ["RAG retrieval", "NebulaDB", "Vector + BM25 hybrid search and semantic_match() in SQL with metadata filters"],
+            ["Ingestion", "NebulaDB", "insert_document chunks and embeds server-side; re-using a doc_id upserts"],
+            ["CDC", "NebulaDB (crate)", "nebula-cdc tails the WAL and hands each write to a webhook or JSONL consumer"],
+            ["LLM", "Configured provider", "/rag/answer grounds the configured model on the retrieved context and cites it"],
+            ["Output guardrails", "Your app", "No personal data, no invented numbers, citations present"],
+            ["Human in the loop", "A person", "Approvals your business or the law says software must not make alone"],
+          ]}
+        />
+        <Callout tone="info" title="Be clear about the boundary">
+          NebulaDB is the retrieval, cache and ingestion layer. It does not ship guardrails or an intent
+          router, and you should not let it pretend to: those encode your business rules and belong in your
+          code, where they can be tested.
+        </Callout>
+
+        <H2 id="run">2. Run NebulaDB and the MCP server</H2>
+        <p>
+          <C>nebula-mcp</C> is a Model Context Protocol server that turns every MCP tool call into a REST call
+          on NebulaDB, forwarding the caller's bearer token, so an agent gets exactly the permissions of its
+          API key and nothing more.
+        </p>
+        <Code title="local: everything, including nebula-mcp">{`./scripts/start.sh            # server, Ollama, showcase; nebula-mcp behind the showcase at /mcp
+# or just the two binaries:
+cargo run --release -p nebula-server                       # REST on :8080
+NEBULA_MCP_UPSTREAM_URL=http://localhost:8080 \\
+  cargo run --release -p nebula-mcp                        # MCP on :8090/mcp`}</Code>
+        <Code title="connect Claude Code to it">{`claude mcp add --transport http nebuladb http://127.0.0.1:8090/mcp
+# with start.sh, use the showcase URL it prints instead: http://localhost:<port>/mcp`}</Code>
+        <p>
+          The tools you will use for a RAG app are <C>insert_document</C>, <C>semantic_search</C>,{" "}
+          <C>execute_sql</C>, <C>answer_question</C>, <C>get_document</C>, <C>delete_document</C> and{" "}
+          <C>list_buckets</C>. <C>remember</C> and <C>recall</C> add per-user long-term memory, and the ops
+          tools (<C>cluster_health</C>, <C>reliability_status</C>, <C>slow_queries</C>) help once you are live.
+        </p>
+
+        <H2 id="ingest">3. Load the knowledge</H2>
+        <p>
+          A bucket is created by its first write. Put anything you will filter on into metadata, because
+          filters in SQL are exact while the text is matched by meaning. Ask Claude to load your files, or call
+          the tool directly:
+        </p>
+        <Code title="MCP · insert_document (estate agent listing)">{`{
+  "bucket": "property_listings",
+  "doc_id": "LST-101",
+  "text": "3-bed terrace in Bristol, £465,000, EPC C. South-facing garden, loft room, 8 min walk to Temple Meads.",
+  "metadata": { "area": "Bristol", "price_gbp": 465000, "bedrooms": 3, "type": "terrace", "epc": "C" }
+}`}</Code>
+        <p>
+          Use a stable business key as <C>doc_id</C> (a SKU, policy number, listing ID, transaction ID).
+          Re-running the load then updates documents in place instead of duplicating them, which makes it
+          safe to schedule.
+        </p>
+
+        <H2 id="retrieve">4. Retrieve: meaning plus hard filters</H2>
+        <p>
+          <C>semantic_search</C> is enough for "find things like this". When the user also has hard
+          constraints, put both in one SQL statement so the filters are applied exactly:
+        </p>
+        <Code title="MCP · execute_sql (buyer brief + budget)">{`SELECT * FROM property_listings
+WHERE semantic_match(text, 'quiet family home with a garden near good schools')
+  AND price_gbp <= 500000
+  AND bedrooms >= 3
+LIMIT 10`}</Code>
+        <p>
+          Set <C>hybrid: true</C> on <C>semantic_search</C> when exact words matter as much as meaning: clause
+          names in contracts, product codes, merchant names on a bank statement.
+        </p>
+
+        <H2 id="answer">5. Answer with citations</H2>
+        <Code title="MCP · answer_question (insurance)">{`{ "query": "Is accidental damage to a laptop covered away from home?",
+  "bucket": "policy_docs", "top_k": 5, "hybrid": true }`}</Code>
+        <p>
+          The response carries the answer and the context it was grounded on. Show those citations to the
+          user, and have your output guardrail reject an answer that has none.
+        </p>
+
+        <H2 id="cache">6. Add a semantic cache</H2>
+        <p>
+          Before calling the LLM, look the question up in a cache bucket. If a previously answered question
+          is close enough, return its answer; otherwise answer, then store the new pair.
+        </p>
+        <Code title="cache flow (your router, pseudocode)">{`hit = semantic_search(query, bucket="llm_semantic_cache", top_k=1)
+if hit and hit.similarity >= 0.85:          # tune per app; the threshold is the whole policy
+    return hit.metadata.answer
+ans = answer_question(query, bucket=SOURCE_BUCKET)
+insert_document(bucket="llm_semantic_cache", doc_id=hash(query), text=query,
+                metadata={"answer": ans.answer, "source_ids": ans.context_ids})`}</Code>
+        <p>
+          The <em>Semantic cache</em> demo in the sidebar lets you move the threshold and watch hits turn into
+          misses. Never cache answers that depend on the user (their order, their policy, their balance): route
+          those around the cache.
+        </p>
+
+        <H2 id="fresh">7. Keep it fresh with CDC</H2>
+        <p>
+          A cached answer is only as good as the documents behind it. Store the source document IDs with each
+          cached answer, and when a source document changes, delete the cached answers that cite it.
+        </p>
+        <p>
+          <C>nebula-cdc</C> provides this as a stream: it subscribes to the write-ahead log and hands every
+          committed write to a consumer (a webhook POST or a JSONL file). It ships as a Rust crate and is not
+          yet switched on in the stock server, so until it is, the simplest correct approach is to invalidate
+          the cache from the same job that writes the source document.
+        </p>
+
+        <H2 id="guard">8. Guardrails, routing and the human in the loop</H2>
+        <ul className="list-disc space-y-1 pl-5">
+          <li>
+            <strong>Route exact questions away from the model.</strong> Prices, stock, balances, claim status
+            and tax totals come from the system of record. The LLM explains; it does not supply numbers.
+          </li>
+          <li>
+            <strong>Filter before you generate.</strong> Pass the user's entitlements (their policy, their
+            matter, their tenant) as SQL filters, so retrieval never returns a document they may not see.
+          </li>
+          <li>
+            <strong>Make hand-off a first-class route.</strong> Payouts, legal advice, viewings and tax
+            submissions go to a person with the draft and its evidence attached.
+          </li>
+        </ul>
+
+        <H2 id="tax">9. Worked example: bank transactions to a Self Assessment return</H2>
+        <p>
+          The HMRC use case shows every box in Figure 1 earning its place. A sole trader connects their
+          business bank account; the goal is a draft Self Assessment return they only have to check.
+        </p>
+        <H3>Ingest every transaction</H3>
+        <Code title="MCP · insert_document (one bank transaction)">{`{
+  "bucket": "bank_transactions",
+  "doc_id": "txn-2026-04-07-0012",
+  "text": "07/04/2026 SCREWFIX DIRECT card payment -£86.40",
+  "metadata": { "tax_year": "2026-27", "amount_gbp": -86.40, "merchant": "SCREWFIX",
+                "category": "", "reviewed": "no" }
+}`}</Code>
+        <H3>Categorise from the nearest reviewed transactions</H3>
+        <Code title="MCP · execute_sql">{`SELECT * FROM bank_transactions
+WHERE semantic_match(text, 'SCREWFIX DIRECT card payment')
+  AND reviewed = 'yes'
+LIMIT 5`}</Code>
+        <p>
+          If the reviewed neighbours agree on a category, apply it. If they disagree, or there are none (a new
+          merchant, a payment that might be personal), the transaction goes to the review queue instead of
+          being guessed. Every decision the person makes becomes a new reviewed example, so the queue shrinks
+          month by month. The merchant-to-category cache answers repeat merchants without any search at all.
+        </p>
+        <H3>Answer "is this allowable?" from HMRC guidance</H3>
+        <p>
+          Ingest the HMRC guidance you rely on into <C>hmrc_guidance</C> and use <C>answer_question</C> with
+          citations, so the explanation shown to the user points at the guidance it came from.
+        </p>
+        <H3>Totals come from the ledger, not the model</H3>
+        <p>
+          The return's figures are sums over the categorised rows in your ledger, the system of record. Do not
+          ask the LLM to add up, and do not use NebulaDB SQL aggregates for this: in NebulaDB an aggregate runs
+          over a semantic match's results, which is right for analytics over a relevant set but not for a total
+          that has to include every transaction.
+        </p>
+        <Callout tone="warn" title="Automate the work, not the declaration">
+          The software can categorise, total and draft the return, and submit it through HMRC's Making Tax
+          Digital APIs. The taxpayer is still the one declaring it correct, so the submit step stays behind an
+          explicit approval by the taxpayer or their accountant, with the evidence for each figure attached.
+        </Callout>
+
+        <H2 id="checklist">10. Checklist</H2>
+        <ol className="list-decimal space-y-1 pl-5">
+          <li>One bucket per corpus; stable business keys as <C>doc_id</C>; filterable fields in metadata.</li>
+          <li>Run <C>nebula-mcp</C> with a least-privilege API key for the agent.</li>
+          <li>Retrieve with <C>semantic_match</C> plus exact filters; turn on <C>hybrid</C> for exact terms.</li>
+          <li>Answer with citations, and reject answers without them.</li>
+          <li>Cache by similarity, never per-user answers, and invalidate on source changes.</li>
+          <li>Route numbers to the system of record and decisions to a person.</li>
+        </ol>
+        <p>
+          Each industry demo in the sidebar now has a <em>Production architecture</em> panel showing this
+          diagram for its own use case.
+        </p>
+      </Prose>
     </div>
   );
 }

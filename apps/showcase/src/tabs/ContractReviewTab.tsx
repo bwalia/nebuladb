@@ -16,6 +16,7 @@ import {
   type PlaybookMeta,
   type Risk,
 } from "../rag/data/contracts";
+import { ArchitecturePanel } from "../components/RagArchitecture";
 
 /**
  * Contract Review: split a vendor contract into clauses, classify each
@@ -664,6 +665,7 @@ export function ContractReviewTab() {
 
   return (
     <div className="space-y-4">
+      <ArchitecturePanel id="legal" />
       <Panel
         title="Contract"
         subtitle="Paste a vendor contract or pick a sample. Each clause is reviewed against the buyer's playbook (England & Wales)."

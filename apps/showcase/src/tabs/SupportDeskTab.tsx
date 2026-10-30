@@ -32,6 +32,7 @@ import {
   type InboxTicket,
   type Plan,
 } from "../rag/data/support";
+import { ArchitecturePanel } from "../components/RagArchitecture";
 
 const NEIGHBOURS = 12;
 
@@ -170,6 +171,7 @@ export function SupportDeskTab() {
 
   return (
     <div className="space-y-4">
+      <ArchitecturePanel id="support" />
       <SeedBanner seed={seed} />
 
       <div className="grid gap-4 lg:grid-cols-[18rem_1fr]">

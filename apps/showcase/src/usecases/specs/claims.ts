@@ -52,6 +52,7 @@ const DOCS: SeedDoc[] = [
 
 export const claimsSpec: UseCaseSpec = {
   bucket: "insurance_claims",
+  blueprint: "insurance",
   seedVersion: "claims-v1",
   docs: DOCS,
   noun: "documents",

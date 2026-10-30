@@ -48,6 +48,7 @@ const DOCS: SeedDoc[] = [
 
 export const clinicalSpec: UseCaseSpec = {
   bucket: "clinical_guidelines",
+  blueprint: "clinical",
   seedVersion: "clinical-v1",
   docs: DOCS,
   noun: "guidelines",

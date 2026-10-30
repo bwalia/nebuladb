@@ -18,6 +18,7 @@ import {
   SIGNALS,
   type RootCause,
 } from "../rag/data/incidents";
+import { ArchitecturePanel } from "../components/RagArchitecture";
 
 interface Incident {
   id: string;
@@ -288,6 +289,7 @@ export function IncidentCopilotTab() {
 
   return (
     <div className="space-y-4">
+      <ArchitecturePanel id="incidents" />
       <Panel
         title="Incident Copilot"
         subtitle="Paste an alert → find similar past incidents and runbooks → triage with evidence → chat as incident commander"
