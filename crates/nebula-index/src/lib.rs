@@ -203,6 +203,14 @@ pub struct ExportedDoc {
     pub vector: Vec<f32>,
 }
 
+/// What one [`TextIndex::trim_memory`] pass visited.
+#[derive(Debug, Clone, Default)]
+pub struct TrimStats {
+    pub graph_nodes: usize,
+    pub posting_lists: usize,
+    pub took: std::time::Duration,
+}
+
 /// Return of a successful `TextIndex::snapshot()`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SnapshotOutcome {
@@ -1038,6 +1046,35 @@ impl TextIndex {
             }
         }
         n
+    }
+
+    /// One full pass releasing spare capacity in the index's small
+    /// per-node and per-term allocations: HNSW adjacency lists and BM25
+    /// posting lists (also dropping postings lazy removal left behind).
+    /// Both grow by doubling during ingest and never shrink, so a
+    /// long-running node holds a lot of allocated-but-unused memory.
+    ///
+    /// Works in batches of `batch` nodes / terms and releases the lock
+    /// between batches, so it can run on a serving node: readers and
+    /// writers wait at most one batch. Search results are unaffected.
+    pub fn trim_memory(&self, batch: usize) -> TrimStats {
+        let batch = batch.max(1);
+        let started = std::time::Instant::now();
+        let mut stats = TrimStats::default();
+        let mut next = 0;
+        while let Some(end) = self.hnsw.trim_adjacency(next, batch) {
+            stats.graph_nodes += end - next;
+            next = end;
+        }
+        loop {
+            let visited = self.inner.write().bm25.trim_postings(stats.posting_lists, batch);
+            stats.posting_lists += visited;
+            if visited < batch {
+                break;
+            }
+        }
+        stats.took = started.elapsed();
+        stats
     }
 
     /// Bucket names currently holding at least one live doc.
@@ -2264,6 +2301,39 @@ mod tests {
         idx.empty_bucket("a");
         check(&idx);
         assert!(idx.bucket_names().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trim_memory_keeps_results_and_visits_everything() {
+        let idx = make_index();
+        for i in 0..300 {
+            idx.upsert_text("b", &i.to_string(), &format!("county kent lead {i}"), serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        // Churn leaves dead postings and tombstoned graph nodes behind.
+        for i in (0..300).step_by(3) {
+            idx.upsert_text("b", &i.to_string(), &format!("county essex lead {i}"), serde_json::json!({}))
+                .await
+                .unwrap();
+        }
+        let q = |idx: &TextIndex| {
+            let bm: Vec<_> = idx.search_bm25("kent", None, 20).into_iter().map(|h| h.id).collect();
+            bm
+        };
+        let before = q(&idx);
+        let vbefore: Vec<_> = idx.search_text("essex", None, 10, None).await.unwrap().into_iter().map(|h| h.id).collect();
+
+        // Batch of 7 forces many lock-released steps.
+        let stats = idx.trim_memory(7);
+        assert_eq!(stats.graph_nodes, idx.hnsw.len(), "every graph node visited");
+        assert!(stats.posting_lists > 0);
+        assert_eq!(q(&idx), before);
+        let vafter: Vec<_> = idx.search_text("essex", None, 10, None).await.unwrap().into_iter().map(|h| h.id).collect();
+        assert_eq!(vafter, vbefore);
+        // Writes still work after a trim.
+        idx.upsert_text("b", "new", "county kent fresh", serde_json::json!({})).await.unwrap();
+        assert!(idx.search_bm25("fresh", None, 5).iter().any(|h| h.id == "new"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

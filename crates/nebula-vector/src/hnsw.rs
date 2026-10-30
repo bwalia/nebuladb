@@ -428,6 +428,35 @@ impl Hnsw {
     /// Costs roughly one extra int8 arena + adjacency lists of memory
     /// while the copy is alive; `by_external` and the RNG are not
     /// persisted, so they are not copied.
+    /// Release spare capacity in the adjacency lists of nodes
+    /// `[start, start + count)`; returns the index to resume from, or
+    /// `None` once past the last node.
+    ///
+    /// Lists grow by doubling as links are added and pruning never
+    /// shrinks them, so a node that ever overflowed `m_max0` keeps a
+    /// 64-slot list for 32 links. Those are millions of small,
+    /// fully-resident allocations. The flat arenas (`codes`, ...) are
+    /// deliberately left alone: their unused tail was never written,
+    /// so it isn't resident, and shrinking would copy GBs under the lock.
+    ///
+    /// Holds the write lock for one batch only, so callers can walk the
+    /// whole graph without stalling searches.
+    pub fn trim_adjacency(&self, start: usize, count: usize) -> Option<usize> {
+        let mut g = self.inner.write();
+        let n = g.neighbors.len();
+        if start >= n {
+            return None;
+        }
+        let end = start.saturating_add(count).min(n);
+        for levels in &mut g.neighbors[start..end] {
+            for list in levels.iter_mut() {
+                list.shrink_to_fit();
+            }
+            levels.shrink_to_fit();
+        }
+        Some(end)
+    }
+
     pub fn freeze(&self) -> FrozenHnsw {
         let g = self.inner.read();
         FrozenHnsw {

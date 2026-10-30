@@ -130,6 +130,14 @@ server:
     NEBULA_LLM_MODEL: "llama3.2:3b-dash"
     # Idle-byte timeout on the LLM stream (binary default 60s).
     NEBULA_LLM_READ_TIMEOUT_SECS: "90"
+    # Memory profile (crates/nebula-server/src/memory_profile.rs).
+    # small = return freed memory to the OS within ~1s and trim index
+    #         slack after boot + every 15 min (~480 B/doc) — default.
+    # fast  = keep freed pages ~10s for reuse, no trim (heavy-churn
+    #         ingest where page faults matter more than footprint).
+    # Fine-tune: NEBULA_MEMORY_TRIM_SECS (0 = no periodic trim),
+    # NEBULA_MEMORY_TRIM_BATCH (items per lock hold, default 20000).
+    NEBULA_MEMORY_PROFILE: "small"
 
     # Embedder: OpenAI-compat `/v1/embeddings`. Live rings use the public
     # Ollama gateway (see values-int/prod). Cutover from mock-384 requires
