@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type Hit } from "../api";
 import { sseStream } from "../sse";
 import { ErrorBanner, Panel, Spinner, Stat } from "../components";
+import { ArchitecturePanel } from "../components/RagArchitecture";
 
 interface Turn {
   query: string;
@@ -164,6 +165,7 @@ export function ShopCatalogTab() {
 
   return (
     <div className="space-y-4">
+      <ArchitecturePanel id="shop" />
       <Panel
         title="Workstation AI Shop"
         subtitle="Catalogue RAG + stock_levels SOT from int-shop — configuration grounding for the sales agent"

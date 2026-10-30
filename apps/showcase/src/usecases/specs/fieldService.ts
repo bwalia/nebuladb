@@ -49,6 +49,7 @@ const DOCS: SeedDoc[] = [
 
 export const fieldServiceSpec: UseCaseSpec = {
   bucket: "field_service",
+  blueprint: "fieldservice",
   seedVersion: "field-v1",
   docs: DOCS,
   noun: "manual entries",

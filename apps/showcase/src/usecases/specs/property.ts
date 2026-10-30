@@ -53,6 +53,7 @@ const DOCS: SeedDoc[] = [
 
 export const propertySpec: UseCaseSpec = {
   bucket: "property_listings",
+  blueprint: "property",
   seedVersion: "property-v1",
   docs: DOCS,
   noun: "listings",

@@ -15,6 +15,7 @@ import { ensureSeeded, type SeedDoc } from "../rag/seed";
 import { field, lit, minMax, runSql, semanticText, similarity } from "../rag/sql";
 import { PipelineTrace, type PipelineStep } from "../rag/PipelineTrace";
 import { GroundedChat, type ContextDoc } from "../rag/GroundedChat";
+import { ArchitecturePanel } from "../components/RagArchitecture";
 
 export interface UseCaseHit {
   id: string;
@@ -72,6 +73,8 @@ export interface UseCaseSpec {
   Insight?: ComponentType<{ hits: UseCaseHit[]; query: string }>;
   insightTitle?: string;
   insightSubtitle?: string;
+  /** Reference-architecture blueprint id (components/RagArchitecture). */
+  blueprint?: string;
 }
 
 function compact(s: string, n = 1400) {
@@ -186,6 +189,7 @@ export function UseCaseDemo({ spec }: { spec: UseCaseSpec }) {
 
   return (
     <div className="space-y-4">
+      {spec.blueprint && <ArchitecturePanel id={spec.blueprint} />}
       <Panel
         title={spec.title}
         subtitle={spec.subtitle}

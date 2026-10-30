@@ -18,6 +18,7 @@ import {
   SEED_VERSION,
   type Department,
 } from "../rag/data/policy";
+import { ArchitecturePanel } from "../components/RagArchitecture";
 
 interface Hit {
   id: string;
@@ -122,6 +123,7 @@ export function PolicyDeskTab() {
 
   return (
     <div className="space-y-4">
+      <ArchitecturePanel id="policy" />
       <Panel
         title="Policy Desk"
         subtitle="Employee handbook, security and finance policies — semantic retrieval with optional department filter, then grounded Q&A"

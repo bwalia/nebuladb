@@ -44,6 +44,7 @@ import {
   type Job,
   type WorkMode,
 } from "../rag/data/talent";
+import { ArchitecturePanel } from "../components/RagArchitecture";
 
 // ---------------------------------------------------------------------------
 // Scoring
@@ -223,6 +224,7 @@ export function TalentMatchTab() {
 
   return (
     <div className="space-y-4">
+      <ArchitecturePanel id="talent" />
       <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-lg border border-gray-200 dark:border-edge p-0.5">
           {(["hiring", "candidate"] as const).map((m) => (

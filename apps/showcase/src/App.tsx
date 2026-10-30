@@ -161,6 +161,14 @@ export function App() {
   const [tab, setTab] = useState<TabId>(() =>
     window.location.hash.startsWith("#/blog") ? "blog" : "executive"
   );
+  // In-page `#/blog/...` links (e.g. a demo's "Setup guide") switch to the blog.
+  useEffect(() => {
+    const onHash = () => {
+      if (window.location.hash.startsWith("#/blog")) setTab("blog");
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const [theme, setThemeState] = useState(getTheme());
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {

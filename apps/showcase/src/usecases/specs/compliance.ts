@@ -54,6 +54,7 @@ const DOCS: SeedDoc[] = [
 
 export const complianceSpec: UseCaseSpec = {
   bucket: "compliance_obligations",
+  blueprint: "compliance",
   seedVersion: "compliance-v1",
   docs: DOCS,
   noun: "obligations",
