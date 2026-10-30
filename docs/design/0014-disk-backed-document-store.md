@@ -202,9 +202,12 @@ Independent of the store, and these also shrink what goes on disk:
 3. **`Box<str>` instead of `String`** for immutable fields, dropping
    capacity slack.
 
-Rough expected effect: ~0.8–1.4 KB/doc, so **5–8 GB at 6.2M docs**, with
-no change to the I/O path. This is low risk, can ship as its own PR, and
-makes the Phase 2 numbers easier to read.
+Rough expected effect was ~0.8–1.4 KB/doc. **Measured (PR #166):
+3,418 → 2,771 heap bytes/doc (−647 B, −19%)** on 8,317 sampled prod docs,
+so about **4 GB at 6.2M docs**, with no change to the I/O path. The
+counter measures requested bytes, so the saving after allocator size-class
+rounding is probably a little higher. Item 1 shipped for `Document.bucket`
+only; `by_key`'s owned `(String, String)` is a follow-up (~30–60 B/doc).
 
 ## 7. Phased plan
 
