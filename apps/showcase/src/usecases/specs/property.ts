@@ -1,14 +1,36 @@
 /**
  * Property Finder — "describe the home you want" semantic search with
  * hard numeric filters (max price, min bedrooms) in the same SQL, then a
- * chat that compares the shortlist. Listings are invented.
+ * chat that compares the shortlist. Listings are invented; each carries
+ * neighbourhood-level coordinates so the results can be shown on a map.
  */
 import type { SeedDoc } from "../../rag/seed";
 import type { UseCaseSpec } from "../UseCaseDemo";
 
 const AREAS = ["Bristol", "Leeds", "Brighton", "Manchester"] as const;
 
+// Neighbourhood centres, not real addresses (the listings are invented).
+const COORDS: Record<string, [number, number]> = {
+  "LST-101": [51.4766, -2.592], // Bishopston, Bristol
+  "LST-102": [51.4486, -2.6], // Harbourside, Bristol
+  "LST-103": [51.493, -2.618], // Westbury-on-Trym, Bristol
+  "LST-201": [53.819, -1.578], // Headingley, Leeds
+  "LST-202": [53.789, -1.556], // Holbeck, Leeds
+  "LST-203": [53.837, -1.499], // Roundhay, Leeds
+  "LST-301": [50.8217, -0.1495], // Regency Square, Brighton
+  "LST-302": [50.829, -0.126], // Hanover, Brighton
+  "LST-401": [53.484, -2.227], // Ancoats, Manchester
+  "LST-402": [53.442, -2.276], // Chorlton, Manchester
+  "LST-403": [53.416, -2.231], // Didsbury, Manchester
+};
+
+/** "£420k" / "£1.2m" for a map chip. */
+function shortPrice(gbp: number): string {
+  return gbp >= 1_000_000 ? `£${(gbp / 1_000_000).toFixed(1).replace(/\.0$/, "")}m` : `£${Math.round(gbp / 1000)}k`;
+}
+
 function l(id: string, area: string, price_gbp: number, bedrooms: number, type: string, epc: string, body: string): SeedDoc {
+  const [lat, lng] = COORDS[id];
   return {
     id,
     text: `${id} · ${bedrooms}-bed ${type} · ${area} · £${price_gbp.toLocaleString("en-GB")} · EPC ${epc}\n${body}`,
@@ -22,6 +44,8 @@ function l(id: string, area: string, price_gbp: number, bedrooms: number, type: 
       headline: `${bedrooms}-bed ${type}, ${area}`,
       price: `£${price_gbp.toLocaleString("en-GB")}`,
       epc_rating: `EPC ${epc}`,
+      lat,
+      lng,
     },
   };
 }
@@ -54,11 +78,11 @@ const DOCS: SeedDoc[] = [
 export const propertySpec: UseCaseSpec = {
   bucket: "property_listings",
   blueprint: "property",
-  seedVersion: "property-v1",
+  seedVersion: "property-v2",
   docs: DOCS,
   noun: "listings",
   title: "Property Finder",
-  subtitle: "Describe the home in plain English → semantic match AND hard price / bedroom / area filters in one SQL query → compare the shortlist",
+  subtitle: "Describe the home in plain English → semantic match AND hard price / bedroom / area filters in one SQL query → see the matches on a map → compare the shortlist",
   queryLabel: "Describe what you're looking for",
   placeholder: "Quiet street, room for an office, near a station…",
   scenarios: [
@@ -76,6 +100,11 @@ export const propertySpec: UseCaseSpec = {
   titleKey: "headline",
   subKeys: ["price", "epc_rating"],
   resultsTitle: "Matching listings",
+  map: {
+    latKey: "lat",
+    lngKey: "lng",
+    label: (h) => `${shortPrice(Number(h.meta.price_gbp))} · ${String(h.meta.bedrooms)} bed`,
+  },
   chat: {
     title: "Property adviser",
     subtitle: "Compares only the shortlisted listings",

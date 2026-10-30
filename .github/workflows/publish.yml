@@ -173,11 +173,13 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Only the server Dockerfile consumes these; showcase ignores unknown ARGs.
+          # NEBULADB_* feed the server Dockerfile, VITE_GOOGLE_MAPS_API_KEY the
+          # showcase one; each Dockerfile ignores the ARGs it doesn't declare.
           build-args: |
             NEBULADB_VERSION=${{ steps.identity.outputs.version }}
             NEBULADB_GIT_SHA=${{ steps.identity.outputs.git_sha }}
             NEBULADB_BUILD_DATE=${{ steps.identity.outputs.build_date }}
+            VITE_GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
           # `type=gha` stores layers in GitHub's Actions cache. Much
           # faster than rebuilding from scratch every run, and
           # smaller blast radius than pushing a `:cache` tag.
