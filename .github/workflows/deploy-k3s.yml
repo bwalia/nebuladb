@@ -193,6 +193,11 @@ jobs:
           file: apps/showcase/Dockerfile
           platforms: linux/amd64
           push: true
+          # Browser Maps JS key, baked into the bundle (it is public by
+          # design; restrict it by HTTP referrer in Google Cloud). Empty
+          # secret = maps show a "set a key" hint instead.
+          build-args: |
+            VITE_GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}
           tags: |
             ${{ env.DOCKERHUB_NAMESPACE }}/nebula-showcase:${{ steps.tag.outputs.tag }}
             ${{ env.DOCKERHUB_NAMESPACE }}/nebula-showcase:${{ steps.tag.outputs.version_tag }}

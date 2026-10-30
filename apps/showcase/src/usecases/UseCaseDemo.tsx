@@ -7,7 +7,7 @@
  * `Insight` panel (vector-only: cache hit/miss, novelty, theme mix).
  * A spec supplies the domain; this file owns the mechanics.
  */
-import { useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { ApiError, type SqlRow } from "../api";
 import { ErrorBanner, Panel, Spinner, Stat } from "../components";
 import { UnderTheHood } from "../components/UnderTheHood";
@@ -16,6 +16,7 @@ import { field, lit, minMax, runSql, semanticText, similarity } from "../rag/sql
 import { PipelineTrace, type PipelineStep } from "../rag/PipelineTrace";
 import { GroundedChat, type ContextDoc } from "../rag/GroundedChat";
 import { ArchitecturePanel } from "../components/RagArchitecture";
+import { ResultsMap, type MapHit } from "../components/ResultsMap";
 
 export interface UseCaseHit {
   id: string;
@@ -75,6 +76,8 @@ export interface UseCaseSpec {
   insightSubtitle?: string;
   /** Reference-architecture blueprint id (components/RagArchitecture). */
   blueprint?: string;
+  /** Plot the hits on a map: metadata keys for coordinates, plus a short chip label. */
+  map?: { latKey: string; lngKey: string; label: (h: UseCaseHit) => string };
 }
 
 function compact(s: string, n = 1400) {
@@ -123,6 +126,8 @@ export function UseCaseDemo({ spec }: { spec: UseCaseSpec }) {
   const [hits, setHits] = useState<UseCaseHit[]>([]);
   const [ranQuery, setRanQuery] = useState("");
   const [runId, setRunId] = useState(0);
+  const [selected, setSelected] = useState<string | null>(null);
+  const rowRefs = useRef<Record<string, HTMLLIElement | null>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -159,6 +164,7 @@ export function UseCaseDemo({ spec }: { spec: UseCaseSpec }) {
       setSteps([...trace]);
       setHits(raw.map((h) => ({ ...h, rel: norm(h.sim) })));
       setRanQuery(q);
+      setSelected(null);
       setRunId((n) => n + 1);
     } catch (e) {
       setErr(e instanceof ApiError ? `${e.code}: ${e.body}` : (e as Error).message);
@@ -179,6 +185,22 @@ export function UseCaseDemo({ spec }: { spec: UseCaseSpec }) {
       })),
     [hits, spec]
   );
+
+  const mapHits = useMemo<MapHit[]>(() => {
+    const m = spec.map;
+    if (!m) return [];
+    return hits.flatMap((h, i) => {
+      const lat = Number(h.meta[m.latKey]);
+      const lng = Number(h.meta[m.lngKey]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
+      return [{ id: h.id, rank: i + 1, lat, lng, label: m.label(h), title: h.title }];
+    });
+  }, [hits, spec]);
+
+  const selectFromMap = (id: string) => {
+    setSelected(id);
+    rowRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
 
   const Insight = spec.Insight;
   const seedFailed = seedMsg.startsWith("Seeding failed");
@@ -274,12 +296,28 @@ export function UseCaseDemo({ spec }: { spec: UseCaseSpec }) {
                 No hits{filterLabel ? ` — loosen the ${filterLabel} filter` : ""}.
               </p>
             ) : (
-              <ul className="space-y-2">
-                {hits.map((h) => (
-                  <li key={h.id} className="rounded-md border border-gray-200 dark:border-edge px-3 py-2">
+              <>
+              {spec.map && <ResultsMap hits={mapHits} selected={selected} onSelect={selectFromMap} />}
+              <ul className={`space-y-2 ${spec.map ? "max-h-[28rem] overflow-y-auto pr-1" : ""}`}>
+                {hits.map((h, i) => (
+                  <li
+                    key={h.id}
+                    ref={(el) => {
+                      rowRefs.current[h.id] = el;
+                    }}
+                    onClick={spec.map ? () => setSelected(h.id) : undefined}
+                    className={`rounded-md border px-3 py-2 transition-colors ${
+                      spec.map ? "cursor-pointer" : ""
+                    } ${
+                      selected === h.id
+                        ? "border-accent bg-accent/10"
+                        : "border-gray-200 dark:border-edge"
+                    }`}
+                  >
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <div className="text-sm font-medium">
+                          {spec.map && <span className="text-accent mr-1">{i + 1}.</span>}
                           {h.id} · {h.title}
                         </div>
                         <div className="text-xs text-gray-500 dark:text-muted">{h.sub}</div>
@@ -290,6 +328,7 @@ export function UseCaseDemo({ spec }: { spec: UseCaseSpec }) {
                   </li>
                 ))}
               </ul>
+              </>
             )}
             <UnderTheHood filter={["/api/v1/query", "/api/v1/ai/rag", "/api/v1/bucket"]} />
           </Panel>
