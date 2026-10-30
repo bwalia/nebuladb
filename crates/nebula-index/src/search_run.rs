@@ -170,18 +170,12 @@ impl TextIndex {
                 continue;
             };
             if let Some(b) = bucket {
-                if doc.bucket != b {
+                if *doc.bucket != *b {
                     other_bucket += 1;
                     continue;
                 }
             }
-            hits.push(Hit {
-                bucket: doc.bucket.clone(),
-                id: doc.external_id.clone(),
-                text: doc.text.clone(),
-                score: r.distance,
-                metadata: doc.metadata.clone(),
-            });
+            hits.push(doc.hit(r.distance));
         }
         Ok(VectorRun {
             hits,
@@ -212,7 +206,7 @@ impl TextIndex {
         let started = Instant::now();
         let metric = self.hnsw.metric();
         let ids = g.by_bucket.get(bucket).cloned().unwrap_or_default();
-        let mut scored: Vec<(nebula_core::Id, f32, &crate::Document)> =
+        let mut scored: Vec<(nebula_core::Id, f32, &crate::StoredDoc)> =
             Vec::with_capacity(ids.len());
         let mut missing = 0;
         for id in &ids {
@@ -236,13 +230,7 @@ impl TextIndex {
         let examined = scored.len();
         let hits: Vec<Hit> = scored
             .into_iter()
-            .map(|(_, distance, doc)| Hit {
-                bucket: doc.bucket.clone(),
-                id: doc.external_id.clone(),
-                text: doc.text.clone(),
-                score: distance,
-                metadata: doc.metadata.clone(),
-            })
+            .map(|(_, distance, doc)| doc.hit(distance))
             .collect();
         Ok(VectorRun {
             hits,
@@ -289,18 +277,12 @@ impl TextIndex {
                 continue;
             };
             if let Some(b) = bucket {
-                if doc.bucket != b {
+                if *doc.bucket != *b {
                     other_bucket += 1;
                     continue;
                 }
             }
-            hits.push(Hit {
-                bucket: doc.bucket.clone(),
-                id: doc.external_id.clone(),
-                text: doc.text.clone(),
-                score: r.score,
-                metadata: doc.metadata.clone(),
-            });
+            hits.push(doc.hit(r.score));
         }
         Bm25Run {
             hits,
@@ -324,7 +306,7 @@ impl TextIndex {
     ) -> Bm25Run {
         let started = Instant::now();
         let ids = g.by_bucket.get(bucket).cloned().unwrap_or_default();
-        let mut scored: Vec<(f32, &crate::Document)> = Vec::with_capacity(ids.len());
+        let mut scored: Vec<(f32, &crate::StoredDoc)> = Vec::with_capacity(ids.len());
         let mut missing = 0;
         for id in &ids {
             let Some(doc) = g.docs.get(id) else {
@@ -344,13 +326,7 @@ impl TextIndex {
         let examined = scored.len();
         let hits: Vec<Hit> = scored
             .into_iter()
-            .map(|(score, doc)| Hit {
-                bucket: doc.bucket.clone(),
-                id: doc.external_id.clone(),
-                text: doc.text.clone(),
-                score,
-                metadata: doc.metadata.clone(),
-            })
+            .map(|(score, doc)| doc.hit(score))
             .collect();
         Bm25Run {
             hits,
