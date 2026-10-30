@@ -361,6 +361,8 @@ pub struct AppState {
     pub compat_registry: Arc<nebula_search::CompatRegistry>,
     /// UK Companies House API proxy for the showcase demo.
     pub companies_house: crate::companies_house::CompaniesHouseClient,
+    /// Secure agent demo: conversation memory keyed by (subject, session).
+    pub agent_sessions: Arc<crate::secure_agent::AgentSessions>,
     /// Embed model/dim migration job (dump → restart → drain).
     pub embed_migrate: crate::embed_migrate::EmbedMigrateHub,
 }
@@ -439,6 +441,7 @@ impl AppState {
             search,
             compat_registry,
             companies_house: crate::companies_house::CompaniesHouseClient::from_env(),
+            agent_sessions: Arc::new(crate::secure_agent::AgentSessions::default()),
             embed_migrate: crate::embed_migrate::EmbedMigrateHub::new(
                 std::env::var("NEBULA_DATA_DIR").ok().map(std::path::PathBuf::from),
             ),

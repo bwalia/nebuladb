@@ -22,6 +22,7 @@ import { ClusterTab } from "./tabs/ClusterTab";
 import { RebalanceTab } from "./tabs/RebalanceTab";
 import { EnterpriseSearchTab } from "./tabs/EnterpriseSearchTab";
 import { CompaniesHouseTab } from "./tabs/CompaniesHouseTab";
+import { SecureAgentTab } from "./tabs/SecureAgentTab";
 import { ShopCatalogTab } from "./tabs/ShopCatalogTab";
 import { TalentMatchTab } from "./tabs/TalentMatchTab";
 import { IncidentCopilotTab } from "./tabs/IncidentCopilotTab";
@@ -56,6 +57,7 @@ type TabId =
   | "search"
   | "enterprise"
   | "companies"
+  | "secureagent"
   | "shop"
   | "talent"
   | "incidents"
@@ -114,6 +116,7 @@ const NAV: NavItem[] = [
   { id: "hybrid", label: "Hybrid", hint: "SQL + retrieval in one query", icon: "⟡", group: "ai" },
   { id: "agents", label: "AI agents", hint: "Tool-calling agents over MCP", icon: "⬡", group: "ai" },
   { id: "mcp", label: "MCP", hint: "Live MCP server + playground", icon: "⚯", group: "ai" },
+  { id: "secureagent", label: "Secure agent", hint: "Identity-bound RAG agent: injection, PII and session-leak guard rails", icon: "⛨", group: "ai" },
   { id: "companies", label: "Companies House", hint: "UK CH search + RAG chat", icon: "⌂", group: "apps" },
   { id: "shop", label: "Shop catalogue", hint: "Stock SOT + product RAG", icon: "▣", group: "apps" },
   { id: "talent", label: "Talent Match", hint: "Job board: SQL hard filters + multi-facet semantic matching + recruiter chat", icon: "♟", group: "apps" },
@@ -156,15 +159,22 @@ const GROUP_LABELS: Record<NavItem["group"], string> = {
 
 const SIDEBAR_KEY = "nebula-sidebar";
 
+function tabFromHash(): TabId | null {
+  const h = window.location.hash;
+  if (h.startsWith("#/blog")) return "blog";
+  const m = /^#\/tab\/([a-z]+)/.exec(h);
+  return m && NAV.some((t) => t.id === m[1]) ? (m[1] as TabId) : null;
+}
+
 export function App() {
-  // `#/blog/...` deep links (shared posts, landing-page cards) open the blog.
-  const [tab, setTab] = useState<TabId>(() =>
-    window.location.hash.startsWith("#/blog") ? "blog" : "executive"
-  );
+  // `#/blog/...` deep links (shared posts, landing-page cards) open the blog;
+  // `#/tab/<id>` opens any demo directly (e.g. #/tab/secureagent).
+  const [tab, setTab] = useState<TabId>(() => tabFromHash() ?? "executive");
   // In-page `#/blog/...` links (e.g. a demo's "Setup guide") switch to the blog.
   useEffect(() => {
     const onHash = () => {
-      if (window.location.hash.startsWith("#/blog")) setTab("blog");
+      const t = tabFromHash();
+      if (t) setTab(t);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -292,6 +302,7 @@ export function App() {
               {tab === "search" && <SearchTab />}
               {tab === "enterprise" && <EnterpriseSearchTab />}
               {tab === "companies" && <CompaniesHouseTab />}
+              {tab === "secureagent" && <SecureAgentTab />}
               {tab === "shop" && <ShopCatalogTab />}
               {tab === "talent" && <TalentMatchTab />}
               {tab === "incidents" && <IncidentCopilotTab />}

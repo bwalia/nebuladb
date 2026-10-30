@@ -80,7 +80,9 @@ EOF
     "$([ "$password_on" = true ] && echo true || echo false)" "$mode" >"$login_config"
   echo "showcase-auth: oauth2-proxy gate on ($mode) → /login (password=$password_on)" >&2
 else
-  echo "# google oauth gate off" >"$oauth_gate"
+  # No oauth2-proxy: define the identity variables the agent location
+  # forwards (basic auth fills $remote_user instead), or nginx won't load.
+  printf '%s\n' '# google oauth gate off' 'set $auth_email "";' 'set $auth_user "";' >"$oauth_gate"
   case "$(printf '%s' "${SHOWCASE_AUTH_DISABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
     true|1|yes|on)
       export SHOWCASE_AUTH_BASIC=off
@@ -93,7 +95,7 @@ else
         echo "showcase-auth: basic auth is on but credentials unset; every login will be refused" >&2
       fi
       # No 401 → /login rewrite: the browser's prompt is the sign-in.
-      echo "# basic auth: browser prompt" >"$oauth_gate"
+      echo "# basic auth: browser prompt" >>"$oauth_gate"
       printf '{"google":false,"password":%s,"mode":"basic"}\n' \
         "$([ "$password_on" = true ] && echo true || echo false)" >"$login_config"
       echo "showcase-auth: basic auth on → browser prompt (password=$password_on)" >&2

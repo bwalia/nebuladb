@@ -119,6 +119,15 @@ pub fn build_router(state: AppState) -> Router {
             "/companies-house/company/:number/sync-address",
             post(crate::companies_house::ch_sync_address),
         )
+        // Secure agent demo (identity-bound sessions + guard rails)
+        .route("/agent/me", get(crate::secure_agent::agent_me))
+        .route("/agent/sessions", post(crate::secure_agent::agent_create_session))
+        .route(
+            "/agent/sessions/:id",
+            get(crate::secure_agent::agent_get_session).delete(crate::secure_agent::agent_delete_session),
+        )
+        .route("/agent/sessions/:id/messages", post(crate::secure_agent::agent_message))
+        .route("/agent/selftest", post(crate::secure_agent::agent_selftest))
         // Workstation AI Shop catalogue / stock SOT / chat history
         .route("/shop/status", get(crate::shop_catalog::shop_status))
         .route(

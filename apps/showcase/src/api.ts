@@ -191,6 +191,53 @@ export interface SlowQueryEntry {
   ok: boolean;
 }
 
+export interface AgentStep {
+  name: string;
+  status: "pass" | "warn" | "block" | "redact" | "quarantine" | "skip" | "pending";
+  detail: Record<string, unknown>;
+}
+
+export interface AgentTurn {
+  role: "user" | "assistant";
+  text: string;
+  at_ms: number;
+  blocked: boolean;
+  trace?: AgentStep[];
+}
+
+export interface AgentIntent {
+  key: string;
+  title: string;
+  tools: string[];
+  scopes: string[];
+  kinds: string[];
+  hitl: boolean;
+}
+
+export interface AgentMe {
+  identity: { subject: string; subject_hash: string; verified: boolean; source: string };
+  vault_bucket: string;
+  kb_bucket: string;
+  seeded_now: number;
+  sessions: Array<{ id: string; title: string; created_ms: number; turns: number }>;
+  intents: AgentIntent[];
+  model: string;
+}
+
+export interface AgentReply {
+  answer: string;
+  intent: string;
+  blocked: boolean;
+  citations: Array<{ n: number; id: string; source: string; text: string }>;
+  trace: AgentStep[];
+}
+
+export interface AgentSelftest {
+  passed: number;
+  total: number;
+  checks: Array<{ check: string; passed: boolean; detail: Record<string, unknown> }>;
+}
+
 export interface WalStats {
   segment_count: number;
   total_bytes: number;
@@ -495,6 +542,21 @@ export const api = {
     request<Record<string, unknown>>(
       `/api/v1/companies-house/company/${encodeURIComponent(number)}?include_extras=true`
     ),
+
+  // Secure agent demo: identity-bound sessions behind the showcase's OIDC sign-in.
+  agentMe: () => request<AgentMe>("/api/v1/agent/me"),
+  agentCreateSession: () =>
+    request<{ id: string; title: string }>("/api/v1/agent/sessions", { method: "POST", body: "{}" }),
+  agentSession: (id: string) =>
+    request<{ id: string; turns: AgentTurn[] }>(`/api/v1/agent/sessions/${encodeURIComponent(id)}`),
+  agentDeleteSession: (id: string) =>
+    request<{ deleted: string }>(`/api/v1/agent/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  agentMessage: (id: string, message: string) =>
+    request<AgentReply>(`/api/v1/agent/sessions/${encodeURIComponent(id)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
+  agentSelftest: () => request<AgentSelftest>("/api/v1/agent/selftest", { method: "POST", body: "{}" }),
 
   /** Compare the live registered office with the bulk-loaded register doc; rewrite it if it moved. */
   companiesHouseSyncAddress: (number: string, bucket = "companies_house") =>
