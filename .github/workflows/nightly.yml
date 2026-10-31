@@ -258,6 +258,14 @@ jobs:
         # `helm lint` warns without the charts/ dir populated, and
         # `helm template` hard-fails. Fetch before either.
         run: helm dependency update deploy/helm/nebuladb
+      - name: showcase nginx config is in sync
+        # The chart mounts files/showcase/default.conf.template over the
+        # image's nginx.conf, so an edit to only one copy silently never
+        # reaches the cluster (incident 2026-10-31). Edit
+        # apps/showcase/nginx.conf, then copy it to the chart file.
+        run: |
+          diff -u apps/showcase/nginx.conf deploy/helm/nebuladb/files/showcase/default.conf.template \
+            || { echo "::error::apps/showcase/nginx.conf and the chart copy differ; cp one over the other"; exit 1; }
       - name: helm lint
         run: helm lint deploy/helm/nebuladb
       - name: helm template (defaults)

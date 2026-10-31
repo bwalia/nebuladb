@@ -44,16 +44,21 @@ export function ExecutiveTab({ onNavigate }: { onNavigate?: (t: string) => void 
   useEffect(() => {
     let dead = false;
     const load = async () => {
-      try {
-        const [h, s, b] = await Promise.all([api.health(), api.stats(), api.buckets()]);
-        if (dead) return;
-        setHealth(h);
-        setStats(s);
-        setBuckets(b);
-        setErr(null);
-      } catch (e) {
-        if (!dead) setErr((e as Error).message);
-      }
+      // Each panel stands alone: one slow or failing endpoint keeps its
+      // last good value and is named in the banner, instead of blanking
+      // the whole page (incident 2026-10-31: a slow /admin/buckets took
+      // health and stats down with it under Promise.all).
+      const [h, s, b] = await Promise.allSettled([api.health(), api.stats(), api.buckets()]);
+      if (dead) return;
+      if (h.status === "fulfilled") setHealth(h.value);
+      if (s.status === "fulfilled") setStats(s.value);
+      if (b.status === "fulfilled") setBuckets(b.value);
+      const failed = [
+        h.status === "rejected" ? "health" : null,
+        s.status === "rejected" ? "stats" : null,
+        b.status === "rejected" ? "buckets" : null,
+      ].filter(Boolean);
+      setErr(failed.length ? `Couldn't refresh ${failed.join(", ")}; showing the last good data.` : null);
       try {
         const d = await api.durability();
         if (!dead) setDur(d);

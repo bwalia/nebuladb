@@ -8,6 +8,9 @@
 #   ${NEBULA_REGION_B_HOST}  host of the cross-region peer (or leader if none)
 #   ${NGINX_RESOLVER}        DNS server for variable-based proxy_pass
 #   ${NEBULA_MCP}            base URL of nebula-mcp (the /mcp route)
+#   ${NEBULA_EXAMPLES_HOST}  host[:port] of the agents API (/examples);
+#                            short names are qualified by
+#                            docker-entrypoint.d/16-examples-host.envsh
 #   ${SHOWCASE_AUTH_BASIC}   basic-auth realm, or `off`; from
 #                            docker-entrypoint.d/15-showcase-auth.envsh
 #   Google OAuth gate (auth_request) is written at boot into
@@ -25,6 +28,16 @@
 # bucket and admin routes) go through `nebula_write_pool`, which
 # only reaches the follower when the leader fails. When the leader is
 # back up, nginx's `backup` directive sends traffic to it again.
+
+# Small response cache for expensive, user-independent admin reads
+# (bucket stats). Served stale while a single background request
+# refreshes it, and kept serving if the server errors or times out, so a
+# slow corpus scan can't take a dashboard panel down (incident
+# 2026-10-31). Responses are identical for every signed-in user, and
+# the auth gate runs before the cache, so nothing leaks to anonymous
+# requests.
+proxy_cache_path /var/cache/nginx/nebula_admin levels=1 keys_zone=nebula_admin:1m
+                 max_size=10m inactive=24h use_temp_path=off;
 
 # DNS resolver for variable-based proxy_pass (otherwise nginx resolves
 # once at boot and never again). Parameterized via envsubst so the same
@@ -260,6 +273,28 @@ server {
         return 503 '{"error":"write temporarily unavailable, retry shortly"}';
     }
 
+    # Claude agents API (examples/nebula-agents/server.py). Proxied here,
+    # not routed straight to its Service by the Ingress, so it sits behind
+    # the same login as every other page: /examples/seed writes to the
+    # database and /examples/agents/*/run spends Anthropic credit.
+    # Variable proxy_pass resolves per request, so nginx still boots where
+    # no examples service exists (compose); those requests just get a 502.
+    # The URI is passed unchanged; server.py serves both bare and
+    # /examples-prefixed routes.
+    location /examples {
+        set $examples_up "http://${NEBULA_EXAMPLES_HOST}";
+        proxy_pass $examples_up;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 60s;
+        # An agent run is several model turns plus tool calls.
+        proxy_read_timeout 600s;
+    }
+
     # Single-page app: anything that isn't a real file resolves to
     # index.html so client-side navigation works on deep links.
     location / {
@@ -308,6 +343,37 @@ server {
         proxy_next_upstream error timeout http_502 http_503 http_504 non_idempotent;
         proxy_next_upstream_tries 2;
         proxy_next_upstream_timeout 30s;
+    }
+
+    # Bucket stats: on older servers a cache miss is a full-corpus scan
+    # (~45s at 8.3M docs), past the 15s /api/ read timeout, so the Admin
+    # and Executive tabs 503'd (incident 2026-10-31). Long read timeout,
+    # NO retry (a retry starts a second full scan on another node),
+    # pinned to the leader, plus the stale cache below. Servers with
+    # PR #173 answer in milliseconds; this stays as defence in depth.
+    location = /api/v1/admin/buckets {
+        proxy_pass ${NEBULA_SERVER};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Connection "";
+        proxy_set_header Authorization "Bearer ${NEBULA_API_KEYS}";
+        proxy_connect_timeout 2s;
+        proxy_send_timeout 10s;
+        proxy_read_timeout 120s;
+        proxy_next_upstream off;
+        # Stale-while-revalidate: only the very first fill after a pod
+        # start waits on the server; afterwards every caller gets the
+        # cached copy at once, and at most one request refreshes it.
+        proxy_cache nebula_admin;
+        proxy_cache_key "$request_uri";
+        proxy_cache_valid 200 30s;
+        proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
+        proxy_cache_background_update on;
+        proxy_cache_lock on;
+        proxy_cache_lock_timeout 120s;
+        add_header X-Cache-Status $upstream_cache_status always;
     }
 
     # Companies House: external UK register + optional Firecrawl enrichment.
