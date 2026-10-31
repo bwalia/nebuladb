@@ -16,6 +16,7 @@ import { MCP_TOOLS, toolByName, type McpTool } from "../demo/mcp";
 import { Panel, JsonView, Spinner, ErrorBanner } from "../components";
 import { SimulationNotice, OriginBadge } from "../components/Provenance";
 import { UnderTheHood } from "../components/UnderTheHood";
+import { SeedChip, useSeeds } from "../source/common";
 
 interface Step {
   tool: string;
@@ -30,6 +31,8 @@ interface Agent {
   blurb: string;
   icon: string;
   plan: Step[];
+  /** Declared tool list, when it is wider than the scripted plan uses. */
+  tools?: string[];
 }
 
 const AGENTS: Agent[] = [
@@ -104,6 +107,83 @@ const SUPERVISOR: { question: string; delegates: Array<{ agent: string; step: St
   ],
 };
 
+
+/** Source Supplies preset (demo data): the same team as examples/nebula-agents --team source. */
+const BRIGHTWAY_OLD = ["FC-010", "WR-020", "MP-050", "JR-400", "HT-300", "HS-060"].map((s) => `'${s}'`).join(", ");
+const SOURCE_AGENTS: Agent[] = [
+  {
+    id: "ss-product",
+    name: "Product Advisor",
+    role: "Products and greener swaps",
+    icon: "❀",
+    tools: ["execute_sql", "semantic_search", "get_document"],
+    blurb: "Finds what an account buys now, then the in-stock products whose replaces_sku points at those lines.",
+    plan: [
+      { tool: "execute_sql", args: { sql: "SELECT * FROM ss_orders WHERE semantic_match(text, 'order lines') AND account_id = 'BRIGHTWAY' AND month >= '2026-08' LIMIT 215" }, why: "what Brightway FM buys now" },
+      { tool: "execute_sql", args: { sql: `SELECT * FROM ss_products WHERE semantic_match(text, 'greener swap') AND replaces_sku IN (${BRIGHTWAY_OLD}) AND in_stock = TRUE LIMIT 39` }, why: "greener products that replace those lines" },
+    ],
+  },
+  {
+    id: "ss-safety",
+    name: "Safety Agent",
+    role: "SDS and COSHH answers",
+    icon: "⚠",
+    tools: ["semantic_search (ss_sds, ss_guides only)", "get_document"],
+    blurb: "Answers only from the demo SDS and guides; its search tool rejects every other bucket in code.",
+    plan: [
+      { tool: "semantic_search", args: { query: "PPE for the DS-200 descaler, exposure controls", bucket: "ss_sds", top_k: 5 }, why: "Section 8 of the demo SDS" },
+      { tool: "semantic_search", args: { query: "descaling toilets and urinals safely", bucket: "ss_guides", top_k: 3 }, why: "safe-use steps from the guides" },
+    ],
+  },
+  {
+    id: "ss-order",
+    name: "Order Agent",
+    role: "Reorder drafts",
+    icon: "↻",
+    tools: ["execute_sql", "semantic_search", "insert_document (ss_order_drafts, status = draft only)"],
+    blurb: "Reads a site's delivery day and order history and drafts next month's basket. It can only write drafts.",
+    plan: [
+      { tool: "execute_sql", args: { sql: "SELECT * FROM ss_accounts WHERE semantic_match(text, 'site delivery day') AND account_id = 'KINGSMEAD' AND site = 'North site' LIMIT 14" }, why: "the site's delivery day" },
+      { tool: "execute_sql", args: { sql: "SELECT * FROM ss_orders WHERE semantic_match(text, 'order lines') AND account_id = 'KINGSMEAD' AND site = 'North site' AND month >= '2026-05' LIMIT 215" }, why: "six months of order lines to forecast from" },
+      { tool: "execute_sql", args: { sql: "SELECT * FROM ss_products WHERE semantic_match(text, 'stock and lead time') AND sku IN ('FC-110', 'WR-220', 'JR-410', 'HT-300', 'HS-270', 'BG-610') LIMIT 39" }, why: "stock and lead times for the basket" },
+    ],
+  },
+  {
+    id: "ss-washroom",
+    name: "Washroom Agent",
+    role: "Triage and missed visits",
+    icon: "⌖",
+    tools: ["execute_sql", "semantic_search", "get_document"],
+    blurb: "Finds missed sanitary visits and the past tickets closest to a new issue.",
+    plan: [
+      { tool: "execute_sql", args: { sql: "SELECT * FROM ss_washroom_jobs WHERE semantic_match(text, 'missed sanitary visit') AND status = 'missed' AND service = 'sanitary' AND visit_date >= '2026-10-01' LIMIT 39" }, why: "sanitary visits missed in the last 30 days" },
+      { tool: "semantic_search", args: { query: "sanitary bin not changed for weeks and smells", bucket: "ss_washroom_jobs", top_k: 5 }, why: "how similar tickets were fixed" },
+    ],
+  },
+  {
+    id: "ss-sustainability",
+    name: "Sustainability Agent",
+    role: "CO2e and savings",
+    icon: "♻",
+    tools: ["execute_sql", "get_document"],
+    blurb: "Adds up an account's CO2e and spend per site from its orders and the products' CO2e per pack.",
+    plan: [
+      { tool: "execute_sql", args: { sql: "SELECT * FROM ss_orders WHERE semantic_match(text, 'order lines') AND account_id = 'BRIGHTWAY' AND month >= '2026-05' LIMIT 215" }, why: "six months of Brightway order lines" },
+      { tool: "execute_sql", args: { sql: `SELECT * FROM ss_products WHERE semantic_match(text, 'co2e per pack') AND sku IN (${BRIGHTWAY_OLD}) LIMIT 39` }, why: "CO2e and price per pack for those lines" },
+    ],
+  },
+];
+
+const SOURCE_SUPERVISOR: typeof SUPERVISOR = {
+  question: "Brightway FM wants to cut CO2 by 20% at their 4 office sites without spending more. What can we do this month?",
+  delegates: [
+    { agent: "Sustainability Agent", step: SOURCE_AGENTS[4].plan[0] },
+    { agent: "Sustainability Agent", step: SOURCE_AGENTS[4].plan[1] },
+    { agent: "Product Advisor", step: SOURCE_AGENTS[0].plan[1] },
+    { agent: "Order Agent", step: { tool: "execute_sql", args: { sql: "SELECT * FROM ss_accounts WHERE semantic_match(text, 'site delivery day') AND account_id = 'BRIGHTWAY' LIMIT 14" }, why: "delivery days for the 4 sites" } },
+  ],
+};
+
 interface RunStep {
   tool: string;
   agent?: string;
@@ -114,7 +194,15 @@ interface RunStep {
   tookMs?: number;
 }
 
+function SourceSeedChip() {
+  const seed = useSeeds(["products", "sds", "guides", "accounts", "orders", "washroom"]);
+  return <SeedChip seed={seed} />;
+}
+
 export function AgentsTab() {
+  const [team, setTeam] = useState<"ops" | "source">("ops");
+  const agents = team === "source" ? SOURCE_AGENTS : AGENTS;
+  const supervisor = team === "source" ? SOURCE_SUPERVISOR : SUPERVISOR;
   const [selected, setSelected] = useState<Agent>(AGENTS[0]);
   const [steps, setSteps] = useState<RunStep[]>([]);
   const [busy, setBusy] = useState(false);
@@ -163,6 +251,29 @@ export function AgentsTab() {
         why="There is no planner LLM choosing these steps — each agent follows a fixed sequence so a demo is reproducible. Every step, however, invokes a real MCP tool that performs an actual REST call against this cluster, and the responses below are exactly what the server returned."
       />
 
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="eyebrow mr-1">Preset</span>
+        {(["ops", "source"] as const).map((t) => (
+          <button
+            key={t}
+            className={team === t ? "btn !text-xs" : "btn-secondary !text-xs"}
+            onClick={() => {
+              setTeam(t);
+              setSelected((t === "source" ? SOURCE_AGENTS : AGENTS)[0]);
+              setSteps([]);
+            }}
+          >
+            {t === "ops" ? "NebulaDB ops" : "Source Supplies"}
+          </button>
+        ))}
+        {team === "source" && (
+          <>
+            <SourceSeedChip />
+            <span className="text-xs text-gray-500 dark:text-muted">Demo data — not real Source Supplies records.</span>
+          </>
+        )}
+      </div>
+
       <div className="flex gap-2">
         <button
           className={mode === "single" ? "btn !text-xs" : "btn-secondary !text-xs"}
@@ -181,7 +292,7 @@ export function AgentsTab() {
       {mode === "single" ? (
         <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">
           <ul className="space-y-1.5">
-            {AGENTS.map((a) => (
+            {agents.map((a) => (
               <li key={a.id}>
                 <button
                   onClick={() => { setSelected(a); setSteps([]); }}
@@ -219,12 +330,12 @@ export function AgentsTab() {
               <div className="space-y-1.5">
                 <div className="eyebrow">Tools available to this agent</div>
                 <div className="flex flex-wrap gap-1.5">
-                  {selected.plan.map((s) => (
+                  {(selected.tools ?? [...new Set(selected.plan.map((s) => s.tool))]).map((tool) => (
                     <span
-                      key={s.tool}
+                      key={tool}
                       className="rounded border border-gray-200 bg-gray-50 px-1.5 py-px font-mono text-[10px] text-gray-700 dark:border-edge dark:bg-carbon-950 dark:text-muted"
                     >
-                      {s.tool}
+                      {tool}
                     </span>
                   ))}
                 </div>
@@ -238,12 +349,12 @@ export function AgentsTab() {
         <div className="space-y-4">
           <Panel
             title="Supervisor orchestration"
-            subtitle={SUPERVISOR.question}
+            subtitle={supervisor.question}
             action={
               <button
                 className="btn !text-xs"
                 disabled={busy}
-                onClick={() => execute(SUPERVISOR.delegates)}
+                onClick={() => execute(supervisor.delegates)}
               >
                 {busy ? "Investigating…" : "Run investigation"}
               </button>
@@ -254,7 +365,7 @@ export function AgentsTab() {
                 Supervisor
               </span>
               <span className="text-gray-400 dark:text-faint">delegates to</span>
-              {[...new Set(SUPERVISOR.delegates.map((d) => d.agent))].map((a) => (
+              {[...new Set(supervisor.delegates.map((d) => d.agent))].map((a) => (
                 <span
                   key={a}
                   className="rounded border border-gray-200 bg-white px-2 py-1 text-gray-800 dark:border-edge dark:bg-carbon-900 dark:text-ink"
