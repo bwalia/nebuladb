@@ -161,7 +161,7 @@ function TriageMode({ ready }: { ready: boolean }) {
         return {
           id: r.id,
           sim,
-          weight: sim * sim * (1 + 3 * words),
+          weight: sim * sim + 0.5 * words * words,
           service: str(m.service) as Service,
           priority: (str(m.priority) || "P3") as Priority,
           issue: str(m.issue),
@@ -211,7 +211,7 @@ function TriageMode({ ready }: { ready: boolean }) {
       push({
         label: "Vote + rules (in the browser)",
         detail:
-          `weight = similarity² × (1 + 3 × words in common)\n` +
+          `weight = similarity² + 0.5 × (words in common)²\n` +
           `service: vote ${sVote.value} (${Math.round(sVote.confidence * 100)}%)${ruleService ? `, keywords say ${ruleService}` : ""}\n` +
           `priority: vote ${pVote.value}${rules.priority ? `, rules ${rules.priority} (${rules.why.join(", ")})` : ""} → ${finalP}`,
         status: "ok",
