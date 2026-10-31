@@ -41,6 +41,7 @@ import { SafetyTab } from "./source/SafetyTab";
 import { ProblemSolverTab } from "./source/ProblemSolverTab";
 import { ReorderTab } from "./source/ReorderTab";
 import { WashroomTab } from "./source/WashroomTab";
+import { TenderTab } from "./source/TenderTab";
 import { UseCaseDemo, type UseCaseSpec } from "./usecases/UseCaseDemo";
 import { clinicalSpec } from "./usecases/specs/clinical";
 import { complianceSpec } from "./usecases/specs/compliance";
@@ -80,6 +81,7 @@ type TabId =
   | "sssolver"
   | "ssreorder"
   | "sswashroom"
+  | "sstender"
   | IndustryTabId
   | "rag"
   | "hybrid"
@@ -141,6 +143,7 @@ const NAV: NavItem[] = [
   { id: "sssolver", label: "Cleaning Problem Solver", hint: "Tough job → the right guide by surface and sector → method, kit with stock, draft Quick Order", icon: "✦", group: "source" },
   { id: "ssreorder", label: "Smart Reorder", hint: "Multi-site reorder: order history → forecast → swaps → delivery-day check → draft basket", icon: "↻", group: "source" },
   { id: "sswashroom", label: "Washroom Service Desk", hint: "Source Washroom issues → nearest past jobs vote, missed-visit check, cited reply, quote helper", icon: "⌖", group: "source" },
+  { id: "sstender", label: "Tender Responder", hint: "School, NHS and council questions → evidence per question, coverage score, cited drafts, Markdown export", icon: "❐", group: "source" },
   { id: "entity", label: "Entity Resolve", hint: "CRM dedupe via semantic neighbours + merge/review scores", icon: "⊕", group: "use" },
   { id: "lookalike", label: "Lookalike Accounts", hint: "Won ICP → similar prospects with industry filters", icon: "◈", group: "use" },
   { id: "fraud", label: "Fraud Neighbours", hint: "Alert → labelled tx neighbourhood → risk vote (no LLM)", icon: "⚡", group: "use" },
@@ -336,6 +339,7 @@ export function App() {
               {tab === "sssolver" && <ProblemSolverTab />}
               {tab === "ssreorder" && <ReorderTab />}
               {tab === "sswashroom" && <WashroomTab />}
+              {tab === "sstender" && <TenderTab />}
               {tab in INDUSTRY_SPECS && (
                 <UseCaseDemo spec={INDUSTRY_SPECS[tab as IndustryTabId]} />
               )}
