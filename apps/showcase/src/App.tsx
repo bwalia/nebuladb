@@ -36,6 +36,7 @@ import { LookalikeTab } from "./tabs/LookalikeTab";
 import { FraudTab } from "./tabs/FraudTab";
 import { RecommendTab } from "./tabs/RecommendTab";
 import { BlogTab } from "./tabs/BlogTab";
+import { SourceHomeTab } from "./source/SourceHomeTab";
 import { FinderTab } from "./source/FinderTab";
 import { SafetyTab } from "./source/SafetyTab";
 import { ProblemSolverTab } from "./source/ProblemSolverTab";
@@ -76,6 +77,7 @@ type TabId =
   | "lookalike"
   | "fraud"
   | "recommend"
+  | "sshome"
   | "ssfinder"
   | "sssafety"
   | "sssolver"
@@ -138,6 +140,7 @@ const NAV: NavItem[] = [
   { id: "policy", label: "Policy Desk", hint: "HR / security / finance handbook Q&A with citations", icon: "▤", group: "apps" },
   { id: "rfp", label: "RFP Responder", hint: "Buyer questions → capabilities + past proposals → cited drafts", icon: "❐", group: "apps" },
   { id: "onboarding", label: "Onboarding", hint: "Day-one checklist + role-filtered handbook concierge", icon: "⚑", group: "apps" },
+  { id: "sshome", label: "Source Supplies home", hint: "Six AI apps and an agent team for a UK B2B cleaning and hygiene supplier (demo data)", icon: "⌂", group: "source" },
   { id: "ssfinder", label: "Green Product Finder", hint: "What should I use? Meaning + eco filters in one SQL query, greener swaps priced at your volume", icon: "❀", group: "source" },
   { id: "sssafety", label: "COSHH & Safety Data", hint: "Safety data sheet answers with section citations; emergency, mixing and not-in-the-SDS rules in code", icon: "⚠", group: "source" },
   { id: "sssolver", label: "Cleaning Problem Solver", hint: "Tough job → the right guide by surface and sector → method, kit with stock, draft Quick Order", icon: "✦", group: "source" },
@@ -334,6 +337,7 @@ export function App() {
               {tab === "lookalike" && <LookalikeTab />}
               {tab === "fraud" && <FraudTab />}
               {tab === "recommend" && <RecommendTab />}
+              {tab === "sshome" && <SourceHomeTab onNavigate={(t) => setTab(t as TabId)} />}
               {tab === "ssfinder" && <FinderTab />}
               {tab === "sssafety" && <SafetyTab />}
               {tab === "sssolver" && <ProblemSolverTab />}
