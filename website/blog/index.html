@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en-GB" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Engineering blog — NebulaDB</title>
+  <meta name="description" content="Engineering notes from building NebulaDB: what changed, why, and the measurements behind it." />
+  <link rel="canonical" href="https://nebuladb.net/blog/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://nebuladb.net/blog/" />
+  <meta property="og:title" content="Engineering blog — NebulaDB" />
+  <meta property="og:description" content="Engineering notes from building NebulaDB: what changed, why, and the measurements behind it." />
+  <meta property="og:image" content="https://nebuladb.net/assets/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("nebula-theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" aria-label="NebulaDB home">
+        <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+          <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+          <circle class="cell-on" cx="29" cy="3" r="3"/>
+        </svg>
+        NebulaDB
+      </a>
+      <nav class="nav" id="site-nav" aria-label="Primary">
+        <a href="/features.html">Features</a>
+        <a href="/#why-rust">Why Rust</a>
+        <a href="/#demos">Demos</a>
+        <a href="/architecture.html">Architecture</a>
+        <a href="/blog/" aria-current="page">Blog</a>
+        <a href="https://github.com/bwalia/nebuladb">GitHub</a>
+      </nav>
+      <div class="header-actions">
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="Switch colour theme">
+          <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <a class="btn btn-primary btn-sm" href="https://showcase.nebuladb.net">Live showcase</a>
+        <button class="icon-btn menu-btn" type="button" data-menu aria-controls="site-nav" aria-expanded="false" aria-label="Menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+    <main id="main">
+    <section class="hero" style="padding-bottom:2rem">
+      <div class="wrap">
+        <p class="eyebrow">Engineering blog</p>
+        <h1>Notes from building NebulaDB</h1>
+        <p class="lead">What we changed, why, and the numbers behind it. Every figure comes from the repository or from production.</p>
+      </div>
+    </section>
+
+    <section class="section" style="padding-top:0">
+      <div class="wrap">
+        <div class="grid grid-3">
+          <article class="card reveal">
+            <div class="card-top"><span class="card-index">31 OCT 2026 · PERFORMANCE</span></div>
+            <h3><a href="/blog/memory-footprint.html">How we cut NebulaDB's memory per document by a third</a></h3>
+            <p>Measuring where 4.3 KB per document went, three fixes (compact documents, one key index, trimming growth slack) and a memory-profile flag. Region-b fell from 25 to 21 GiB in prod while holding more data.</p>
+            <a class="arrow-link" href="/blog/memory-footprint.html">Read the post</a>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <div>
+          <a class="brand" href="/" aria-label="NebulaDB home">
+            <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+              <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+              <circle class="cell-on" cx="29" cy="3" r="3"/>
+            </svg>
+            NebulaDB
+          </a>
+          <p style="margin-top:12px;max-width:40ch">The enterprise AI database, written in Rust. SQL, documents, vectors, RAG and agents in one binary.</p>
+        </div>
+        <div>
+          <h4>Product</h4>
+          <ul>
+            <li><a href="/features.html">Features</a></li>
+            <li><a href="/architecture.html">Architecture</a></li>
+            <li><a href="/#demos">Demos</a></li>
+            <li><a href="https://showcase.nebuladb.net">Live showcase</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Developers</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb">GitHub</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/openapi.yaml">OpenAPI spec</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/tree/main/docs/design">Design docs</a></li>
+            <li><a href="https://hub.docker.com/r/bwalia/nebula-server">Docker images</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Read</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/PROBLEMS_SOLVED.md">Problems solved</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/USE_CASES.md">Use cases</a></li>
+            <li><a href="/blog/">Engineering blog</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/technotes/active-active-xdcr.md">Multi-region XDCR</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-base">
+        <span>© <span id="year">2026</span> NebulaDB · nebuladb.net</span>
+        <span>Built in Rust · hosted on GitHub Pages</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

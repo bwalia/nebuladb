@@ -1,6 +1,6 @@
 # Technote: Prod memory footprint and deploy downtime
 
-**Status:** living note, last updated 2026-10-30
+**Status:** living note, last updated 2026-10-31
 **Audience:** platform / SRE / engineers touching `nebula-index` or the prod chart
 **Related:** [design 0014](../design/0014-disk-backed-document-store.md) (disk-backed docs), [design 0007](../design/0007-zero-downtime-reads-writes.md) (zero-downtime), [active-active XDCR](active-active-xdcr.md), PRs #166, #167
 
@@ -29,6 +29,15 @@ At 6.2M docs that is roughly **4.0 + 0.6 + 3.0 ≈ 7.6 GB** less. Caveats:
 - The trim saving depends on how a node was built:
   - **Built by replication or ingest** (region-b, or the leader after hours of writes): the full ~480 B/doc applies.
   - **Freshly restored from a snapshot:** HNSW lists come back exactly sized and only the BM25 share (~410 B/doc) applies. The HNSW slack builds back up as writes arrive, which the periodic trim handles.
+
+**Confirmed in prod (#166 only, Kubernetes working set):**
+
+| Pod | Before (30 Oct, ~21:07Z) | After (31 Oct, 00:10Z) |
+|---|---|---|
+| region-b (idle) | 25.0 GiB · 6.22M docs · 4.3 KB/doc | **21.0 GiB · 6.59M docs · 3.4 KB/doc (−21%)** |
+| leader | 47.7–50.4 GiB · 6.39M docs | 35.8 GiB · 6.75M docs |
+
+Region-b is the clean comparison; it matches the −19% the probe predicted. The leader's drop also includes a fresh restart (four days of allocator fragmentation cleared), and the embed-migrate drain was still running on it.
 
 What stays resident per doc (rough): int8 vector 772 B; HNSW links ~200–250 B; BM25 postings ~600–1,000 B; document text + metadata ~800 B; key maps ~100 B. Moving the document body to disk is design 0014 Phase 2.
 
@@ -68,7 +77,7 @@ Why nothing else served:
    - It has a 50 Gi PVC, but replicated writes are applied in memory only (`apply_wal_record`, not appended to its own WAL).
    - Its snapshots are disabled (`NEBULA_SNAPSHOT_*=0`) because snapshot peaks OOM-killed it at its old footprint.
    - XDCR deliberately doesn't persist cursors (`cross_region.rs`), so after a restart it replays from the leader's `BEGIN`, which compaction has already removed.
-   - It was filled by `scripts/bootstrap_region_mirror.sh`. **After a restart it probably needs that bootstrap again** (to verify on the next check).
+   - It was filled by `scripts/bootstrap_region_mirror.sh`, and **after a restart it does need that bootstrap again**. After the 30 Oct deploy it got back only 852k of 6.56M docs from the retained WAL. Re-running the bootstrap (30 Oct 22:33–23:59Z) restored it to the full corpus with no public 503s (83 checks).
    - It's also not a read fallback for `api.nebuladb.net` / `showcase`.
 3. **One `helm upgrade` restarts both pods at once.**
 4. **Leader recovery is long:** 16 GB snapshot + BM25 rebuild + WAL replay, mostly single-threaded (~1 core busy), 20–45 min.
