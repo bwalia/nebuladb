@@ -11,7 +11,7 @@
  * deterministic simulator and are badged SIMULATED. Nothing on this
  * screen presents a simulated number as a measurement.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { api, type Health, type StatsSnapshot, type BucketStats, type DurabilityInfo } from "../api";
 import { live, derived, type Sourced } from "../demo/provenance";
 import { buildCluster, tickCluster, simExecSlice, type SimCluster } from "../demo/simulation";
@@ -38,6 +38,7 @@ export function ExecutiveTab({ onNavigate }: { onNavigate?: (t: string) => void 
   const [err, setErr] = useState<string | null>(null);
   const [cluster, setCluster] = useState<SimCluster>(() => buildCluster());
   const [tick, setTick] = useState(0);
+  const bucketsInFlight = useRef(false);
 
   // Live poll. Each of these is a real endpoint; failures surface
   // rather than silently falling back to invented numbers.
@@ -48,16 +49,32 @@ export function ExecutiveTab({ onNavigate }: { onNavigate?: (t: string) => void 
       // last good value and is named in the banner, instead of blanking
       // the whole page (incident 2026-10-31: a slow /admin/buckets took
       // health and stats down with it under Promise.all).
-      const [h, s, b] = await Promise.allSettled([api.health(), api.stats(), api.buckets()]);
+      // Each tile updates the moment its own call returns. Waiting for
+      // all three (even with allSettled) left Documents at 0 for up to
+      // 45s while the bucket list filled its cache (31 Oct). The bucket
+      // list is skipped while a previous fetch is still running, so slow
+      // fetches don't pile up behind the 5s poll.
+      const failed: string[] = [];
+      const one = <T,>(name: string, p: Promise<T>, set: (v: T) => void) =>
+        p.then(
+          (v) => {
+            if (!dead) set(v);
+          },
+          () => {
+            failed.push(name);
+          }
+        );
+      const jobs = [one("health", api.health(), setHealth), one("stats", api.stats(), setStats)];
+      if (!bucketsInFlight.current) {
+        bucketsInFlight.current = true;
+        jobs.push(
+          one("buckets", api.buckets(), setBuckets).finally(() => {
+            bucketsInFlight.current = false;
+          })
+        );
+      }
+      await Promise.all(jobs);
       if (dead) return;
-      if (h.status === "fulfilled") setHealth(h.value);
-      if (s.status === "fulfilled") setStats(s.value);
-      if (b.status === "fulfilled") setBuckets(b.value);
-      const failed = [
-        h.status === "rejected" ? "health" : null,
-        s.status === "rejected" ? "stats" : null,
-        b.status === "rejected" ? "buckets" : null,
-      ].filter(Boolean);
       setErr(failed.length ? `Couldn't refresh ${failed.join(", ")}; showing the last good data.` : null);
       try {
         const d = await api.durability();
