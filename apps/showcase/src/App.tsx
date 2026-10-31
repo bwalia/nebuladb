@@ -38,6 +38,7 @@ import { RecommendTab } from "./tabs/RecommendTab";
 import { BlogTab } from "./tabs/BlogTab";
 import { FinderTab } from "./source/FinderTab";
 import { SafetyTab } from "./source/SafetyTab";
+import { ProblemSolverTab } from "./source/ProblemSolverTab";
 import { UseCaseDemo, type UseCaseSpec } from "./usecases/UseCaseDemo";
 import { clinicalSpec } from "./usecases/specs/clinical";
 import { complianceSpec } from "./usecases/specs/compliance";
@@ -74,6 +75,7 @@ type TabId =
   | "recommend"
   | "ssfinder"
   | "sssafety"
+  | "sssolver"
   | IndustryTabId
   | "rag"
   | "hybrid"
@@ -132,6 +134,7 @@ const NAV: NavItem[] = [
   { id: "onboarding", label: "Onboarding", hint: "Day-one checklist + role-filtered handbook concierge", icon: "⚑", group: "apps" },
   { id: "ssfinder", label: "Green Product Finder", hint: "What should I use? Meaning + eco filters in one SQL query, greener swaps priced at your volume", icon: "❀", group: "source" },
   { id: "sssafety", label: "COSHH & Safety Data", hint: "Safety data sheet answers with section citations; emergency, mixing and not-in-the-SDS rules in code", icon: "⚠", group: "source" },
+  { id: "sssolver", label: "Cleaning Problem Solver", hint: "Tough job → the right guide by surface and sector → method, kit with stock, draft Quick Order", icon: "✦", group: "source" },
   { id: "entity", label: "Entity Resolve", hint: "CRM dedupe via semantic neighbours + merge/review scores", icon: "⊕", group: "use" },
   { id: "lookalike", label: "Lookalike Accounts", hint: "Won ICP → similar prospects with industry filters", icon: "◈", group: "use" },
   { id: "fraud", label: "Fraud Neighbours", hint: "Alert → labelled tx neighbourhood → risk vote (no LLM)", icon: "⚡", group: "use" },
@@ -324,6 +327,7 @@ export function App() {
               {tab === "recommend" && <RecommendTab />}
               {tab === "ssfinder" && <FinderTab />}
               {tab === "sssafety" && <SafetyTab />}
+              {tab === "sssolver" && <ProblemSolverTab />}
               {tab in INDUSTRY_SPECS && (
                 <UseCaseDemo spec={INDUSTRY_SPECS[tab as IndustryTabId]} />
               )}
