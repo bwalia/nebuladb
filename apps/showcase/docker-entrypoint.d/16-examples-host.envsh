@@ -1,0 +1,21 @@
+#!/bin/sh
+# Qualify NEBULA_EXAMPLES_HOST for nginx's per-request resolver (sourced
+# before envsubst). nginx's `resolver` doesn't apply /etc/resolv.conf
+# search domains, so a bare Kubernetes Service name like
+# `nebuladb-examples` would never resolve. Append the first search domain
+# (`<namespace>.svc.cluster.local` in a pod). Names with a dot, and hosts
+# with no search domains (compose), are left alone.
+case "${NEBULA_EXAMPLES_HOST:-}" in
+  ""|*.*) ;;
+  *)
+    domain=$(awk '/^search /{print $2; exit}' /etc/resolv.conf 2>/dev/null)
+    if [ -n "$domain" ]; then
+      host="${NEBULA_EXAMPLES_HOST%%:*}"
+      case "$NEBULA_EXAMPLES_HOST" in
+        *:*) port=":${NEBULA_EXAMPLES_HOST#*:}" ;;
+        *) port="" ;;
+      esac
+      export NEBULA_EXAMPLES_HOST="${host}.${domain}${port}"
+    fi
+    ;;
+esac

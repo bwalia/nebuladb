@@ -313,8 +313,10 @@ showcase:
 # ---------------------------------------------------------------------------
 # Examples suite (agents over MCP) — deployed alongside the showcase
 # ---------------------------------------------------------------------------
-# Serves Claude-driven NebulaDB agents at /examples on the same ingress
-# host as the showcase. Source is chart-bundled (files/examples); the
+# Serves Claude-driven NebulaDB agents at /examples on the showcase host.
+# The showcase nginx proxies /examples to this Service behind its login
+# (no Ingress path of its own): /examples/seed writes to the database and
+# agent runs spend Anthropic credit. Source is chart-bundled (files/examples); the
 # container is stock python + pip install at start so we don't need a
 # separate image publish for the first cut.
 examples:

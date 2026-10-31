@@ -90,6 +90,7 @@ COPY --from=build /src/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 # Sourced by the nginx entrypoint before envsubst; must be executable.
 COPY --chmod=755 docker-entrypoint.d/15-showcase-auth.envsh /docker-entrypoint.d/
+COPY --chmod=755 docker-entrypoint.d/16-examples-host.envsh /docker-entrypoint.d/
 # Placeholder so `include` is valid before the entrypoint rewrites it.
 RUN touch /etc/nginx/showcase-oauth-gate.conf
 # Defaults target the compose topology (leader `nebula-server` +
@@ -111,6 +112,10 @@ ENV NEBULA_API_KEYS=""
 # service; the Helm chart runs it as a sidecar and overrides this to
 # http://127.0.0.1:8090.
 ENV NEBULA_MCP=http://nebula-mcp:8090
+# Agents API behind /examples (the chart's examples Service). Short names
+# are qualified at boot with the pod's DNS search domain, because nginx's
+# per-request resolver doesn't apply search domains.
+ENV NEBULA_EXAMPLES_HOST=nebuladb-examples
 # Basic auth is ON by default: every page and /api call asks for a login.
 # Supply SHOWCASE_AUTH_USERNAME + SHOWCASE_AUTH_PASSWORD, or set
 # SHOWCASE_AUTH_DISABLED=true to open it. Without credentials it fails
