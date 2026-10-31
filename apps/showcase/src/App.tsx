@@ -40,6 +40,7 @@ import { FinderTab } from "./source/FinderTab";
 import { SafetyTab } from "./source/SafetyTab";
 import { ProblemSolverTab } from "./source/ProblemSolverTab";
 import { ReorderTab } from "./source/ReorderTab";
+import { WashroomTab } from "./source/WashroomTab";
 import { UseCaseDemo, type UseCaseSpec } from "./usecases/UseCaseDemo";
 import { clinicalSpec } from "./usecases/specs/clinical";
 import { complianceSpec } from "./usecases/specs/compliance";
@@ -78,6 +79,7 @@ type TabId =
   | "sssafety"
   | "sssolver"
   | "ssreorder"
+  | "sswashroom"
   | IndustryTabId
   | "rag"
   | "hybrid"
@@ -138,6 +140,7 @@ const NAV: NavItem[] = [
   { id: "sssafety", label: "COSHH & Safety Data", hint: "Safety data sheet answers with section citations; emergency, mixing and not-in-the-SDS rules in code", icon: "⚠", group: "source" },
   { id: "sssolver", label: "Cleaning Problem Solver", hint: "Tough job → the right guide by surface and sector → method, kit with stock, draft Quick Order", icon: "✦", group: "source" },
   { id: "ssreorder", label: "Smart Reorder", hint: "Multi-site reorder: order history → forecast → swaps → delivery-day check → draft basket", icon: "↻", group: "source" },
+  { id: "sswashroom", label: "Washroom Service Desk", hint: "Source Washroom issues → nearest past jobs vote, missed-visit check, cited reply, quote helper", icon: "⌖", group: "source" },
   { id: "entity", label: "Entity Resolve", hint: "CRM dedupe via semantic neighbours + merge/review scores", icon: "⊕", group: "use" },
   { id: "lookalike", label: "Lookalike Accounts", hint: "Won ICP → similar prospects with industry filters", icon: "◈", group: "use" },
   { id: "fraud", label: "Fraud Neighbours", hint: "Alert → labelled tx neighbourhood → risk vote (no LLM)", icon: "⚡", group: "use" },
@@ -332,6 +335,7 @@ export function App() {
               {tab === "sssafety" && <SafetyTab />}
               {tab === "sssolver" && <ProblemSolverTab />}
               {tab === "ssreorder" && <ReorderTab />}
+              {tab === "sswashroom" && <WashroomTab />}
               {tab in INDUSTRY_SPECS && (
                 <UseCaseDemo spec={INDUSTRY_SPECS[tab as IndustryTabId]} />
               )}
