@@ -1713,6 +1713,31 @@ impl TextIndex {
         self.data_dir.as_deref()
     }
 
+    /// Per-bucket doc and parent counts straight from the bucket index:
+    /// O(buckets + parent docs), no document scan, no metadata parse.
+    /// `metadata_keys` is always empty — use [`Self::bucket_stats`] for
+    /// those. Cheap enough to serve on the request path at any corpus
+    /// size, unlike the full scan.
+    pub fn bucket_counts(&self) -> Vec<BucketStats> {
+        let g = self.inner.read();
+        let mut parents: AHashMap<&str, usize> = AHashMap::new();
+        for (bucket, _) in g.parents.keys() {
+            *parents.entry(bucket.as_str()).or_insert(0) += 1;
+        }
+        let mut out: Vec<BucketStats> = g
+            .by_bucket
+            .iter()
+            .map(|(bucket, keys)| BucketStats {
+                bucket: bucket.to_string(),
+                docs: keys.len(),
+                parent_docs: parents.get(&**bucket).copied().unwrap_or(0),
+                metadata_keys: Vec::new(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.bucket.cmp(&b.bucket));
+        out
+    }
+
     pub fn bucket_stats(&self, top_metadata_keys: usize) -> Vec<BucketStats> {
         // Take the doc handles under the lock (an Arc bump each, ~0.1s
         // at 2.3M docs) and tally with no lock held. Scanning under the
@@ -2334,6 +2359,24 @@ mod tests {
         // Writes still work after a trim.
         idx.upsert_text("b", "new", "county kent fresh", serde_json::json!({})).await.unwrap();
         assert!(idx.search_bm25("fresh", None, 5).iter().any(|h| h.id == "new"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bucket_counts_match_the_full_scan() {
+        let idx = make_index();
+        idx.upsert_text("a", "1", "x", serde_json::json!({"k": 1})).await.unwrap();
+        idx.upsert_text("a", "2", "x", serde_json::json!({})).await.unwrap();
+        idx.upsert_text("b", "1", "x", serde_json::json!({})).await.unwrap();
+        let chunker = nebula_chunk::FixedSizeChunker::new(5, 0).unwrap();
+        idx.upsert_document("a", "doc", "aaaaabbbbbccccc", &chunker, serde_json::json!({}))
+            .await
+            .unwrap();
+        idx.delete("b", "1").unwrap();
+        let strip = |v: Vec<BucketStats>| -> Vec<(String, usize, usize)> {
+            v.into_iter().map(|s| (s.bucket, s.docs, s.parent_docs)).collect()
+        };
+        assert_eq!(strip(idx.bucket_counts()), strip(idx.bucket_stats(0)));
+        assert_eq!(strip(idx.bucket_counts()), vec![("a".to_string(), 5, 1)]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

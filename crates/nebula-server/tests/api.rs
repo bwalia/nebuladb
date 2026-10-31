@@ -1340,33 +1340,35 @@ async fn admin_buckets_reports_per_bucket_stats() {
             .await
             .unwrap();
     }
-    let res = app
-        .oneshot(
-            Request::get("/api/v1/admin/buckets")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    // The first call answers at once from the bucket index (no keys
+    // yet) and starts the background scan; keys show up on a later poll.
+    let get = || Request::get("/api/v1/admin/buckets").body(Body::empty()).unwrap();
+    let res = app.clone().oneshot(get()).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = body_string(res.into_body()).await;
     assert!(body.contains("\"bucket\":\"a\""));
     assert!(body.contains("\"bucket\":\"b\""));
     assert!(body.contains("\"docs\":2"));
-    assert!(body.contains("\"region\""));
+    let mut body = String::new();
+    for _ in 0..100 {
+        body = body_string(app.clone().oneshot(get()).await.unwrap().into_body()).await;
+        if body.contains("\"region\"") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(body.contains("\"region\""), "metadata keys never arrived: {body}");
 }
 
-// `/admin/buckets` is TTL-cached (the scan is a full corpus walk
-// under the index read lock — see admin_buckets in router.rs).
-// Within the TTL a write does NOT show up; that staleness is the
-// contract that keeps the Admin tab's 3s poll from stacking scans.
-// A request with a different `top_keys` bypasses the cached entry
-// (cache is keyed on it) and sees fresh data.
+// `/admin/buckets` never scans the corpus while a request waits
+// (incident 2026-10-31: a 45s scan behind a 15s proxy timeout).
+// `top_keys=0` is always live from the bucket index; the keyed view is
+// served from a background-refreshed cache, so it may lag on key counts.
 //
 // Multi-thread runtime required: TextIndex writes use
 // tokio::task::block_in_place (crates/nebula-index/src/lib.rs:410).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn admin_buckets_is_ttl_cached() {
+async fn admin_buckets_never_blocks_on_a_scan() {
     let app = build_router(app_state(&[]));
     let upsert = |id: &str| {
         Request::post("/api/v1/bucket/a/doc")
@@ -1374,45 +1376,29 @@ async fn admin_buckets_is_ttl_cached() {
             .body(Body::from(format!(r#"{{"id":"{id}","text":"x"}}"#)))
             .unwrap()
     };
+    let get = |q: &str| {
+        Request::get(format!("/api/v1/admin/buckets{q}"))
+            .body(Body::empty())
+            .unwrap()
+    };
     let _ = app.clone().oneshot(upsert("1")).await.unwrap();
-
-    let res = app
-        .clone()
-        .oneshot(
-            Request::get("/api/v1/admin/buckets")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let res = app.clone().oneshot(get("")).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
     assert!(body_string(res.into_body()).await.contains("\"docs\":1"));
 
-    // Second doc lands, but the default-top_keys view is cached.
+    // Counts-only view is live: a new doc shows up immediately.
     let _ = app.clone().oneshot(upsert("2")).await.unwrap();
-    let res = app
-        .clone()
-        .oneshot(
-            Request::get("/api/v1/admin/buckets")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(
-        body_string(res.into_body()).await.contains("\"docs\":1"),
-        "expected cached (stale) count inside TTL"
-    );
-
-    // Different top_keys → cache miss → fresh scan sees both docs.
-    let res = app
-        .oneshot(
-            Request::get("/api/v1/admin/buckets?top_keys=5")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let res = app.clone().oneshot(get("?top_keys=0")).await.unwrap();
     assert!(body_string(res.into_body()).await.contains("\"docs\":2"));
+
+    // The keyed view answers immediately every time (it never waits on
+    // the scan), whether or not the background refresh has landed.
+    for _ in 0..5 {
+        let t = std::time::Instant::now();
+        let res = app.clone().oneshot(get("?top_keys=5")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+    }
 }
 
 // Multi-thread runtime required: TextIndex writes use

@@ -343,18 +343,14 @@ pub struct AppState {
     /// in `Normal` forever, which is the correct in-memory/test
     /// behavior.
     pub resource: Arc<nebula_resource::ResourceManager>,
-    /// TTL cache + single-flight gate for `/admin/buckets`.
-    /// `bucket_stats` is a full corpus scan under the index read
-    /// lock; the showcase Admin tab polls every ~3s, and at
-    /// multi-million-doc scale each scan outlives the poll interval —
-    /// scans stack without bound and the lock is held read
-    /// continuously, wedging writers (and, via writer priority,
-    /// every new reader: SQL stops responding). The handler holds
-    /// this async mutex across the scan so at most ONE scan runs at
-    /// a time, and serves the cached result inside the TTL. Keyed by
-    /// the `top_keys` request param so a non-default introspection
-    /// call can't poison the UI's cache.
-    pub bucket_stats_cache: Arc<tokio::sync::Mutex<Option<BucketStatsCacheEntry>>>,
+    /// Stale-while-revalidate cache for `/admin/buckets` metadata keys.
+    /// `bucket_stats` is a full corpus scan (~45s at 8.3M docs), so it
+    /// never runs while a request waits: the handler serves the last
+    /// result (or plain counts from the bucket index) immediately and,
+    /// when the entry is older than the TTL, starts at most ONE
+    /// background refresh. Keyed by `top_keys` so an introspection call
+    /// can't poison the UI's entry. See incident 2026-10-31.
+    pub bucket_stats_cache: Arc<tokio::sync::Mutex<BucketStatsCache>>,
     /// Unified enterprise search (native + optional Azure backend).
     pub search: Arc<nebula_search::DualSearchBackend>,
     /// Compatibility registry (Azure AI Search, MCP, …).
@@ -365,6 +361,14 @@ pub struct AppState {
     pub agent_sessions: Arc<crate::secure_agent::AgentSessions>,
     /// Embed model/dim migration job (dump → restart → drain).
     pub embed_migrate: crate::embed_migrate::EmbedMigrateHub,
+}
+
+/// State behind [`AppState::bucket_stats_cache`].
+#[derive(Default)]
+pub struct BucketStatsCache {
+    pub entry: Option<BucketStatsCacheEntry>,
+    /// A background scan is running; don't start another.
+    pub refreshing: bool,
 }
 
 /// One cached `/admin/buckets` response. See
@@ -437,7 +441,7 @@ impl AppState {
             resource: Arc::new(nebula_resource::ResourceManager::new(
                 nebula_resource::Thresholds::default(),
             )),
-            bucket_stats_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            bucket_stats_cache: Arc::new(tokio::sync::Mutex::new(BucketStatsCache::default())),
             search,
             compat_registry,
             companies_house: crate::companies_house::CompaniesHouseClient::from_env(),
