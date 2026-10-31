@@ -179,13 +179,16 @@ export function FinderTab() {
         }
         swapList = found
           .filter((h) => h.product.replaces_sku && oldBySku.has(h.product.replaces_sku))
+          // With an account picked, only swap what that account actually buys.
+          .filter((h) => !account || packs.has(h.product.replaces_sku as string))
           .map((h) => {
             const from = oldBySku.get(h.product.replaces_sku as string) as Product;
             const sixMonths = packs.get(from.sku);
             return sixMonths !== undefined
               ? swapSaving(from, h.product, sixMonths * 2, "orders")
               : swapSaving(from, h.product, ASSUMED_PACKS_PER_YEAR, "assumed");
-          });
+          })
+          .sort((a, b) => b.savingKg - a.savingKg);
       }
       push({
         label: "Rank in the browser",
@@ -383,7 +386,7 @@ export function FinderTab() {
 
             <Panel title="Greener swaps" subtitle={account ? "At this account's order volume (last 6 months × 2)" : `No account picked: assumes ${ASSUMED_PACKS_PER_YEAR} packs a year`}>
               {swaps.length === 0 ? (
-                <p className="text-sm text-gray-500 dark:text-muted">None of these matches replaces a less-green product.</p>
+                <p className="text-sm text-gray-500 dark:text-muted">{account ? "None of these matches replaces a product this account buys today." : "None of these matches replaces a less-green product."}</p>
               ) : (
                 <ul className="space-y-2 text-sm">
                   {swaps.map((s) => (
