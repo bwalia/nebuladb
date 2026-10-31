@@ -30,10 +30,6 @@ server:
     hosts:
       - host: test-showcase.nebuladb.net
         paths:
-          - path: /examples
-            pathType: Prefix
-            service: nebuladb-examples
-            portNumber: 80
           - path: /
             pathType: Prefix
     tls:

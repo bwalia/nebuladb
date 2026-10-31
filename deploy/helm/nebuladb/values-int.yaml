@@ -44,11 +44,6 @@ server:
     hosts:
       - host: int-nebuladb.nebuladb.net
         paths:
-          # Examples agents API (more-specific path before showcase /).
-          - path: /examples
-            pathType: Prefix
-            service: nebuladb-examples
-            portNumber: 80
           # No `service`/`portName` → defaults to the showcase gateway.
           - path: /
             pathType: Prefix
