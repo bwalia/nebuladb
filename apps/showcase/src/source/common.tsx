@@ -9,6 +9,8 @@ import { ensureSeeded } from "../rag/seed";
 import { sseStream } from "../sse";
 import type { ContextDoc } from "../rag/GroundedChat";
 import { SEEDS, type SeedKey } from "./data";
+import { BADGES } from "./data/common";
+import { costPerUse, type Product } from "./data/products";
 
 export function DemoNote({ extra }: { extra?: string }) {
   return (
@@ -135,6 +137,46 @@ export function ukMonth(ym: string): string {
 export function metaOf(row: SqlRow): Record<string, unknown> {
   const { metadata, ...top } = row.fields as Record<string, unknown>;
   return { ...(metadata as Record<string, unknown> | undefined), ...top };
+}
+
+/** A product read back from an `ss_products` SQL row. */
+export function productOf(row: SqlRow): Product {
+  const m = metaOf(row);
+  const arr = (v: unknown) => (Array.isArray(v) ? (v as string[]) : []);
+  return {
+    sku: str(m.sku),
+    name: str(m.name),
+    category: str(m.category) as Product["category"],
+    use_areas: arr(m.use_areas),
+    sectors: arr(m.sectors) as Product["sectors"],
+    badges: arr(m.badges) as Product["badges"],
+    concentrate: m.concentrate === true,
+    dilution: str(m.dilution),
+    pack: str(m.pack),
+    price_gbp: num(m.price_gbp),
+    in_stock: m.in_stock === true,
+    stock_qty: num(m.stock_qty),
+    lead_days: num(m.lead_days),
+    co2e_kg_per_unit: num(m.co2e_kg_per_unit),
+    replaces_sku: m.replaces_sku ? str(m.replaces_sku) : undefined,
+    brand_family: m.brand_family ? str(m.brand_family) : undefined,
+    uses_per_pack: num(m.uses_per_pack, 1),
+    use_unit: str(m.use_unit),
+    summary: str(m.text),
+  };
+}
+
+/** Product facts as plain text for a grounding doc. Badges are spelled out so the model can't add any. */
+export function productFacts(p: Product): string {
+  const badges = p.badges.length ? p.badges.map((b) => BADGES[b] ?? b).join(", ") : "none";
+  return (
+    `${p.name} (${p.sku}). Category ${p.category}. Dilution: ${p.dilution}. Pack: ${p.pack}. ` +
+    `Price ${gbp(p.price_gbp)} per pack ex VAT. Cost per use ${gbpFine(costPerUse(p))} per ${p.use_unit}. ` +
+    `Eco badges (complete list): ${badges}. ` +
+    `${p.in_stock ? `In stock (${p.stock_qty} packs), delivery in ${p.lead_days} day${p.lead_days === 1 ? "" : "s"}` : `Out of stock, back in ${p.lead_days} days`}. ` +
+    `CO2e ${p.co2e_kg_per_unit} kg per pack.` +
+    (p.replaces_sku ? ` Greener swap for ${p.replaces_sku}.` : "")
+  );
 }
 
 export function str(v: unknown): string {

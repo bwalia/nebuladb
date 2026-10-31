@@ -36,6 +36,7 @@ import { LookalikeTab } from "./tabs/LookalikeTab";
 import { FraudTab } from "./tabs/FraudTab";
 import { RecommendTab } from "./tabs/RecommendTab";
 import { BlogTab } from "./tabs/BlogTab";
+import { FinderTab } from "./source/FinderTab";
 import { UseCaseDemo, type UseCaseSpec } from "./usecases/UseCaseDemo";
 import { clinicalSpec } from "./usecases/specs/clinical";
 import { complianceSpec } from "./usecases/specs/compliance";
@@ -70,6 +71,7 @@ type TabId =
   | "lookalike"
   | "fraud"
   | "recommend"
+  | "ssfinder"
   | IndustryTabId
   | "rag"
   | "hybrid"
@@ -101,7 +103,7 @@ interface NavItem {
   label: string;
   hint: string;
   icon: string;
-  group: "home" | "data" | "ai" | "apps" | "use" | "industry" | "cluster" | "ops";
+  group: "home" | "data" | "ai" | "apps" | "source" | "use" | "industry" | "cluster" | "ops";
 }
 
 const NAV: NavItem[] = [
@@ -126,6 +128,7 @@ const NAV: NavItem[] = [
   { id: "policy", label: "Policy Desk", hint: "HR / security / finance handbook Q&A with citations", icon: "▤", group: "apps" },
   { id: "rfp", label: "RFP Responder", hint: "Buyer questions → capabilities + past proposals → cited drafts", icon: "❐", group: "apps" },
   { id: "onboarding", label: "Onboarding", hint: "Day-one checklist + role-filtered handbook concierge", icon: "⚑", group: "apps" },
+  { id: "ssfinder", label: "Green Product Finder", hint: "What should I use? Meaning + eco filters in one SQL query, greener swaps priced at your volume", icon: "❀", group: "source" },
   { id: "entity", label: "Entity Resolve", hint: "CRM dedupe via semantic neighbours + merge/review scores", icon: "⊕", group: "use" },
   { id: "lookalike", label: "Lookalike Accounts", hint: "Won ICP → similar prospects with industry filters", icon: "◈", group: "use" },
   { id: "fraud", label: "Fraud Neighbours", hint: "Alert → labelled tx neighbourhood → risk vote (no LLM)", icon: "⚡", group: "use" },
@@ -151,6 +154,7 @@ const GROUP_LABELS: Record<NavItem["group"], string> = {
   data: "Data",
   ai: "AI",
   apps: "RAG apps",
+  source: "Source Supplies",
   use: "Applied use cases",
   industry: "Industry use cases",
   cluster: "Cluster",
@@ -276,7 +280,7 @@ export function App() {
                 <p className="mt-1 text-sm text-gray-500 dark:text-muted">{active.hint}</p>
               </div>
             )}
-            {(active?.group === "apps" || active?.group === "industry") && health && /mock/i.test(health.model) && (
+            {(active?.group === "apps" || active?.group === "source" || active?.group === "industry") && health && /mock/i.test(health.model) && (
               <div className="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-xs text-gray-700 dark:text-muted">
                 <span className="font-semibold text-warn">Mock embedder.</span> This server embeds with{" "}
                 <code>{health.model}</code> (a deterministic hash, not a language model), so semantic
@@ -315,6 +319,7 @@ export function App() {
               {tab === "lookalike" && <LookalikeTab />}
               {tab === "fraud" && <FraudTab />}
               {tab === "recommend" && <RecommendTab />}
+              {tab === "ssfinder" && <FinderTab />}
               {tab in INDUSTRY_SPECS && (
                 <UseCaseDemo spec={INDUSTRY_SPECS[tab as IndustryTabId]} />
               )}

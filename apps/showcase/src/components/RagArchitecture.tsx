@@ -11,6 +11,7 @@
  * domain systems are yours; NebulaDB does not pretend to ship them.
  */
 import { useState } from "react";
+import { SOURCE_BLUEPRINTS } from "../source/blueprints";
 
 export type Owner = "nebula" | "app" | "human";
 
@@ -359,6 +360,7 @@ export const BLUEPRINTS: Record<string, RagBlueprint> = {
     hitl: { title: "Supervisor", sub: "safety sign-off" },
     intents: [{ intent: "How do I fix…?", route: "semantic_match on field_service + asset filters" }],
   },
+  ...SOURCE_BLUEPRINTS,
 };
 
 export const GUIDE_HREF = "#/blog/rag-apps-quickly-with-nebula-mcp";
