@@ -52,7 +52,10 @@ on:
         description: What to run
         type: choice
         default: build-and-deploy
-        options: [build, deploy, build-and-deploy]
+        # showcase-only: build, then swap ONLY the showcase image with a
+        # rolling update. The database pods, ConfigMap and chart are left
+        # untouched, so the leader never restarts and serves no 503s.
+        options: [build, deploy, build-and-deploy, showcase-only]
       IMAGE_TAG:
         description: Image tag to deploy (blank => commit short SHA)
         required: false
@@ -273,6 +276,7 @@ jobs:
       # earlier chart revisions) block `helm upgrade` with ownership
       # errors. Stamp the release labels/annotations so Helm can adopt.
       - name: Adopt orphan chart resources
+        if: ${{ github.event.inputs.DEPLOYMENT_TYPE != 'showcase-only' }}
         run: |
           set -euo pipefail
           ns="$TARGET_ENV"
@@ -293,6 +297,7 @@ jobs:
           adopt externalsecret nebuladb-config
 
       - name: Helm upgrade --install
+        if: ${{ github.event.inputs.DEPLOYMENT_TYPE != 'showcase-only' }}
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
@@ -321,7 +326,25 @@ jobs:
             --namespace "$TARGET_ENV" --create-namespace \
             --timeout 10m
 
+      - name: Showcase-only image swap
+        if: ${{ github.event.inputs.DEPLOYMENT_TYPE == 'showcase-only' }}
+        # Touches nothing but the showcase Deployment's image. One replica
+        # + the default RollingUpdate (maxSurge 1, maxUnavailable 0) means
+        # the new pod must pass its readiness probe before the old one
+        # goes, so the site never drops. The next full helm upgrade sets
+        # showcase.image.tag explicitly, so this drift is temporary.
+        run: |
+          set -euo pipefail
+          IMG="${DOCKERHUB_NAMESPACE}/nebula-showcase:${{ steps.tag.outputs.tag }}"
+          before=$(kubectl -n "$TARGET_ENV" get deploy nebuladb -o jsonpath='{.metadata.generation}')
+          kubectl -n "$TARGET_ENV" set image deploy/nebuladb-showcase showcase="$IMG"
+          kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb-showcase --timeout=5m
+          after=$(kubectl -n "$TARGET_ENV" get deploy nebuladb -o jsonpath='{.metadata.generation}')
+          [ "$before" = "$after" ] || { echo "database Deployment changed during a showcase-only deploy" >&2; exit 1; }
+          kubectl -n "$TARGET_ENV" get pods -o wide
+
       - name: Rollout status
+        if: ${{ github.event.inputs.DEPLOYMENT_TYPE != 'showcase-only' }}
         run: |
           set -euo pipefail
           kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb --timeout=10m
