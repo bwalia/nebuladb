@@ -33,16 +33,25 @@ export function RebalanceTab() {
     setLog((prev) => [`${new Date().toISOString().slice(11, 19)}  ${line}`, ...prev].slice(0, 40));
 
   const refreshMeta = useCallback(async () => {
-    // Independent: a slow bucket list mustn't hide replication state.
-    const [b, r] = await Promise.allSettled([api.buckets(), api.replication()]);
-    if (r.status === "fulfilled") setRepl(r.value);
-    if (b.status === "fulfilled") {
-      const names = b.value.map((x) => x.bucket).filter(Boolean);
-      setBuckets(names);
-      if (!bucket && names.length) setBucket(names[0]!);
-    }
-    const failed = [b, r].filter((x) => x.status === "rejected") as PromiseRejectedResult[];
-    setErr(failed.length ? failed.map((x) => (x.reason as Error).message).join("; ") : null);
+    // Independent: each panel updates as soon as its own call returns,
+    // so a slow bucket list can't hold back replication state.
+    const errors: string[] = [];
+    await Promise.all([
+      api.replication().then(setRepl, (e: Error) => {
+        errors.push(e.message);
+      }),
+      api.buckets().then(
+        (b) => {
+          const names = b.map((x) => x.bucket).filter(Boolean);
+          setBuckets(names);
+          if (!bucket && names.length) setBucket(names[0]!);
+        },
+        (e: Error) => {
+          errors.push(e.message);
+        }
+      ),
+    ]);
+    setErr(errors.length ? errors.join("; ") : null);
   }, [bucket]);
 
   useEffect(() => {
