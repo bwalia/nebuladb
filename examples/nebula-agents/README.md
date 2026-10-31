@@ -80,6 +80,45 @@ The first run stores the memory with `remember`. The second run calls `recall` f
 billing migration, and answers from the DR and backup runbooks. Memories go to the `agent_memory`
 bucket with `user_id` metadata, persist in the WAL, and `recall` returns only that user's entries.
 
+## Source Supplies team (`--team source`)
+
+A second team built for one business: Source Supplies, a UK B2B cleaning and hygiene supplier. It
+reads the `ss_*` demo buckets (all records are invented; see
+[docs/source-supplies-demo.md](../../docs/source-supplies-demo.md)).
+
+| Agent | Key | Tools |
+|---|---|---|
+| Product Advisor | `product` | `execute_sql`, `semantic_search`, `get_document` |
+| Safety Agent | `safety` | `semantic_search` (`ss_sds`, `ss_guides` only), `get_document` |
+| Order Agent | `order` | `execute_sql`, `semantic_search`, `insert_document` (only into `ss_order_drafts`, `status = draft`) |
+| Washroom Agent | `washroom` | `execute_sql`, `semantic_search`, `get_document` |
+| Sustainability Agent | `sustainability` | `execute_sql`, `get_document` |
+| Account Assistant | `assistant` | `recall`, `remember`, `semantic_search`, `answer_question` |
+| Supervisor | `supervisor` | `delegate` only |
+
+The limits are code, not prompt text: `source_team.py` hands each agent tools that call MCP through a
+`GuardedSession` (`source_guards.py`), which rejects a call before it reaches nebula-mcp when it
+breaks the agent's policy: SQL must be one read-only `SELECT` over `ss_*` buckets, searches and reads
+must name an allowed bucket, the Order Agent may only insert `status = 'draft'` docs into
+`ss_order_drafts`, and the Account Assistant may only use `agent_memory` for the `--user` it was
+started with. A blocked call comes back to the agent as a tool error
+(`blocked by Source Supplies guard: …`) and is printed to stderr. No agent places an order.
+
+```bash
+python source_seed.py   # the ss_* buckets, from apps/showcase/src/source/data (needs Node 22.6+)
+python -m unittest -v test_source_guards   # guard tests, standard library only
+
+python run.py --team source supervisor "Brightway FM wants to cut CO2 by 20% at their 4 office sites without spending more. What can we do this month?"
+python run.py --team source order "Draft next month's order for Kingsmead Academy, North site."
+python run.py --team source safety "Which PPE do cleaners need for the demo descaler DS-200?"
+python run.py --team source washroom "Which sites missed a sanitary visit in the last 30 days?"
+python run.py --team source assistant --user BRIGHTWAY "We are moving to 3 deliveries a week from January."
+```
+
+`source_seed.py` writes with the same REST bulk upsert, doc ids and `seed_version` as the showcase,
+so seeding from either side is idempotent (a second run writes 0 docs). The showcase **AI agents**
+tab has a matching "Source Supplies" preset with scripted plans and real tool calls.
+
 ## Configuration
 
 | Variable | Default | |

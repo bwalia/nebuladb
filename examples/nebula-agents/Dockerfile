@@ -11,7 +11,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
  && pip install --no-cache-dir 'fastapi>=0.115' 'uvicorn[standard]>=0.32'
 
-COPY nebula_agents.py seed.py run.py server.py ./
+COPY nebula_agents.py seed.py run.py server.py source_team.py source_guards.py ./
 
 ENV PYTHONUNBUFFERED=1 \
     NEBULA_MCP_URL=http://127.0.0.1:8090/mcp \

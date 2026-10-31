@@ -4,6 +4,12 @@
     python run.py supervisor "Why has our customer API become slower?"
     python run.py assistant --user u-42 "I'm moving billing to NebulaDB. What's our DR process?"
 
+The Source Supplies team (demo data, see docs/source-supplies-demo.md):
+
+    python run.py --team source supervisor "Brightway FM wants to cut CO2 by 20%..."
+    python run.py --team source order "Draft next month's order for Kingsmead Academy, North site."
+    python run.py --team source assistant --user BRIGHTWAY "We are moving to 3 deliveries a week from January."
+
 Tool calls stream to stderr as they happen; the final report goes to stdout.
 """
 
@@ -32,18 +38,29 @@ DEFAULT_TASKS = {
 
 async def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("agent", choices=[*AGENTS, "supervisor"])
+    p.add_argument("--team", choices=["ops", "source"], default="ops", help="which agent team (default: ops)")
+    p.add_argument("agent", help="agent key, or 'supervisor'")
     p.add_argument("task", nargs="?", help="what to ask (defaults to the showcase question)")
-    p.add_argument("--user", help="user id for the memory-backed assistant")
+    p.add_argument("--user", help="user id (trade account id for --team source) for the memory-backed assistant")
     args = p.parse_args()
 
+    if args.team == "source":
+        # Imported lazily so the ops team has no dependency on the Source Supplies files.
+        from source_team import SOURCE_AGENTS, SOURCE_DEFAULT_TASKS, SourceTeam
+
+        agents, defaults, team_cls = SOURCE_AGENTS, SOURCE_DEFAULT_TASKS, SourceTeam
+    else:
+        agents, defaults, team_cls = AGENTS, DEFAULT_TASKS, Team
+
+    if args.agent not in agents and args.agent != "supervisor":
+        p.error(f"unknown agent {args.agent!r} for --team {args.team}; choose from: {', '.join([*agents, 'supervisor'])}")
     if args.agent == "assistant" and not args.user:
         p.error("the assistant needs --user so memories are scoped to someone")
-    task = args.task or DEFAULT_TASKS[args.agent]
+    task = args.task or defaults[args.agent]
 
-    print(f"{args.agent} · {MODEL} · {MCP_URL}\n> {task}\n", file=sys.stderr)
+    print(f"{args.team}/{args.agent} · {MODEL} · {MCP_URL}\n> {task}\n", file=sys.stderr)
     async with nebula_mcp(token=os.environ.get("NEBULA_TOKEN")) as session:
-        team = Team(anthropic.AsyncAnthropic(), session)
+        team = team_cls(anthropic.AsyncAnthropic(), session)
         try:
             if args.agent == "supervisor":
                 report = await team.supervise(task)
