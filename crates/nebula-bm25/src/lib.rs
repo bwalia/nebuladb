@@ -292,6 +292,31 @@ impl Bm25Index {
     /// descending BM25 score. Ties break by ascending id for
     /// determinism. Returns fewer than `k` when the corpus is smaller
     /// or no document matches any query term.
+    /// Drop dead postings left by lazy removal and release spare
+    /// capacity in up to `count` posting lists, starting at the
+    /// `skip`-th in map order. Returns how many lists were visited;
+    /// fewer than `count` means the end was reached.
+    ///
+    /// Map order can change between calls if terms are added, so a
+    /// full walk is best-effort: a list may be visited twice or missed
+    /// until the next walk. Both are harmless — trimming is idempotent
+    /// and never changes search results.
+    pub fn trim_postings(&mut self, skip: usize, count: usize) -> usize {
+        let docs = &self.docs;
+        let mut visited = 0;
+        for pl in self.postings.values_mut().skip(skip).take(count) {
+            if pl.list.len() > pl.live as usize {
+                pl.list.retain(|p| {
+                    docs.get(&p.id).is_some_and(|d| d.generation == p.generation)
+                });
+                pl.live = pl.list.len() as u32;
+            }
+            pl.list.shrink_to_fit();
+            visited += 1;
+        }
+        visited
+    }
+
     pub fn search(&self, query: &str, k: usize) -> Vec<Bm25Hit> {
         self.search_counted(query, k).0
     }
@@ -658,6 +683,39 @@ mod tests {
     fn k_caps_result_count() {
         let idx = build(&[(1, "x"), (2, "x"), (3, "x"), (4, "x")]);
         assert_eq!(idx.search("x", 2).len(), 2);
+    }
+
+    #[test]
+    fn trim_postings_drops_dead_entries_without_changing_scores() {
+        let mut idx = Bm25Index::new(Bm25Params::default());
+        for i in 0..50u64 {
+            idx.add(i, "alpha beta");
+        }
+        // Lazy removal leaves dead postings below the compaction ratio.
+        for i in 0..10u64 {
+            idx.remove_text(i, "alpha beta");
+        }
+        let before = idx.search("alpha", 100);
+        let dead = idx.postings["alpha"].list.len() - idx.postings["alpha"].live as usize;
+        assert!(dead > 0, "test needs lazily-removed postings");
+
+        let mut seen = 0;
+        loop {
+            let n = idx.trim_postings(seen, 1);
+            seen += n;
+            if n < 1 {
+                break;
+            }
+        }
+        assert_eq!(seen, idx.postings.len());
+        let pl = &idx.postings["alpha"];
+        assert_eq!(pl.list.len(), pl.live as usize);
+        assert_eq!(pl.list.capacity(), pl.list.len());
+        let after = idx.search("alpha", 100);
+        assert_eq!(
+            before.iter().map(|h| (h.id, h.score.to_bits())).collect::<Vec<_>>(),
+            after.iter().map(|h| (h.id, h.score.to_bits())).collect::<Vec<_>>()
+        );
     }
 
     #[test]

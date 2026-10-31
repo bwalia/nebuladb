@@ -28,6 +28,7 @@ pub mod error;
 pub mod home_region;
 pub mod jwt;
 pub mod log_stream;
+pub mod memory_profile;
 pub mod metrics;
 pub mod middleware;
 pub mod ratelimit;

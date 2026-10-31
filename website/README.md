@@ -9,6 +9,7 @@ step, no dependencies beyond Google Fonts.
 | `index.html` | Positioning, the problems with traditional stacks, why Rust, in-browser demos, capabilities, quick start, limits |
 | `features.html` | Every capability with the crate, endpoint or setting that implements it |
 | `architecture.html` | Middleware chain, write/read/RAG paths, WAL recovery, XDCR, swap rebalance, operator |
+| `blog/` | Engineering blog: index plus one page per post (`blog/memory-footprint.html`) |
 | `404.html` | Not-found page (GitHub Pages serves it automatically) |
 
 ## Design

@@ -78,6 +78,14 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(true);
     tracing_subscriber_init(Arc::clone(&log_bus), stderr);
     tracing::info!(workers, stderr, "nebula-server starting");
+    let memory_cfg = nebula_server::memory_profile::MemoryConfig::from_env();
+    nebula_server::memory_profile::apply_allocator(&memory_cfg);
+    tracing::info!(
+        profile = memory_cfg.profile.as_str(),
+        dirty_decay_ms = memory_cfg.dirty_decay_ms,
+        trim_interval_secs = memory_cfg.trim_interval.map(|d| d.as_secs()),
+        "memory profile"
+    );
 
     // Watchdog: convert silent tokio-runtime wedges into clean
     // restarts. A heartbeat tokio task increments a counter every
@@ -333,6 +341,20 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
             HnswConfig::default(),
         )?),
     };
+
+    // Recovery builds the index by repeated insertion, leaving slack
+    // in every adjacency/posting list; trim it while the boot listener
+    // is still answering 503, so it costs no serving time.
+    if memory_cfg.trim_on_boot {
+        let idx = Arc::clone(&index);
+        let batch = memory_cfg.trim_batch;
+        let _ = tokio::task::spawn_blocking(move || {
+            nebula_server::memory_profile::trim_now(&idx, batch)
+        })
+        .await;
+    }
+    let _memory_trimmer =
+        nebula_server::memory_profile::spawn_trimmer(Arc::clone(&index), &memory_cfg);
 
     // Raft bootstrap: opt-in via NEBULA_RAFT_PEERS. When set, this
     // node joins (or starts) a Raft cluster and the gRPC raft transport

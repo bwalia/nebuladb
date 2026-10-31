@@ -59,6 +59,8 @@ jsonwebtoken.workspace = true
 # `#[global_allocator]` in src/main.rs for why.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"
+# Direct handle on mallctl for the memory profile (memory_profile.rs).
+tikv-jemalloc-sys = "0.6"
 
 [dev-dependencies]
 nebula-resource = { path = "../nebula-resource" }

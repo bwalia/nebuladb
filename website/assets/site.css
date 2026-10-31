@@ -1298,3 +1298,14 @@ select,
   .diagram .flow { animation: none; }
   .hit { transition: none; }
 }
+
+/* ------------------------------------------------------------ blog post */
+.post .wrap { max-width: 760px; }
+.post h2 { font-size: clamp(1.25rem, 1.05rem + 0.8vw, 1.6rem); margin: 2.2em 0 0.6em; }
+.post h2:first-child { margin-top: 0; }
+.post p, .post li { color: var(--muted); line-height: 1.7; }
+.post p strong, .post li strong { color: var(--text); }
+.post ul, .post ol { padding-left: 1.2em; }
+.post li { margin: 0.35em 0; }
+.post .table-wrap, .post .code { margin: 1.2em 0; }
+.post a:not(.btn) { color: var(--accent); }

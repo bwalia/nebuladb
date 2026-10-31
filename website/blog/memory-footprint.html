@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en-GB" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How we cut NebulaDB's memory per document by a third — NebulaDB</title>
+  <meta name="description" content="Three changes took NebulaDB heap per document from 3.4 KB to about 2.2 KB on real production data, with no change to search results. What we measured, what we fixed and what's next." />
+  <link rel="canonical" href="https://nebuladb.net/blog/memory-footprint.html" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://nebuladb.net/blog/memory-footprint.html" />
+  <meta property="og:title" content="How we cut NebulaDB's memory per document by a third — NebulaDB" />
+  <meta property="og:description" content="Three changes took NebulaDB heap per document from 3.4 KB to about 2.2 KB on real production data, with no change to search results. What we measured, what we fixed and what's next." />
+  <meta property="og:image" content="https://nebuladb.net/assets/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("nebula-theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" aria-label="NebulaDB home">
+        <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+          <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+          <circle class="cell-on" cx="29" cy="3" r="3"/>
+        </svg>
+        NebulaDB
+      </a>
+      <nav class="nav" id="site-nav" aria-label="Primary">
+        <a href="/features.html">Features</a>
+        <a href="/#why-rust">Why Rust</a>
+        <a href="/#demos">Demos</a>
+        <a href="/architecture.html">Architecture</a>
+        <a href="/blog/" aria-current="page">Blog</a>
+        <a href="https://github.com/bwalia/nebuladb">GitHub</a>
+      </nav>
+      <div class="header-actions">
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="Switch colour theme">
+          <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <a class="btn btn-primary btn-sm" href="https://showcase.nebuladb.net">Live showcase</a>
+        <button class="icon-btn menu-btn" type="button" data-menu aria-controls="site-nav" aria-expanded="false" aria-label="Menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+    <main id="main">
+    <section class="hero" style="padding-bottom:1.5rem">
+      <div class="wrap">
+        <p class="eyebrow">Engineering blog · 31 October 2026</p>
+        <h1>How we cut NebulaDB's memory per document by a third</h1>
+        <p class="lead">NebulaDB keeps the whole corpus in RAM, so memory grows with every document. Three changes in one week took heap per document from 3.4 KB to about 2.2 KB on real production data, and no search result changed.</p>
+      </div>
+    </section>
+
+    <section class="section" style="padding-top:0">
+      <div class="wrap">
+        <div class="stats" aria-label="Results">
+          <div class="stat"><b>−36%</b><span>heap per doc, all three changes (measured)</span></div>
+          <div class="stat"><b>−21%</b><span>region-b per doc in prod (first change only)</span></div>
+          <div class="stat"><b>25 → 21 GiB</b><span>region-b, while holding 6% more docs</span></div>
+          <div class="stat"><b>0</b><span>search results changed</span></div>
+          <div class="stat"><b>0</b><span>snapshot format changes</span></div>
+          <div class="stat"><b>1 flag</b><span><code>NEBULA_MEMORY_PROFILE</code>, default <code>small</code></span></div>
+        </div>
+        <p class="stats-note">Prod figures are Kubernetes working-set readings from 30–31 October 2026. Per-doc figures come from a byte-counting allocator over 8,317 real prod documents.</p>
+      </div>
+    </section>
+
+    <article class="section post">
+      <div class="wrap">
+
+        <h2>The problem: memory tracks documents, not traffic</h2>
+        <p>Our production cluster holds about 6.5 million documents, mostly UK Companies House records and sales leads. The second-region replica, <code>region-b</code>, serves almost no traffic, but it was holding <strong>25 GiB</strong>. Almost all of that was heap, not cache the kernel could take back.</p>
+        <p>That told us something useful: queries weren't the cost. Every document lives in RAM for the life of the process, so idle memory was about <strong>4.3 KB per document</strong>, and it would keep growing with the data.</p>
+
+        <h2>Measure first</h2>
+        <p>We took a 1-in-1000 sample of prod documents (8,317 of them) and loaded them into a fresh index under a test allocator that counts live bytes. An average document has 370 bytes of text, 341 bytes of JSON metadata and about 45 distinct search terms. Then we asked where the bytes went:</p>
+        <div class="table-wrap"><table class="compare">
+          <thead><tr><th>Part</th><th>Bytes per doc</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Vector</td><td>772</td><td>Already int8 (768 dims plus a scale). 4× smaller than f32.</td></tr>
+            <tr><td>Document object</td><td>~1,800–2,400</td><td>Text, a parsed JSON metadata tree and owned strings. The biggest item.</td></tr>
+            <tr><td>Keyword index (BM25)</td><td>~800–1,200</td><td>16-byte postings, about 45 per doc, in lists that grow by doubling.</td></tr>
+            <tr><td>Vector graph (HNSW)</td><td>~200–250 + slack</td><td>Per-node neighbour lists, which also grow by doubling.</td></tr>
+            <tr><td>Key maps</td><td>~200</td><td>Copies of the bucket name and id for every doc.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>Change 1: store documents compactly (−647 B per doc)</h2>
+        <p>Metadata was held as a <code>serde_json::Value</code> tree, with a map node and two heap allocations per field. That's several times the size of the 341-byte JSON text it came from. Now each document keeps its metadata <strong>as that compact JSON text</strong> and parses it only when something needs the value: the top-k hits of a search, a document fetch or an export.</p>
+        <p>Two smaller fixes went with it. Every document in a bucket now shares one copy of the bucket name instead of carrying its own <code>"companies_house"</code>. And immutable strings dropped their spare capacity.</p>
+        <p>The public API didn't change, and neither did the snapshot file format. The snapshot writer now copies the stored JSON straight to disk instead of re-serialising every document. A byte-for-byte test makes sure old snapshot files still load.</p>
+        <p><strong>Result: 3,418 → 2,771 bytes per doc (−19%).</strong> <a href="https://github.com/bwalia/nebuladb/pull/166">PR #166</a></p>
+
+        <h2>Change 2: one key index instead of two (−100 B per doc)</h2>
+        <p>Lookups by <code>(bucket, id)</code> went through a flat map keyed by two owned strings, and a second map kept a set of ids per bucket. We merged them into one nested map: bucket → id → internal id. Each bucket name is now stored once, the extra set is gone, and lookups no longer allocate a key on every call.</p>
+        <p>A side benefit: about a dozen hand-written "keep the key map in sync" lines are gone. One function now owns the key index, so it can't drift away from the documents.</p>
+        <p><strong>Result: 2,771 → 2,671 bytes per doc.</strong> <a href="https://github.com/bwalia/nebuladb/pull/167">PR #167</a></p>
+
+        <h2>Change 3: give back the slack (−478 B per doc)</h2>
+        <p>Rust's <code>Vec</code> doubles its capacity when it fills, and it never shrinks on its own. The vector graph has one small neighbour list per node, and the keyword index has one posting list per term. That's millions of small lists, and on a long-running node many of them are half empty: a node that briefly held 33 links keeps room for 64.</p>
+        <p>The new trim pass shrinks those lists to fit and drops postings that lazy deletion left behind. It works in batches of 20,000 and releases the lock between batches, so a request waits at most a few milliseconds and the trim can run on a node that's serving traffic. Search results are bit-for-bit identical, which the tests check.</p>
+        <p><strong>A measurement trap we nearly fell into.</strong> Our first trim also shrank the big flat arrays, and the counter said it saved 1,178 B per doc. But a byte counter can't tell resident memory from address space. The unused tail of a large allocation is never written, so the OS never backs it with memory. Shrinking it saves nothing real and copies gigabytes while holding a lock. We dropped that part and measured again. The honest number is <strong>478 B per doc</strong>.</p>
+        <p><strong>Result: 2,754 → 2,276 bytes per doc on a node that had seen churn.</strong> <a href="https://github.com/bwalia/nebuladb/pull/168">PR #168</a></p>
+
+        <h2>One flag: <code>NEBULA_MEMORY_PROFILE</code></h2>
+        <div class="table-wrap"><table class="compare">
+          <thead><tr><th>Profile</th><th>Allocator</th><th>Trim</th></tr></thead>
+          <tbody>
+            <tr><td><code>small</code> (default)</td><td class="yes">jemalloc returns freed pages to the OS after about 1 s. A background thread purges, so an idle node shrinks too.</td><td class="yes">After boot recovery, then every 15 minutes</td></tr>
+            <tr><td><code>fast</code></td><td>Freed pages kept about 10 s for reuse, so fewer page faults during heavy ingest</td><td>Off</td></tr>
+          </tbody>
+        </table></div>
+        <p>For fine-tuning, <code>NEBULA_MEMORY_TRIM_SECS</code> sets the trim interval (0 turns it off) and <code>NEBULA_MEMORY_TRIM_BATCH</code> sets how much work happens per lock hold. The allocator settings are applied at runtime through jemalloc's <code>mallctl</code> interface, so nothing has to be set before the process starts.</p>
+        <div class="code">
+          <div class="code-bar">Helm · values.yaml</div>
+<pre>server:
+  env:
+    NEBULA_MEMORY_PROFILE: "small"   # or "fast" for a bulk-ingest node</pre>
+        </div>
+
+        <h2>What production shows</h2>
+        <p>Only the first change is in production so far. After we deployed it and re-loaded region-b from the leader's snapshot:</p>
+        <div class="table-wrap"><table class="compare">
+          <thead><tr><th>Pod</th><th>Before</th><th>After</th></tr></thead>
+          <tbody>
+            <tr><td>region-b</td><td>25.0 GiB · 6.22M docs · 4.3 KB/doc</td><td class="yes">21.0 GiB · 6.59M docs · 3.4 KB/doc (−21%)</td></tr>
+            <tr><td>leader</td><td>47.7–50.4 GiB · 6.39M docs</td><td class="yes">35.8 GiB · 6.75M docs</td></tr>
+          </tbody>
+        </table></div>
+        <p>Region-b is the clean comparison: an idle node, the same measure before and after, and a 21% drop per document. That matches the 19% the test predicted. The leader's drop is bigger, but don't read it as all from this change. It was also restarted (clearing four days of allocator fragmentation), and it's still running a background re-embedding job.</p>
+
+        <h2>Why it's still hungrier than Couchbase</h2>
+        <p>Couchbase gives each bucket a RAM quota. Hot data stays in memory, colder data is evicted to disk, and a full quota means slower reads, not a crash. Most search engines also keep their indexes on disk and let the OS cache them. NebulaDB has no disk tier yet. Every document, every posting and every vector is held in RAM, and the pod limit is the only ceiling.</p>
+        <p>Only about 1 KB per document (the vector and its graph links) really needs to be in RAM for fast search. The rest is a design choice we can revisit. Next, biggest saving first:</p>
+        <ol>
+          <li><strong>Documents on disk:</strong> about −800 B per doc. Keep the document body in an embedded store with a hot cache, since search only needs it for the final hits (<a href="https://github.com/bwalia/nebuladb/blob/main/docs/design/0014-disk-backed-document-store.md">design 0014</a>).</li>
+          <li><strong>Compressed postings:</strong> about −500 B per doc. Delta-encoded ids instead of 16-byte postings.</li>
+          <li><strong>Flat graph storage:</strong> one array instead of millions of small lists.</li>
+          <li><strong>A memory quota:</strong> slow down instead of being OOM-killed.</li>
+        </ol>
+        <p>Together these should land around 1.2 KB per document, about 8 GB for today's corpus against the 25 GB we started from. We'll measure each one on real data, the same way, before we claim it.</p>
+
+        <h2>What we'd tell another team</h2>
+        <ul>
+          <li><strong>Find the idle baseline.</strong> A replica that serves no traffic shows you what the data costs on its own.</li>
+          <li><strong>Measure on a real sample,</strong> not synthetic data. Templated text and metadata trees behave nothing like random strings.</li>
+          <li><strong>Know what your counter counts.</strong> Requested bytes aren't resident bytes. We nearly shipped a 2.5× overstatement.</li>
+          <li><strong>Keep formats stable.</strong> Every change here kept the snapshot format, with a test to prove it, so rollback was always a plain redeploy.</li>
+        </ul>
+        <p class="stats-note">Full numbers, the runbook and the open work are in the <a href="https://github.com/bwalia/nebuladb/blob/main/docs/technotes/memory-footprint-and-deploy-downtime.md">memory technote</a>.</p>
+      </div>
+    </article>
+
+    <section class="night" aria-labelledby="cta-title">
+      <div class="wrap">
+        <div>
+          <h2 id="cta-title">Read the code</h2>
+          <p>Every number on this page comes from the repository and its pull requests.</p>
+        </div>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/bwalia/nebuladb/pull/166">PR #166</a>
+          <a class="btn btn-secondary" href="https://github.com/bwalia/nebuladb/blob/main/docs/design/0014-disk-backed-document-store.md">Design 0014</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <div>
+          <a class="brand" href="/" aria-label="NebulaDB home">
+            <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+              <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+              <circle class="cell-on" cx="29" cy="3" r="3"/>
+            </svg>
+            NebulaDB
+          </a>
+          <p style="margin-top:12px;max-width:40ch">The enterprise AI database, written in Rust. SQL, documents, vectors, RAG and agents in one binary.</p>
+        </div>
+        <div>
+          <h4>Product</h4>
+          <ul>
+            <li><a href="/features.html">Features</a></li>
+            <li><a href="/architecture.html">Architecture</a></li>
+            <li><a href="/#demos">Demos</a></li>
+            <li><a href="https://showcase.nebuladb.net">Live showcase</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Developers</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb">GitHub</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/openapi.yaml">OpenAPI spec</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/tree/main/docs/design">Design docs</a></li>
+            <li><a href="https://hub.docker.com/r/bwalia/nebula-server">Docker images</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Read</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/PROBLEMS_SOLVED.md">Problems solved</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/USE_CASES.md">Use cases</a></li>
+            <li><a href="/blog/">Engineering blog</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/technotes/active-active-xdcr.md">Multi-region XDCR</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-base">
+        <span>© <span id="year">2026</span> NebulaDB · nebuladb.net</span>
+        <span>Built in Rust · hosted on GitHub Pages</span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>
