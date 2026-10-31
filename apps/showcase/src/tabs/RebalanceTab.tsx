@@ -33,16 +33,16 @@ export function RebalanceTab() {
     setLog((prev) => [`${new Date().toISOString().slice(11, 19)}  ${line}`, ...prev].slice(0, 40));
 
   const refreshMeta = useCallback(async () => {
-    try {
-      const [b, r] = await Promise.all([api.buckets(), api.replication()]);
-      setRepl(r);
-      const names = b.map((x) => x.bucket).filter(Boolean);
+    // Independent: a slow bucket list mustn't hide replication state.
+    const [b, r] = await Promise.allSettled([api.buckets(), api.replication()]);
+    if (r.status === "fulfilled") setRepl(r.value);
+    if (b.status === "fulfilled") {
+      const names = b.value.map((x) => x.bucket).filter(Boolean);
       setBuckets(names);
       if (!bucket && names.length) setBucket(names[0]!);
-      setErr(null);
-    } catch (e) {
-      setErr((e as Error).message);
     }
+    const failed = [b, r].filter((x) => x.status === "rejected") as PromiseRejectedResult[];
+    setErr(failed.length ? failed.map((x) => (x.reason as Error).message).join("; ") : null);
   }, [bucket]);
 
   useEffect(() => {

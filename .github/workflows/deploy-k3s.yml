@@ -336,9 +336,20 @@ jobs:
         run: |
           set -euo pipefail
           IMG="${DOCKERHUB_NAMESPACE}/nebula-showcase:${{ steps.tag.outputs.tag }}"
+          CONF=deploy/helm/nebuladb/files/showcase/default.conf.template
+          SHA=$(sha256sum "$CONF" | cut -c1-16)
           before=$(kubectl -n "$TARGET_ENV" get deploy nebuladb -o jsonpath='{.metadata.generation}')
-          kubectl -n "$TARGET_ENV" set image deploy/nebuladb-showcase showcase="$IMG"
+          # The pod mounts its nginx template from this ConfigMap, which
+          # overrides the image's copy, so ship it too (incident
+          # 2026-10-31: nginx fixes in the image never took effect).
+          python3 -c 'import json,sys; print(json.dumps({"data": {"default.conf.template": open(sys.argv[1]).read()}}))' "$CONF" >/tmp/nginx-cm.json
+          kubectl -n "$TARGET_ENV" patch configmap nebuladb-showcase-nginx --type merge --patch-file /tmp/nginx-cm.json
+          # One rollout for both: new image + a config hash annotation
+          # (subPath mounts never refresh in a running pod).
+          kubectl -n "$TARGET_ENV" patch deploy nebuladb-showcase --type strategic -p "$(printf '{"spec":{"template":{"metadata":{"annotations":{"nebuladb.net/nginx-config":"%s"}},"spec":{"containers":[{"name":"showcase","image":"%s"}]}}}}' "$SHA" "$IMG")"
           kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb-showcase --timeout=5m
+          live=$(kubectl -n "$TARGET_ENV" get configmap nebuladb-showcase-nginx -o jsonpath='{.data.default\.conf\.template}' | sha256sum | cut -c1-16)
+          [ "$live" = "$SHA" ] || { echo "live nginx config $live != repo $SHA" >&2; exit 1; }
           after=$(kubectl -n "$TARGET_ENV" get deploy nebuladb -o jsonpath='{.metadata.generation}')
           [ "$before" = "$after" ] || { echo "database Deployment changed during a showcase-only deploy" >&2; exit 1; }
           kubectl -n "$TARGET_ENV" get pods -o wide
