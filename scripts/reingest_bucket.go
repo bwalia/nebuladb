@@ -32,7 +32,6 @@
 //	  -from-bucket leads -to-bucket uk_companies \
 //	  -id-min 1 -id-max 40000000 -id-width 8 \
 //	  -workers 32 -batch 64 -tee /data/leads.jsonl
-//
 package main
 
 import (
@@ -68,6 +67,8 @@ func main() {
 		cmdLoad(args)
 	case "mirror":
 		cmdMirror(args)
+	case "enrich":
+		cmdEnrich(args)
 	case "-h", "help", "--help":
 		usage()
 	default:
@@ -82,6 +83,9 @@ func usage() {
   go run scripts/reingest_bucket.go dump   [flags]   # leads → JSONL via id scan
   go run scripts/reingest_bucket.go load   [flags]   # JSONL → bucket (re-embed)
   go run scripts/reingest_bucket.go mirror [flags]   # leads → uk_companies (+ optional tee)
+  go run scripts/reingest_bucket.go enrich [flags]   # JSONL → JSONL with lead text rebuilt from metadata (offline)
+
+load also takes -enrich to rebuild lead text before upserting.
 
 env: NEBULA_URL (default https://showcase.nebuladb.net), NEBULA_TOKEN (required)
 `)
@@ -318,6 +322,7 @@ func cmdLoad(args []string) {
 	workers := fs.Int("workers", 8, "concurrent bulk upsert workers")
 	batch := fs.Int("batch", 64, "docs per bulk request (max 1000; keep modest for Ollama)")
 	skipExisting := fs.Bool("skip-existing", false, "HEAD/GET dest first and skip if present")
+	enrich := fs.Bool("enrich", false, "rebuild lead text from metadata before upserting (see enrichLead)")
 	_ = fs.Parse(args)
 	if *batch < 1 {
 		*batch = 1
@@ -394,6 +399,9 @@ func cmdLoad(args []string) {
 		}
 		if d.ID == "" || strings.TrimSpace(d.Text) == "" {
 			continue
+		}
+		if *enrich {
+			d = enrichLead(d)
 		}
 		buf = append(buf, d)
 		lines++
@@ -570,4 +578,145 @@ func truncate(s string, n int) string {
 func fatal(msg string) {
 	fmt.Fprintln(os.Stderr, msg)
 	os.Exit(1)
+}
+
+// ---------------------------------------------------------------------------
+// enrich — rebuild lead text from metadata
+// ---------------------------------------------------------------------------
+
+// The prod `leads` text is a fixed template ("Net Worth :\nCounty: London\n
+// ...TypeOfBusiness: Restaurants") that omits the company name, and most
+// fields are blank. 1.63M of 2.99M leads shared an embedding with another,
+// distinct company, which wrecks HNSW recall (benchmark Oct 2026: 0.775
+// recall@10 on leads vs 0.975 on companies_house). enrichLead leads with
+// the identifying fields and keeps only non-empty template fields.
+// email / telephone / acc_no stay in metadata: they're filterable but are
+// noise in a semantic vector.
+
+var leadTemplateKeys = []string{
+	"County", "Region", "PremisesType", "NoOfEmployees", "Turnover",
+	"Net Worth", "ProfitBeforeTax", "SIC", "Fax",
+}
+
+func blankish(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "-", "0", "unclassified", "n/a", "none", "null":
+		return true
+	}
+	return false
+}
+
+func parseTemplate(text string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if _, seen := out[k]; !seen || out[k] == "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func enrichLead(d docOut) docOut {
+	var m map[string]any
+	if err := json.Unmarshal(d.Metadata, &m); err != nil || m == nil {
+		return d
+	}
+	str := func(k string) string {
+		if v, ok := m[k]; ok && v != nil {
+			return strings.TrimSpace(fmt.Sprint(v))
+		}
+		return ""
+	}
+	t := parseTemplate(d.Text)
+	name := str("company_name")
+	if name == "" {
+		return d // nothing identifying to add
+	}
+	kind := str("company_type")
+	if kind == "" {
+		kind = t["TypeOfBusiness"]
+	}
+	var loc []string
+	for _, v := range []string{str("city"), t["County"], t["Region"]} {
+		if !blankish(v) && (len(loc) == 0 || loc[len(loc)-1] != v) {
+			loc = append(loc, v)
+		}
+	}
+	var b strings.Builder
+	b.WriteString(name)
+	if !blankish(kind) {
+		b.WriteString(" — " + kind)
+	}
+	if len(loc) > 0 {
+		b.WriteString(" in " + strings.Join(loc, ", "))
+	}
+	b.WriteString(".\n")
+	for _, k := range leadTemplateKeys {
+		if k == "County" || k == "Region" || k == "Fax" {
+			continue // already in the headline / not semantic
+		}
+		if v := t[k]; !blankish(v) {
+			b.WriteString(k + ": " + v + "\n")
+		}
+	}
+	contact := strings.TrimSpace(strings.Join(uniq(str("contact_firstname"), str("contact_lastname")), " "))
+	if contact == "" {
+		contact = str("name")
+	}
+	if !blankish(contact) {
+		b.WriteString("Contact: " + contact + "\n")
+	}
+	d.Text = b.String()
+	return d
+}
+
+func uniq(xs ...string) []string {
+	var out []string
+	for _, x := range xs {
+		if x != "" && (len(out) == 0 || out[len(out)-1] != x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func cmdEnrich(args []string) {
+	fs := flag.NewFlagSet("enrich", flag.ExitOnError)
+	inPath := fs.String("in", "leads.jsonl", "input JSONL")
+	outPath := fs.String("out", "leads.enriched.jsonl", "output JSONL")
+	_ = fs.Parse(args)
+	in, err := os.Open(*inPath)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer in.Close()
+	out, err := os.Create(*outPath)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer out.Close()
+	w := bufio.NewWriterSize(out, 1<<20)
+	defer w.Flush()
+	sc := bufio.NewScanner(in)
+	sc.Buffer(make([]byte, 0, 1024*1024), 16<<20)
+	seen := map[string]struct{}{}
+	n := 0
+	for sc.Scan() {
+		var d docOut
+		if err := json.Unmarshal(sc.Bytes(), &d); err != nil || d.ID == "" {
+			continue
+		}
+		d = enrichLead(d)
+		seen[d.Text] = struct{}{}
+		line, _ := json.Marshal(d)
+		w.Write(line)
+		w.WriteByte('\n')
+		n++
+	}
+	fmt.Printf("enriched %d docs; unique texts %d (%.1f%%)\n", n, len(seen), 100*float64(len(seen))/float64(max(n, 1)))
 }
