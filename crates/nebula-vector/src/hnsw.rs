@@ -27,6 +27,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use ahash::{AHashMap, AHashSet};
 use parking_lot::RwLock;
@@ -71,7 +72,10 @@ impl HnswConfig {
             m,
             m_max0: m * 2,
             ef_construction: 200,
-            ef_search: 64,
+            // Benchmarked on prod (8.15M × 768, Oct 2026): ef=64 gave
+            // 0.90 tie-aware recall@10 (0.77 on templated `leads`);
+            // 256 gave 0.93 / 0.86 at ~3.5 ms p50.
+            ef_search: 256,
             ml: 1.0 / (m as f32).ln(),
             seed: 0xC0FFEE,
         }
@@ -183,6 +187,12 @@ pub struct Hnsw {
     dim: usize,
     metric: Metric,
     config: HnswConfig,
+    /// Runtime default `ef` for searches that don't pass one. Starts at
+    /// `config.ef_search` but is *not* persisted: the snapshot keeps the
+    /// build-time config, so a restored index would otherwise be pinned to
+    /// whatever `ef_search` it was created with. The server overrides this
+    /// at boot (see `Hnsw::set_default_ef`).
+    default_ef: AtomicUsize,
     inner: RwLock<Inner>,
 }
 
@@ -318,6 +328,7 @@ impl Hnsw {
         Ok(Self {
             dim,
             metric,
+            default_ef: AtomicUsize::new(config.ef_search),
             config,
             inner: RwLock::new(Inner {
                 codes: Vec::new(),
@@ -335,6 +346,17 @@ impl Hnsw {
 
     pub fn dim(&self) -> usize {
         self.dim
+    }
+
+    /// Default `ef` used when a search passes `ef: None`.
+    pub fn default_ef(&self) -> usize {
+        self.default_ef.load(AtomicOrdering::Relaxed)
+    }
+
+    /// Override the default search `ef` at runtime (clamped to `>= 1`).
+    /// Not persisted — see the field docs.
+    pub fn set_default_ef(&self, ef: usize) {
+        self.default_ef.store(ef.max(1), AtomicOrdering::Relaxed);
     }
 
     pub fn metric(&self) -> Metric {
@@ -534,6 +556,7 @@ impl Hnsw {
         Ok(Self {
             dim: snap.dim,
             metric: snap.metric,
+            default_ef: AtomicUsize::new(snap.config.ef_search),
             config: snap.config,
             inner: RwLock::new(Inner {
                 codes,
@@ -724,7 +747,7 @@ impl Hnsw {
         let Some((mut ep, ep_level)) = g.entry else {
             return Ok((Vec::new(), stats));
         };
-        let ef = ef.unwrap_or(self.config.ef_search).max(k);
+        let ef = ef.unwrap_or_else(|| self.default_ef()).max(k);
         stats.ef = ef;
         stats.levels = ep_level as usize + 1;
 
@@ -1002,6 +1025,32 @@ mod tests {
         h.delete(Id(1)).unwrap();
         let r = h.search(&[0.0, 0.0], 5, None).unwrap();
         assert!(r.iter().all(|x| x.id != Id(1)));
+    }
+
+    /// The runtime default `ef` must win over the `ef_search` baked into a
+    /// snapshot's config — otherwise prod (restored from snapshot) stays
+    /// pinned to the build-time value no matter what the server sets.
+    #[test]
+    fn default_ef_override_applies_to_restored_index() {
+        let mut rng = StdRng::seed_from_u64(9);
+        let mut cfg = HnswConfig::with_m(8);
+        cfg.ef_search = 16;
+        let h = Hnsw::new(8, Metric::Cosine, cfg).unwrap();
+        for i in 0..200u64 {
+            h.insert(Id(i), &random_vec(&mut rng, 8)).unwrap();
+        }
+        let r = Hnsw::restore_from_snapshot(h.to_snapshot()).unwrap();
+        let q = random_vec(&mut rng, 8);
+        assert_eq!(r.default_ef(), 16);
+        assert_eq!(r.search_with_stats(&q, 5, None).unwrap().1.ef, 16);
+        r.set_default_ef(128);
+        assert_eq!(r.search_with_stats(&q, 5, None).unwrap().1.ef, 128);
+        // Explicit per-request ef still wins; ef is clamped to >= k.
+        assert_eq!(r.search_with_stats(&q, 5, Some(32)).unwrap().1.ef, 32);
+        r.set_default_ef(0);
+        assert_eq!(r.search_with_stats(&q, 5, None).unwrap().1.ef, 5);
+        // Not persisted: the snapshot keeps the build-time config.
+        assert_eq!(r.to_snapshot().config.ef_search, 16);
     }
 
     /// Recall sanity check: build a 2k-point index and compare the top-10
