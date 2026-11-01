@@ -244,37 +244,15 @@ impl NebulaSnapshotStore {
     }
 }
 
-/// Find the path of the newest `<snapshots_dir>/snapshot-<seq>.nsnap`
-/// file that has a matching `.ok` marker. Mirrors
-/// `nebula_index::durability::newest_snapshot` but is private there;
-/// duplicating two lines beats a public-API change.
+/// Path of the newest committed `<snapshots_dir>/snapshot-<seq>.nsnap`.
+/// Delegates to `nebula_index::durability::newest_snapshot` so raft and
+/// boot recovery always agree on which snapshot is newest (commit time,
+/// not raw seq — see that module).
 fn newest_committed_snapshot(dir: &Path) -> Option<PathBuf> {
-    if !dir.exists() {
-        return None;
-    }
-    let mut best: Option<(u64, PathBuf)> = None;
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some(stem) = name.strip_suffix(".nsnap.ok") else {
-            continue;
-        };
-        let Some(seq_str) = stem.strip_prefix("snapshot-") else {
-            continue;
-        };
-        let Ok(seq) = seq_str.parse::<u64>() else {
-            continue;
-        };
-        if best.as_ref().map_or(true, |(s, _)| seq > *s) {
-            // Resolve to the data file beside the marker.
-            let data = dir.join(format!("snapshot-{seq:020}.nsnap"));
-            if data.exists() {
-                best = Some((seq, data));
-            }
-        }
-    }
-    best.map(|(_, p)| p)
+    let marker = nebula_index::durability::newest_snapshot(dir).ok()??;
+    let name = marker.file_name()?.to_str()?;
+    let data = dir.join(name.strip_suffix(".ok")?);
+    data.exists().then_some(data)
 }
 
 #[cfg(test)]

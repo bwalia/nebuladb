@@ -112,7 +112,10 @@ spec:
 EOF
   kubectl -n "$NS" wait --for=condition=Ready "pod/${HELPER}" --timeout=300s
 fi
-kubectl -n "$NS" exec "$HELPER" -- sh -c 'rm -rf /data/snapshots /data/wal; mkdir -p /data/snapshots /data/wal'
+# Wipe ALL local state, including the replica WAL (records mirrored from
+# other regions) and saved cross-region cursors: a stale cursor would
+# override the seed below and resume from the wrong place.
+kubectl -n "$NS" exec "$HELPER" -- sh -c 'rm -rf /data/snapshots /data/wal /data/replica-wal /data/cross-region-*.cursor /data/follower.cursor; mkdir -p /data/snapshots /data/wal'
 
 echo "── sha256 freeze (may take several minutes)"
 SRC_HASH=$(kubectl -n "$NS" exec "$src_pod" -c server -- sha256sum "$SNAP" | awk '{print $1}')
@@ -174,7 +177,14 @@ DST_HASH=$(kubectl -n "$NS" exec "$HELPER" -- sha256sum "/data/snapshots/${SNAP_
 echo "src=$SRC_HASH dst=$DST_HASH"
 [ "$SRC_HASH" = "$DST_HASH" ] || { echo "✗ sha256 mismatch — refusing to start target" >&2; exit 1; }
 
-printf '%s' "$TIP" >"${WORKDIR}/follower.cursor"
+# Seed the resume cursor from the SNAPSHOT's WAL seq (start of that
+# segment), not the live tip: the tip is later than the snapshot, so
+# seeding from it skipped every write in between. Replaying the head of
+# segment SEQ is harmless (idempotent applies) and the source keeps it
+# (it only compacts segments < its newest snapshot's seq).
+SNAP_SEQ=$((10#$(echo "$SNAP_BASE" | sed -E 's/^snapshot-0*([0-9]+)\.nsnap$/\1/')))
+printf '{"segment_seq":%d,"byte_offset":0}' "$SNAP_SEQ" >"${WORKDIR}/follower.cursor"
+echo "✓ resume cursor seeded at segment $SNAP_SEQ (live tip was $TIP)"
 kubectl -n "$NS" cp "${WORKDIR}/follower.cursor" "${HELPER}:/data/follower.cursor"
 
 echo "── scale target to 1"

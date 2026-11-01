@@ -1098,12 +1098,16 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                 peers.len(),
                 my_region,
             );
+            // Durable mirroring (replica WAL + persisted per-peer cursor)
+            // whenever this node is persistent — see cross_region docs.
+            let state_dir = std::env::var("NEBULA_DATA_DIR").ok().map(std::path::PathBuf::from);
             nebula_grpc::cross_region::spawn_all(
                 peers,
                 Arc::clone(&grpc_index),
                 owned,
                 status,
                 my_region,
+                state_dir,
             )
         } else {
             Vec::new()
