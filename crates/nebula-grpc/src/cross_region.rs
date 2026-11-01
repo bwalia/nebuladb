@@ -18,14 +18,33 @@
 //!   they're at.
 //!
 //! At-least-once delivery, idempotent apply, same as the single-region
-//! follower. We deliberately do NOT persist cursors — the local index
-//! is considered "warm cache for non-home buckets" today; a restart
-//! replays from each remote's `BEGIN`. A future revision can add
-//! per-region cursors if the replay cost becomes significant.
+//! follower.
+//!
+//! # Durability (with a state dir)
+//!
+//! When [`spawn_all`] is given a `state_dir`, mirrored records are applied
+//! via [`TextIndex::apply_mirrored`] (persisted to the local *replica* WAL,
+//! never re-served to peers) and each peer's cursor is saved to
+//! `<state_dir>/cross-region-<region>.cursor`. A restart resumes from that
+//! cursor on top of the locally recovered state.
+//!
+//! Before this, cursors were not persisted and mirrored records lived only
+//! in RAM: every restart rebuilt from the local snapshot plus the remote's
+//! WAL from `BEGIN` — but the remote compacts its WAL, so everything
+//! between the snapshot and the oldest retained segment was silently lost
+//! (region-b lost ~1.8M docs on 1 Nov 2026).
+//!
+//! First boot after a bootstrap (`scripts/bootstrap_region_mirror.sh`)
+//! seeds the cursor from `<state_dir>/follower.cursor`, the source's WAL
+//! tip captured with the copied snapshot. A cursor the remote can no longer
+//! serve (compacted away, or ahead of a reset WAL) is rejected by the
+//! remote with `OUT_OF_RANGE`; we surface that and keep retrying instead of
+//! silently skipping — the fix is a re-bootstrap.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
@@ -35,7 +54,16 @@ use tracing::{debug, info, warn};
 use nebula_index::TextIndex;
 use nebula_wal::{WalCursor, WalRecord};
 
+use crate::follower::{CursorStore, FileCursorStore};
 use crate::pb;
+
+/// Error code published to status when the remote rejects our cursor
+/// (compacted away / ahead of a reset WAL). Needs a re-bootstrap.
+pub const CURSOR_GAP: &str = "cursor_gap_rebootstrap_required";
+
+/// Save the cursor at most this often (and at every stream end). A stale
+/// cursor only means re-applying a few idempotent records after a crash.
+const CURSOR_SAVE_EVERY: Duration = Duration::from_secs(1);
 
 /// Stable error code published on `/admin/replication` when the consumer
 /// rejects a record with a stale epoch. Surfaced in `last_error` so
@@ -113,12 +141,17 @@ impl OwnedBuckets for IndexOwnedBuckets {
 ///
 /// `my_region` is passed to the service so the source can tag
 /// incoming reconnects (observability only; the protocol is one-way).
+///
+/// `state_dir` (normally `NEBULA_DATA_DIR`) turns on durable mirroring —
+/// see the module docs. `None` keeps the old RAM-only behaviour (tests,
+/// in-memory nodes).
 pub fn spawn_all(
     peers: Vec<RemotePeer>,
     index: Arc<TextIndex>,
     owned: Arc<dyn OwnedBuckets>,
     status: Arc<dyn StatusSink>,
     my_region: String,
+    state_dir: Option<PathBuf>,
 ) -> Vec<JoinHandle<()>> {
     peers
         .into_iter()
@@ -128,11 +161,51 @@ pub fn spawn_all(
             let owned = owned.clone();
             let status = status.clone();
             let my_region = my_region.clone();
+            let durable = state_dir.as_deref().map(|d| PeerState::new(d, &p.region));
             tokio::spawn(async move {
-                tail_forever(p, index, owned, status, my_region).await;
+                tail_forever(p, index, owned, status, my_region, durable).await;
             })
         })
         .collect()
+}
+
+/// Per-peer persisted position for durable mirroring.
+pub struct PeerState {
+    store: FileCursorStore,
+    /// Bootstrap tip (`follower.cursor`) used only when `store` is empty.
+    seed: FileCursorStore,
+}
+
+impl PeerState {
+    pub fn new(state_dir: &Path, region: &str) -> Self {
+        let safe: String = region
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        Self {
+            store: FileCursorStore::new(state_dir.join(format!("cross-region-{safe}.cursor"))),
+            seed: FileCursorStore::new(state_dir.join("follower.cursor")),
+        }
+    }
+
+    /// Where to resume: saved cursor, else bootstrap seed, else BEGIN.
+    pub fn initial(&self) -> WalCursor {
+        match self.store.load() {
+            Ok(Some(c)) => return c,
+            Ok(None) => {}
+            Err(e) => warn!(error = %e, "cross-region cursor unreadable; trying bootstrap seed"),
+        }
+        match self.seed.load() {
+            Ok(Some(c)) => c,
+            _ => WalCursor::BEGIN,
+        }
+    }
+
+    fn save(&self, c: WalCursor) {
+        if let Err(e) = self.store.save(c) {
+            warn!(error = %e, "cross-region cursor save failed");
+        }
+    }
 }
 
 /// Run until the task is aborted. On transport or apply errors we
@@ -144,14 +217,40 @@ async fn tail_forever(
     owned: Arc<dyn OwnedBuckets>,
     status: Arc<dyn StatusSink>,
     my_region: String,
+    durable: Option<PeerState>,
 ) {
     let mut backoff_ms: u64 = 100;
+    // Durable: resume where we left off. RAM-only: every connection
+    // starts at BEGIN (the local index holds nothing mirrored on boot).
+    let mut cursor = durable.as_ref().map(|d| d.initial()).unwrap_or(WalCursor::BEGIN);
+    if durable.is_some() {
+        info!(region = %peer.region, seg = cursor.segment_seq, off = cursor.byte_offset, "cross-region resume cursor");
+    }
     loop {
-        match tail_once(&peer, &index, &owned, &status, &my_region).await {
+        if durable.is_none() {
+            cursor = WalCursor::BEGIN;
+        }
+        let res = tail_once(&peer, &index, &owned, &status, &my_region, &mut cursor, durable.as_ref()).await;
+        if let Some(d) = &durable {
+            d.save(cursor);
+        }
+        match res {
             Ok(()) => {
                 // Server closed cleanly — usually a shutdown or a
                 // lagged subscriber. Reset backoff and retry.
                 backoff_ms = 100;
+            }
+            Err(CrossRegionError::CursorGap(msg)) => {
+                tracing::error!(
+                    region = %peer.region,
+                    seg = cursor.segment_seq,
+                    off = cursor.byte_offset,
+                    %msg,
+                    "cross-region cursor no longer servable by remote — mirror is incomplete; re-bootstrap required (scripts/bootstrap_region_mirror.sh)",
+                );
+                status.record_error(&peer.region, CURSOR_GAP);
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(30_000);
             }
             Err(e) => {
                 warn!(region = %peer.region, error = %e, "cross-region tail errored, backing off");
@@ -163,14 +262,16 @@ async fn tail_forever(
     }
 }
 
-/// One iteration: open the stream, apply until it ends or errors.
-/// Cursor resumption is intentionally from BEGIN — see module doc.
+/// One iteration: open the stream at `cursor`, apply until it ends or
+/// errors, advancing `cursor` past every record handled.
 async fn tail_once(
     peer: &RemotePeer,
     index: &Arc<TextIndex>,
     owned: &Arc<dyn OwnedBuckets>,
     status: &Arc<dyn StatusSink>,
     my_region: &str,
+    cursor: &mut WalCursor,
+    durable: Option<&PeerState>,
 ) -> Result<(), CrossRegionError> {
     let endpoint =
         Endpoint::from_shared(peer.grpc_url.clone()).map_err(|e| CrossRegionError::Transport(e.to_string()))?;
@@ -188,8 +289,8 @@ async fn tail_once(
     );
     let req = pb::TailCrossRegionRequest {
         start: Some(pb::WalCursor {
-            segment_seq: WalCursor::BEGIN.segment_seq,
-            byte_offset: WalCursor::BEGIN.byte_offset,
+            segment_seq: cursor.segment_seq,
+            byte_offset: cursor.byte_offset,
         }),
         caller_region: my_region.to_string(),
         buckets_owned_by_caller: owned_snapshot.into_iter().collect(),
@@ -197,8 +298,17 @@ async fn tail_once(
     let mut stream = client
         .tail_cross_region(req)
         .await
-        .map_err(|s| CrossRegionError::Rpc(format!("{s}")))?
+        .map_err(|s| {
+            if s.code() == tonic::Code::OutOfRange {
+                CrossRegionError::CursorGap(s.message().to_string())
+            } else {
+                CrossRegionError::Rpc(format!("{s}"))
+            }
+        })?
         .into_inner();
+    // First record on a connection saves immediately; then at most every
+    // CURSOR_SAVE_EVERY.
+    let mut last_save: Option<Instant> = None;
 
     // Mark healthy as soon as the stream is open — quiet remotes (no
     // local WAL of their own yet) never call record_apply, and without
@@ -222,10 +332,19 @@ async fn tail_once(
                 "skipping stale-epoch cross-region record",
             );
             status.record_error(&peer.region, STALE_EPOCH);
+            // Deliberately skipped — still advance past it.
+            if let Some(n) = entry.next_cursor {
+                *cursor = WalCursor { segment_seq: n.segment_seq, byte_offset: n.byte_offset };
+            }
             continue;
         }
 
-        if let Err(e) = index.apply_wal_record(&rec) {
+        let applied = if durable.is_some() {
+            index.apply_mirrored(&rec)
+        } else {
+            index.apply_wal_record(&rec)
+        };
+        if let Err(e) = applied {
             return Err(CrossRegionError::Apply(e.to_string()));
         }
 
@@ -233,6 +352,15 @@ async fn tail_once(
             segment_seq: 0,
             byte_offset: 0,
         });
+        if entry.next_cursor.is_some() {
+            *cursor = WalCursor { segment_seq: next.segment_seq, byte_offset: next.byte_offset };
+        }
+        if let Some(d) = durable {
+            if last_save.map_or(true, |t| t.elapsed() >= CURSOR_SAVE_EVERY) {
+                d.save(*cursor);
+                last_save = Some(Instant::now());
+            }
+        }
         status.record_apply(&peer.region, next.segment_seq, next.byte_offset);
         debug!(
             region = %peer.region,
@@ -274,6 +402,9 @@ pub enum CrossRegionError {
     Decode(String),
     #[error("apply: {0}")]
     Apply(String),
+    /// Remote can't serve our cursor (compacted / WAL reset).
+    #[error("cursor gap: {0}")]
+    CursorGap(String),
 }
 
 #[cfg(test)]

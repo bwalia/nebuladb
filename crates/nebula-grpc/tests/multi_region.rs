@@ -187,6 +187,8 @@ async fn cross_region_crud_converges_both_directions() {
         east_owned,
         east_sink.clone(),
         "us-east-1".into(),
+        // Durable mirroring on both sides, as prod runs it.
+        Some(east_dir.path().to_path_buf()),
     );
     let _west_tailers = spawn_all(
         vec![RemotePeer { region: "us-east-1".into(), grpc_url: format!("http://{east_addr}") }],
@@ -194,6 +196,7 @@ async fn cross_region_crud_converges_both_directions() {
         west_owned,
         west_sink.clone(),
         "us-west-2".into(),
+        Some(west_dir.path().to_path_buf()),
     );
 
     // CREATE in east's home bucket → converges to west.
@@ -225,6 +228,20 @@ async fn cross_region_crud_converges_both_directions() {
     // DELETE in east → west drops the doc.
     east.delete("catalog", "sku-1").unwrap();
     await_converged("east delete visible in west", || west.get("catalog", "sku-1").is_none()).await;
+
+    // Un-homed bucket: neither side's owned set filters it, so if mirrored
+    // records were re-served (main WAL) it would bounce back to east and,
+    // with both sides persisting, loop. The replica WAL is never served.
+    east.upsert_text("shared", "s-1", "unowned", serde_json::json!({})).await.unwrap();
+    await_converged("unhomed write visible in west", || west.get("shared", "s-1").is_some()).await;
+    sleep(Duration::from_millis(500)).await;
+    let east_applies = east_sink.applies.load(Ordering::Relaxed);
+    sleep(Duration::from_millis(1000)).await;
+    assert_eq!(
+        east_sink.applies.load(Ordering::Relaxed),
+        east_applies,
+        "east keeps receiving records back from west — echo loop"
+    );
 
     // No cross-region errors (stale-epoch rejects, decode failures) on
     // either side. A populated error list means a coordination bug.
@@ -267,6 +284,7 @@ async fn cross_region_rag_retrieval_correct() {
         west_owned,
         west_sink.clone(),
         "us-west-2".into(),
+        None,
     );
 
     let corpus = [

@@ -197,7 +197,10 @@ pub(crate) fn write_snapshot_streaming(
         .map_err(io_to_index)?;
     fs::rename(&part_path, &final_path).map_err(io_to_index)?;
     sync_dir(dir)?;
-    // Commit marker.
+    // Commit marker. Recreate rather than truncate: snapshot ordering is
+    // by the marker's mtime (see `committed_snapshots`), and re-writing an
+    // existing same-seq snapshot must make it the newest.
+    let _ = fs::remove_file(&ok_path);
     File::create(&ok_path).map_err(io_to_index)?;
     sync_dir(dir)?;
 
@@ -375,13 +378,23 @@ pub fn read_latest_snapshot_header(dir: &Path) -> Result<Option<SnapshotHeader>>
     Ok(Some(header))
 }
 
-/// Return the path of the newest committed snapshot's `.ok`
-/// marker, or `None` if no complete snapshots exist.
-fn newest_snapshot(dir: &Path) -> Result<Option<PathBuf>> {
+/// Committed snapshots in `dir`, newest first. Each item is
+/// `(seq, marker_path)`.
+///
+/// "Newest" is by commit time (the `.ok` marker's mtime), with the seq as
+/// tie-break — NOT by seq alone. Seqs from different WALs are not
+/// comparable: a node bootstrapped from the leader's `.nsnap` carries the
+/// *leader's* WAL seq (e.g. 378) while its own WAL restarts at 0, and a
+/// cross-region peer stamps its own seq. Ordering by seq made such a node
+/// boot from the stale bootstrap snapshot forever, and pruning deleted
+/// every fresh snapshot it wrote (seq 0 < 378) — the region-b data-loss
+/// bug of 1 Nov 2026. On a single node seqs and commit times move
+/// together, so the order there is unchanged.
+fn committed_snapshots(dir: &Path) -> Result<Vec<(u64, PathBuf)>> {
     if !dir.exists() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    let mut best: Option<(u64, PathBuf)> = None;
+    let mut out: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
     for entry in fs::read_dir(dir).map_err(io_to_index)? {
         let entry = entry.map_err(io_to_index)?;
         let name = entry.file_name();
@@ -389,49 +402,62 @@ fn newest_snapshot(dir: &Path) -> Result<Option<PathBuf>> {
         // Commit marker: `snapshot-<seq>.nsnap.ok`.
         let Some(stem) = name.strip_suffix(".nsnap.ok") else { continue };
         let Some(seq_str) = stem.strip_prefix("snapshot-") else { continue };
-        if let Ok(seq) = seq_str.parse::<u64>() {
-            if best.as_ref().map_or(true, |(s, _)| seq > *s) {
-                best = Some((seq, entry.path()));
-            }
+        let Ok(seq) = seq_str.parse::<u64>() else { continue };
+        // A marker without its data file is not a usable snapshot.
+        if !dir.join(format!("{stem}.{SNAPSHOT_EXT}")).exists() {
+            continue;
         }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        out.push((mtime, seq, entry.path()));
     }
-    Ok(best.map(|(_, p)| p))
+    out.sort_by_key(|(mtime, seq, _)| std::cmp::Reverse((*mtime, *seq)));
+    Ok(out.into_iter().map(|(_, seq, p)| (seq, p)).collect())
 }
 
-/// Delete snapshot files older than the newest committed one.
-/// Called after a successful snapshot to reclaim disk.
+/// The newest committed snapshot's `.ok` marker path — see
+/// [`committed_snapshots`] for what "newest" means.
+pub fn newest_snapshot(dir: &Path) -> Result<Option<PathBuf>> {
+    Ok(committed_snapshots(dir)?.into_iter().next().map(|(_, p)| p))
+}
+
+/// Delete every snapshot except the newest committed one (by commit
+/// time, see [`committed_snapshots`]). Called after a successful snapshot
+/// to reclaim disk. In-flight `.part` files newer than the newest commit
+/// are kept — another writer may still be streaming them.
 pub fn prune_old_snapshots(dir: &Path) -> Result<usize> {
-    let Some(newest) = newest_snapshot(dir)? else {
+    let Some((newest_seq, newest_marker)) = committed_snapshots(dir)?.into_iter().next() else {
         return Ok(0);
     };
-    let newest_seq = newest
-        .file_name()
-        .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_suffix(".nsnap.ok"))
-        .and_then(|n| n.strip_prefix("snapshot-"))
-        .and_then(|n| n.parse::<u64>().ok())
-        .unwrap_or(0);
+    let newest_mtime = fs::metadata(&newest_marker)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::UNIX_EPOCH);
 
     let mut removed = 0;
     for entry in fs::read_dir(dir).map_err(io_to_index)? {
         let entry = entry.map_err(io_to_index)?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !name.starts_with("snapshot-") {
-            continue;
-        }
+        let Some(rest) = name.strip_prefix("snapshot-") else { continue };
         // Extract the numeric seq from any snapshot-related
         // filename (main data, .part, .ok).
-        let without_prefix = &name["snapshot-".len()..];
-        let seq_str = without_prefix
-            .split('.')
-            .next()
-            .unwrap_or("");
-        let Ok(seq) = seq_str.parse::<u64>() else { continue };
-        if seq < newest_seq {
-            fs::remove_file(entry.path()).map_err(io_to_index)?;
-            removed += 1;
+        let Ok(seq) = rest.split('.').next().unwrap_or("").parse::<u64>() else { continue };
+        if seq == newest_seq {
+            continue;
         }
+        if name.ends_with(SNAPSHOT_PART_EXT) {
+            let mtime = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if mtime >= newest_mtime {
+                continue; // possibly still being written
+            }
+        }
+        fs::remove_file(entry.path()).map_err(io_to_index)?;
+        removed += 1;
     }
     Ok(removed)
 }
@@ -459,6 +485,60 @@ pub fn wal_err(e: WalError) -> IndexError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn commit_fake(dir: &Path, seq: u64) {
+        let stem = format!("snapshot-{seq:020}.nsnap");
+        fs::write(dir.join(&stem), b"x").unwrap();
+        let _ = fs::remove_file(dir.join(format!("{stem}.ok")));
+        fs::write(dir.join(format!("{stem}.ok")), b"").unwrap();
+        // mtime resolution is ns on ext4/APFS; a short gap keeps order strict.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    /// Region-b bug (1 Nov 2026): a bootstrap snapshot stamped with the
+    /// leader's seq 378 must not beat a snapshot this node wrote later
+    /// with its own (lower) WAL seq — neither at boot nor when pruning.
+    #[test]
+    fn newest_is_by_commit_time_not_seq() {
+        let d = tempfile::tempdir().unwrap();
+        commit_fake(d.path(), 378); // bootstrap copy (leader seq space)
+        commit_fake(d.path(), 0); // written later by this node
+        let newest = newest_snapshot(d.path()).unwrap().unwrap();
+        assert!(newest.to_string_lossy().contains("snapshot-00000000000000000000.nsnap.ok"));
+
+        assert_eq!(prune_old_snapshots(d.path()).unwrap(), 2); // 378 data + marker
+        let left: Vec<String> = fs::read_dir(d.path()).unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(left.iter().all(|n| n.starts_with("snapshot-00000000000000000000")));
+    }
+
+    /// Same-node snapshots keep the historical order: higher seq = later.
+    #[test]
+    fn monotonic_seqs_keep_old_order_and_markerless_data_is_ignored() {
+        let d = tempfile::tempdir().unwrap();
+        commit_fake(d.path(), 5);
+        commit_fake(d.path(), 9);
+        // Data with no marker (crash before commit) is not a candidate.
+        fs::write(d.path().join("snapshot-00000000000000000012.nsnap"), b"x").unwrap();
+        let newest = newest_snapshot(d.path()).unwrap().unwrap();
+        assert!(newest.to_string_lossy().contains("00000000000000000009.nsnap.ok"));
+    }
+
+    /// An in-flight `.part` newer than the newest commit survives pruning;
+    /// an older orphaned `.part` is removed.
+    #[test]
+    fn prune_keeps_inflight_part() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("snapshot-00000000000000000001.nsnap.part"), b"old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        commit_fake(d.path(), 2);
+        fs::write(d.path().join("snapshot-00000000000000000003.nsnap.part"), b"new").unwrap();
+        prune_old_snapshots(d.path()).unwrap();
+        assert!(!d.path().join("snapshot-00000000000000000001.nsnap.part").exists());
+        assert!(d.path().join("snapshot-00000000000000000003.nsnap.part").exists());
+        assert!(d.path().join("snapshot-00000000000000000002.nsnap.ok").exists());
+    }
 
     /// The borrowed views must emit exactly the bytes the owned
     /// `SnapshotHeader` would, or existing `.nsnap` files stop loading.

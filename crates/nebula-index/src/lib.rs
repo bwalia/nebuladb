@@ -402,6 +402,12 @@ pub struct TextIndex {
     /// `Some` = durable. Every mutation writes to the WAL before
     /// applying. `None` = in-memory, legacy behaviour.
     wal: Option<Arc<Wal>>,
+    /// Durable log of records *mirrored from another region* (cross-region
+    /// tail). Kept apart from `wal` on purpose: `wal` is what this node
+    /// serves to its own peers, and mirrored records in it would echo back
+    /// to the region they came from (and loop once both sides persist).
+    /// Replayed at boot after `wal`; compacted whenever a snapshot is taken.
+    replica_wal: Option<Arc<Wal>>,
     /// Parent dir for snapshots. Always `Some` iff `wal` is `Some`.
     data_dir: Option<PathBuf>,
     /// Directory snapshots are written to / loaded from. `Some` iff
@@ -429,6 +435,7 @@ impl TextIndex {
                 next_id: 1,
             }),
             wal: None,
+            replica_wal: None,
             data_dir: None,
             snapshot_dir: None,
         })
@@ -478,6 +485,7 @@ impl TextIndex {
         let dim = embedder.dim();
         let data_dir = data_dir.as_ref().to_path_buf();
         let wal_dir = data_dir.join("wal");
+        let replica_wal_dir = data_dir.join("replica-wal");
         let snapshots_dir = snapshot_dir.unwrap_or_else(|| Self::resolve_snapshot_dir(&data_dir));
         std::fs::create_dir_all(&wal_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
         std::fs::create_dir_all(&snapshots_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
@@ -550,6 +558,7 @@ impl TextIndex {
                         let _ = std::fs::create_dir_all(&archive);
                         let _ = std::fs::rename(&snapshots_dir, archive.join("snapshots"));
                         let _ = std::fs::rename(&wal_dir, archive.join("wal"));
+                        let _ = std::fs::rename(&replica_wal_dir, archive.join("replica-wal"));
                         let _ = std::fs::create_dir_all(&wal_dir);
                         let _ = std::fs::create_dir_all(&snapshots_dir);
                         let hnsw = Hnsw::new(dim, metric, config.clone())?;
@@ -585,6 +594,9 @@ impl TextIndex {
             };
 
         let wal = Arc::new(Wal::open(&wal_dir, WalConfig::default()).map_err(durability::wal_err)?);
+        std::fs::create_dir_all(&replica_wal_dir).map_err(|e| IndexError::Core(NebulaError::Io(e)))?;
+        let replica_wal =
+            Arc::new(Wal::open(&replica_wal_dir, WalConfig::default()).map_err(durability::wal_err)?);
 
         let index = Self {
             embedder,
@@ -592,6 +604,7 @@ impl TextIndex {
             len_cache: std::sync::atomic::AtomicUsize::new(0),
             inner: RwLock::new(inner),
             wal: Some(Arc::clone(&wal)),
+            replica_wal: Some(Arc::clone(&replica_wal)),
             data_dir: Some(data_dir),
             snapshot_dir: Some(snapshots_dir),
         };
@@ -623,6 +636,21 @@ impl TextIndex {
                     apply_err = Some(e);
                     Err(nebula_wal::WalError::Codec("wal replay apply aborted".into()))
                 }
+            }
+        });
+        if let Some(e) = apply_err {
+            return Err(e);
+        }
+        stream.map_err(durability::wal_err)?;
+
+        // Then records mirrored from other regions. Buckets are partitioned
+        // by home region, so ordering against the local WAL doesn't matter.
+        let mut apply_err: Option<IndexError> = None;
+        let stream = replica_wal.replay_apply(|rec| match index.apply_wal_record(&rec) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                apply_err = Some(e);
+                Err(nebula_wal::WalError::Codec("replica wal replay apply aborted".into()))
             }
         });
         if let Some(e) = apply_err {
@@ -682,6 +710,37 @@ impl TextIndex {
     /// the in-memory state.
     pub fn append_replicated(&self, rec: &WalRecord) -> Result<()> {
         self.wal_append(rec)
+    }
+
+    /// Apply a record mirrored from another region and persist it to the
+    /// replica WAL (see `replica_wal`). Apply-then-append, like the
+    /// in-region follower: a record that fails to apply is never logged,
+    /// and a crash in between is covered by the caller's cursor not having
+    /// advanced (at-least-once; applies are idempotent). In-memory indexes
+    /// just apply.
+    pub fn apply_mirrored(&self, rec: &WalRecord) -> Result<()> {
+        self.apply_wal_record(rec)?;
+        if let Some(w) = &self.replica_wal {
+            w.append(rec).map_err(durability::wal_err)?;
+        }
+        Ok(())
+    }
+
+    /// Replica-WAL segment seq to compact to once a snapshot that was
+    /// frozen *after* this call is durable. Flushes first.
+    fn replica_seq_before_snapshot(&self) -> Result<Option<u64>> {
+        let Some(w) = &self.replica_wal else { return Ok(None) };
+        w.flush().map_err(durability::wal_err)?;
+        nebula_wal::current_seq(w.dir()).map_err(durability::wal_err)
+    }
+
+    /// Drop replica-WAL segments older than `seq` — every record in them
+    /// was applied before the snapshot froze, so the snapshot covers them.
+    fn compact_replica_to(&self, seq: Option<u64>) -> Result<()> {
+        if let (Some(w), Some(seq)) = (&self.replica_wal, seq) {
+            w.compact(seq).map_err(durability::wal_err)?;
+        }
+        Ok(())
     }
 
     /// Apply a single WAL record to the in-memory state — shared
@@ -1518,6 +1577,7 @@ impl TextIndex {
         mark_seq: u64,
     ) -> Result<SnapshotOutcome> {
         let snapshots_dir = snapshots_dir.as_ref();
+        let replica_seq = self.replica_seq_before_snapshot()?;
         let f = self.freeze_for_snapshot();
         let path = durability::write_snapshot_streaming(
             snapshots_dir,
@@ -1527,6 +1587,7 @@ impl TextIndex {
             &f.parents,
             &f.hnsw,
         )?;
+        self.compact_replica_to(replica_seq)?;
         Ok(SnapshotOutcome {
             path,
             wal_seq_captured: mark_seq,
@@ -1568,6 +1629,7 @@ impl TextIndex {
         let wal_seq =
             nebula_wal::current_seq(wal.dir()).map_err(durability::wal_err)?.unwrap_or(0);
 
+        let replica_seq = self.replica_seq_before_snapshot()?;
         let f = self.freeze_for_snapshot();
         let path = durability::write_snapshot_streaming(
             snapshots_dir,
@@ -1577,6 +1639,7 @@ impl TextIndex {
             &f.parents,
             &f.hnsw,
         )?;
+        self.compact_replica_to(replica_seq)?;
 
         Ok(SnapshotOutcome {
             path,
@@ -2571,6 +2634,37 @@ mod tests {
             .unwrap()
             .expect("snapshot header present");
         assert_eq!(header.wal_seq_at_snapshot, mark);
+    }
+
+    /// Mirrored (cross-region) records persist to the replica WAL — not the
+    /// main WAL — and survive restart both before and after a snapshot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mirrored_records_are_durable_and_not_in_main_wal() {
+        let data = tempfile::tempdir().unwrap();
+        let rec = |id: &str| WalRecord::UpsertText {
+            bucket: "remote".into(),
+            external_id: id.into(),
+            text: format!("text {id}"),
+            vector: vec![0.5; 64],
+            metadata_json: "{}".into(),
+        };
+        {
+            let idx = persistent_index(data.path(), None);
+            let main_before = idx.wal().unwrap().stats().unwrap().total_bytes;
+            idx.apply_mirrored(&rec("m1")).unwrap();
+            assert_eq!(idx.wal().unwrap().stats().unwrap().total_bytes, main_before);
+        }
+        // Restart with no snapshot: replayed from the replica WAL.
+        {
+            let idx = persistent_index(data.path(), None);
+            assert!(idx.get("remote", "m1").is_some());
+            idx.snapshot().unwrap();
+            idx.apply_mirrored(&rec("m2")).unwrap();
+        }
+        // Restart after a snapshot: m1 from the snapshot, m2 from replica WAL.
+        let idx = persistent_index(data.path(), None);
+        assert!(idx.get("remote", "m1").is_some());
+        assert!(idx.get("remote", "m2").is_some());
     }
 
     /// Re-upserting identical content is a no-op: no tombstone, no new

@@ -536,6 +536,32 @@ impl pb::ai_service_server::AiService for AiSvc {
     }
 }
 
+/// `Err(reason)` when `start` points before this WAL's oldest retained
+/// segment or past its newest position.
+pub fn cursor_servable(wal: &nebula_wal::Wal, start: nebula_wal::WalCursor) -> Result<(), String> {
+    let oldest = wal
+        .segments_since(0)
+        .map_err(|e| format!("wal list: {e}"))?
+        .first()
+        .map(|(seq, _)| *seq);
+    let newest = wal.newest_cursor();
+    if let Some(oldest) = oldest {
+        if start.segment_seq < oldest {
+            return Err(format!(
+                "cursor segment {} was compacted (oldest retained {oldest}); re-bootstrap required",
+                start.segment_seq
+            ));
+        }
+    }
+    if (start.segment_seq, start.byte_offset) > (newest.segment_seq, newest.byte_offset) {
+        return Err(format!(
+            "cursor {}:{} is ahead of this WAL ({}:{}); source WAL was reset — re-bootstrap required",
+            start.segment_seq, start.byte_offset, newest.segment_seq, newest.byte_offset
+        ));
+    }
+    Ok(())
+}
+
 pub mod cross_region;
 pub mod follower;
 
@@ -745,6 +771,17 @@ impl pb::cross_region_replication_service_server::CrossRegionReplicationService
         };
         let owned_by_caller: std::collections::HashSet<String> =
             r.buckets_owned_by_caller.into_iter().collect();
+
+        // A resuming caller's cursor must still be servable. Without this
+        // check `subscribe` silently starts at the oldest retained segment
+        // (cursor compacted away) or delivers nothing until the WAL grows
+        // back past it (WAL reset) — both are silent data loss on the
+        // caller. BEGIN is always allowed: it means "whatever you have".
+        if start != nebula_wal::WalCursor::BEGIN {
+            if let Err(msg) = cursor_servable(&wal, start) {
+                return Err(Status::out_of_range(msg));
+            }
+        }
 
         let mut sub = wal
             .subscribe(start)

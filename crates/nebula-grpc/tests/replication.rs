@@ -573,6 +573,7 @@ async fn cross_region_consumer_mirrors_source_writes() {
         owned,
         sink,
         "us-west-2".into(),
+        None,
     );
 
     // Write on the source — the consumer should apply into its local index.
@@ -678,4 +679,139 @@ async fn follower_lazy_channel_survives_unreachable_leader() {
         "follower task exited despite unreachable leader; should retry forever"
     );
     fh.abort();
+}
+
+/// Region-b bug (1 Nov 2026): mirrored records lived only in RAM and the
+/// tail restarted from BEGIN, so anything the source had compacted was
+/// lost on every restart. With a state dir the consumer persists mirrored
+/// records (replica WAL — NOT its main WAL, which it serves to peers) and
+/// resumes from a saved cursor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn durable_cross_region_mirror_survives_restart_and_resumes() {
+    use nebula_grpc::cross_region::{OwnedBuckets, RemotePeer, StatusSink};
+    use std::collections::HashSet;
+
+    let source_dir = tempdir().unwrap();
+    let source_idx = Arc::new(
+        TextIndex::open_persistent(embedder(), Metric::Cosine, HnswConfig::default(), source_dir.path())
+            .unwrap(),
+    );
+    source_idx
+        .upsert_text(
+            "catalog",
+            "__nebuladb_operator_seed__",
+            "seed",
+            serde_json::json!({"home_region": "us-east-1", "home_epoch": 1u64}),
+        )
+        .await
+        .unwrap();
+    let (source_addr, _srv) = spawn_leader_with_region(source_idx.clone(), "us-east-1").await;
+
+    struct Quiet;
+    impl StatusSink for Quiet {
+        fn register(&self, _r: &str, _u: &str) {}
+        fn record_connected(&self, _r: &str) {}
+        fn record_apply(&self, _r: &str, _s: u64, _o: u64) {}
+        fn record_error(&self, _r: &str, _e: &str) {}
+    }
+    struct Nothing;
+    impl OwnedBuckets for Nothing {
+        fn snapshot(&self) -> HashSet<String> {
+            HashSet::new()
+        }
+    }
+    let peers = || {
+        vec![RemotePeer { region: "us-east-1".into(), grpc_url: format!("http://{source_addr}") }]
+    };
+    let open_consumer = |dir: &std::path::Path| {
+        Arc::new(TextIndex::open_persistent(embedder(), Metric::Cosine, HnswConfig::default(), dir).unwrap())
+    };
+    async fn wait_for(idx: &TextIndex, id: &str) -> bool {
+        for _ in 0..100 {
+            if idx.get("catalog", id).is_some() {
+                return true;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    let consumer_dir = tempdir().unwrap();
+    let consumer = open_consumer(consumer_dir.path());
+    let main_wal_before = consumer.wal().unwrap().stats().unwrap().total_bytes;
+    let handles = nebula_grpc::cross_region::spawn_all(
+        peers(),
+        consumer.clone(),
+        Arc::new(Nothing),
+        Arc::new(Quiet),
+        "us-west-2".into(),
+        Some(consumer_dir.path().to_path_buf()),
+    );
+    source_idx.upsert_text("catalog", "sku-1", "first", serde_json::json!({})).await.unwrap();
+    assert!(wait_for(&consumer, "sku-1").await, "sku-1 mirrored");
+    // Mirrored records must not land in the main WAL (it is re-served to
+    // peers — that would echo back to the source).
+    assert_eq!(consumer.wal().unwrap().stats().unwrap().total_bytes, main_wal_before);
+    assert!(consumer_dir.path().join("cross-region-us-east-1.cursor").exists());
+
+    // "Restart": stop tailing, drop the index, write on the source meanwhile.
+    for h in handles {
+        h.abort();
+    }
+    sleep(Duration::from_millis(100)).await;
+    drop(consumer);
+    source_idx.upsert_text("catalog", "sku-2", "second", serde_json::json!({})).await.unwrap();
+
+    // Local recovery alone (no network) brings back sku-1.
+    let consumer = open_consumer(consumer_dir.path());
+    assert_eq!(consumer.get("catalog", "sku-1").map(|d| d.text), Some("first".into()));
+    assert!(consumer.get("catalog", "sku-2").is_none());
+
+    // Resuming picks up what was written while we were down.
+    let _h = nebula_grpc::cross_region::spawn_all(
+        peers(),
+        consumer.clone(),
+        Arc::new(Nothing),
+        Arc::new(Quiet),
+        "us-west-2".into(),
+        Some(consumer_dir.path().to_path_buf()),
+    );
+    assert!(wait_for(&consumer, "sku-2").await, "sku-2 mirrored after resume");
+}
+
+/// A cursor the source can't serve must be refused loudly (OUT_OF_RANGE)
+/// instead of silently starting elsewhere; BEGIN is always allowed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cross_region_rejects_unservable_cursor() {
+    use nebula_grpc::pb::{
+        cross_region_replication_service_client::CrossRegionReplicationServiceClient,
+        TailCrossRegionRequest, WalCursor,
+    };
+    let dir = tempdir().unwrap();
+    let idx = Arc::new(
+        TextIndex::open_persistent(embedder(), Metric::Cosine, HnswConfig::default(), dir.path()).unwrap(),
+    );
+    idx.upsert_text("b", "x", "y", serde_json::json!({})).await.unwrap();
+    let (addr, _srv) = spawn_leader_with_region(idx, "us-east-1").await;
+    let mut client = CrossRegionReplicationServiceClient::new(channel(addr).await);
+
+    // Ahead of the WAL (e.g. the source's WAL was reset).
+    let err = client
+        .tail_cross_region(TailCrossRegionRequest {
+            start: Some(WalCursor { segment_seq: 999, byte_offset: 0 }),
+            caller_region: "us-west-2".into(),
+            buckets_owned_by_caller: vec![],
+        })
+        .await
+        .expect_err("must reject");
+    assert_eq!(err.code(), tonic::Code::OutOfRange);
+
+    let ok = client
+        .tail_cross_region(TailCrossRegionRequest {
+            start: Some(WalCursor { segment_seq: 0, byte_offset: 0 }),
+            caller_region: "us-west-2".into(),
+            buckets_owned_by_caller: vec![],
+        })
+        .await;
+    assert!(ok.is_ok(), "BEGIN is always servable");
 }
