@@ -150,6 +150,7 @@ pub struct AppConfig {
     /// verification are authorized even if `api_keys` is empty.
     pub jwt: Option<JwtConfig>,
     /// Default `ef` for search when the request doesn't specify one.
+    /// Applied to the index in [`AppState::new`]; env `NEBULA_EF_SEARCH`.
     pub default_ef_search: usize,
     /// Hard ceiling on `top_k` a caller can ask for. Prevents a client
     /// from pinning a huge priority queue.
@@ -179,7 +180,9 @@ impl Default for AppConfig {
             max_body_bytes: 16 * 1024 * 1024,
             api_keys: AHashSet::new(),
             jwt: None,
-            default_ef_search: 64,
+            // 256: prod recall benchmark (Oct 2026) — 0.93 vs 0.90 recall@10
+            // over ef=64, ~3.5 ms p50 on 8.15M × 768.
+            default_ef_search: 256,
             max_top_k: 100,
             rate_limit: RateLimitConfig::default(),
             request_timeout: None,
@@ -385,6 +388,9 @@ impl AppState {
     /// via [`Self::with_llm`], the chunker via [`Self::with_chunker`],
     /// and registers cache stats via [`Self::with_cache_stats`].
     pub fn new(index: Arc<TextIndex>, config: AppConfig) -> Self {
+        // The persisted HNSW config pins `ef_search` to its build-time
+        // value; the server-level default wins at runtime.
+        index.set_default_ef_search(config.default_ef_search);
         // Default SQL engine wraps the same index; no result cache
         // unless a caller wires one in via `with_sql`. The LLM is shared
         // with the SQL engine so `ai_answer(...)` works out of the box.

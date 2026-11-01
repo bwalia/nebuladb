@@ -636,6 +636,17 @@ impl TextIndex {
         self.embedder.dim()
     }
 
+    /// Default HNSW `ef` for vector searches that don't specify one.
+    pub fn default_ef_search(&self) -> usize {
+        self.hnsw.default_ef()
+    }
+
+    /// Override the default HNSW search `ef` at runtime. Applies to a
+    /// snapshot-restored graph too (the persisted build config is untouched).
+    pub fn set_default_ef_search(&self, ef: usize) {
+        self.hnsw.set_default_ef(ef);
+    }
+
     /// Append a record to the WAL if persistence is on. No-op in
     /// the in-memory path. Errors propagate so a failed WAL write
     /// aborts the mutation — we never "partially commit" under

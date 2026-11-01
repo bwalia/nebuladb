@@ -792,9 +792,19 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
         .filter(|n| *n > 0)
         .map(Duration::from_secs);
 
+    // Default HNSW search beam when a request omits `ef`. Higher = better
+    // recall, more latency (see AppConfig::default_ef_search).
+    let default_ef_search = std::env::var("NEBULA_EF_SEARCH")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(AppConfig::default().default_ef_search);
+    tracing::info!(default_ef_search, "hnsw search ef");
+
     let mut state = AppState::new(
         index,
         AppConfig {
+            default_ef_search,
             api_keys,
             jwt,
             rate_limit: rate_limit_cfg,
