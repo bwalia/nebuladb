@@ -205,12 +205,16 @@ ha:
         value: "0"
       - name: NEBULA_SNAPSHOT_WAL_BYTES
         value: "0"
+    # CPU request 100m (limit unchanged): the PVC pins region-b to
+    # debian004, whose CPU *requests* sit at ~98% of 8 cores from other
+    # tenants. 500m left the pod Pending (6 Nov 2026) and XDCR showed
+    # "transport: transport error"; idle WAL tailing uses far less.
     resources:
       limits:
         cpu: "4"
         memory: "56Gi"
       requests:
-        cpu: "500m"
+        cpu: "100m"
         memory: "8Gi"
 
 ollamaLan:
