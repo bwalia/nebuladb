@@ -809,4 +809,40 @@ export const api = {
       `/api/v1/bucket/${encodeURIComponent(bucket)}/docs/bulk`,
       { method: "POST", body: JSON.stringify({ items: docs }) }
     ),
+
+  /** Search with every knob the Labs need (`ef`, hybrid, explain). */
+  searchEx: (body: { query: string; top_k?: number; bucket?: string; ef?: number; hybrid?: boolean; explain?: boolean }) =>
+    request<SearchResponse>("/api/v1/ai/search", { method: "POST", body: JSON.stringify(body) }),
+
+  /** LLMs the AI gateway can route to (one entry per configured provider). */
+  aiModels: () =>
+    request<{ models: AiModelInfo[]; default_provider: string }>("/api/v1/ai/models"),
+
+  /** Gateway + embedder config (embedding model name and dim, mock-only flag). */
+  aiConfig: () =>
+    request<{ default_provider: string; dev_mock_only: boolean; embedding: { model: string | null; dim: number } }>(
+      "/api/v1/ai/config"
+    ),
+
+  /** One non-streaming LLM call with an explicit system prompt — no retrieval. */
+  aiChat: (body: { message: string; system?: string; provider?: string; model?: string; temperature?: number; max_tokens?: number }) =>
+    request<AiChatResponse>("/api/v1/ai/chat", { method: "POST", body: JSON.stringify({ ...body, stream: false }) }),
 };
+
+export interface AiModelInfo {
+  id: string;
+  provider: string;
+  display_name: string;
+  context_window?: number;
+  is_mock: boolean;
+  capabilities: { chat: boolean; reasoning: boolean; tool_calling: boolean; structured_output: boolean };
+}
+
+export interface AiChatResponse {
+  answer: string;
+  provider: string;
+  model: string;
+  trace_id: string;
+  usage: { prompt_tokens: number | null; completion_tokens: number | null };
+  is_mock: boolean;
+}
