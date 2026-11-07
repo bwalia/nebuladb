@@ -58,14 +58,19 @@ showcase:
     repository: bwalia/nebula-showcase
     tag: "latest"
     pullPolicy: IfNotPresent
-  # Password sign-in on /login, kept by an oauth2-proxy session cookie
-  # (no Google). Credentials from WSLVault path nebuladb/int/showcase-auth
-  # (SHOWCASE_AUTH_USERNAME / _PASSWORD); cookie secret is chart-generated.
+  # Same sign-in as prod: "Sign in with Google" on /login, plus the
+  # email/password form (SHOWCASE_AUTH_USERNAME / _PASSWORD), both via the
+  # oauth2-proxy sidecar. WSLVault path nebuladb/int/showcase-auth must hold
+  #   GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET (prod's OAuth client),
+  #   OAUTH2_PROXY_COOKIE_SECRET (openssl rand -base64 32),
+  #   SHOWCASE_AUTH_USERNAME, SHOWCASE_AUTH_PASSWORD
+  # Google Console redirect: https://int-nebuladb.nebuladb.net/oauth2/callback
   auth:
     vault:
       enabled: true
-  sessionLogin:
+  googleAuth:
     enabled: true
+    redirectUrl: "https://int-nebuladb.nebuladb.net"
 
 # Claude agents example suite (MCP → NebulaDB), exposed at /examples.
 examples:
