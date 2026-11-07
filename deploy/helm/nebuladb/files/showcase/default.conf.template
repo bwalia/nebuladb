@@ -301,6 +301,15 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
+    # "/" and every SPA deep link end up here via `index` / try_files.
+    # Without Cache-Control, browsers heuristically reuse a stale
+    # index.html, which points at the previous immutable bundles — so a
+    # redeploy (e.g. the Labs release) stayed invisible until a hard
+    # refresh. no-cache = revalidate each load (cheap 304 via ETag).
+    location = /index.html {
+        add_header Cache-Control "no-cache" always;
+    }
+
     # Streaming endpoints need long timeouts so an SSE connection
     # can sit idle for minutes while the LLM thinks. Carve them
     # out as their own location so the rest of /api/* can use
