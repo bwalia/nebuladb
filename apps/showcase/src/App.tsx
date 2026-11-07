@@ -17,6 +17,7 @@ import { AdminTab } from "./tabs/AdminTab";
 import { MetricsTab } from "./tabs/MetricsTab";
 import { ExecutiveTab } from "./tabs/ExecutiveTab";
 import { McpTab } from "./tabs/McpTab";
+import { LabsTab } from "./labs/LabsTab";
 import { AgentsTab } from "./tabs/AgentsTab";
 import { ClusterTab } from "./tabs/ClusterTab";
 import { RebalanceTab } from "./tabs/RebalanceTab";
@@ -56,6 +57,7 @@ import { priorArtSpec } from "./usecases/specs/priorArt";
 import { voiceOfCustomerSpec } from "./usecases/specs/voiceOfCustomer";
 
 type TabId =
+  | "labs"
   | "executive"
   | "blog"
   | "overview"
@@ -120,6 +122,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { id: "executive", label: "Executive demo", hint: "The 5-minute story", icon: "★", group: "home" },
+  { id: "labs", label: "Labs", hint: "Hands-on search, RAG and reasoning experiments on seven businesses' data", icon: "⚗", group: "home" },
   { id: "blog", label: "Engineering blog", hint: "Notes from running NebulaDB in production", icon: "✎", group: "home" },
   { id: "overview", label: "Overview", hint: "Cluster summary", icon: "◎", group: "home" },
   { id: "documents", label: "Documents", hint: "Ingest + chunk + embed", icon: "❏", group: "data" },
@@ -184,6 +187,7 @@ const SIDEBAR_KEY = "nebula-sidebar";
 function tabFromHash(): TabId | null {
   const h = window.location.hash;
   if (h.startsWith("#/blog")) return "blog";
+  if (h.startsWith("#/labs")) return "labs";
   const m = /^#\/tab\/([a-z]+)/.exec(h);
   return m && NAV.some((t) => t.id === m[1]) ? (m[1] as TabId) : null;
 }
@@ -283,6 +287,9 @@ export function App() {
             if (id !== "blog" && window.location.hash.startsWith("#/blog")) {
               history.replaceState(null, "", window.location.pathname + window.location.search);
             }
+            if (id !== "labs" && window.location.hash.startsWith("#/labs")) {
+              history.replaceState(null, "", window.location.pathname + window.location.search);
+            }
             setTab(id);
           }}
         />
@@ -318,6 +325,7 @@ export function App() {
                 />
               )}
               {tab === "blog" && <BlogTab />}
+              {tab === "labs" && <LabsTab />}
               {tab === "overview" && <OverviewTab onNavigate={(t) => setTab(t as TabId)} />}
               {tab === "documents" && <DocumentsTab />}
               {tab === "sql" && <SqlTab />}
