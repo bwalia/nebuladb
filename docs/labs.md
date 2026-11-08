@@ -74,7 +74,7 @@ Small local models (prod runs `llama3.2:3b`) don't follow JSON or tool-calling i
 - Pulls the applicant's age, savings, monthly income, purpose and any visa named from plain text. Purposes in the latest message take priority.
 - Picks the tools:
   - **visa_finder:** SQL over visa types: `min_age <= age AND min_funds_thb <= funds AND array_contains(purpose, …)`. If nothing matches, it drops the funds limit and says so.
-  - **search_rules:** hybrid search with citations.
+  - **search_rules:** semantic SQL limited to `client_id = 'public'`, with citations. (Plain hybrid search returned another client's case note to a guest; on this pack vector search also measured better than hybrid.)
   - **case_status:** reads case notes, only for the signed-in demo client.
 - Runs the safety rules (false documents, detention) before anything else. Those return a fixed card, and the model is never called.
 
