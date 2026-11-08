@@ -81,6 +81,7 @@ test("numbers in an answer must come from the evidence", () => {
   assert.deepEqual(unsupportedNumbers("Average 5412 INR, min 5300, rain 12 mm [1].", evidence), []);
   assert.deepEqual(unsupportedNumbers("Average 5500 INR [1].", evidence), ["5500"]);
   assert.deepEqual(unsupportedNumbers("Step 2: wait.", evidence), []);
+  assert.deepEqual(numbersIn("case cn-3110-02 and -5 degrees"), ["3110", "02", "-5"]);
 });
 
 test("claims split sentences and parse citations", () => {

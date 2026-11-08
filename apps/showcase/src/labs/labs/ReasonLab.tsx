@@ -85,7 +85,7 @@ export function ReasonLab({ pack, state, update, env }: LabProps) {
           out[i] = {
             ...out[i],
             status: "ok",
-            rows: r.hits.map((h) => ({ id: h.id, text: pack.docs.find((d) => d.id === h.id)?.text ?? h.text })),
+            rows: r.hits.map((h) => ({ id: h.id, text: h.text || pack.docs.find((d) => d.id === h.id)?.text || "" })),
             ms: Math.round(performance.now() - t0),
           };
         }

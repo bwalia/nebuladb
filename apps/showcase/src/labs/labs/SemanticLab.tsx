@@ -38,7 +38,7 @@ export function SemanticLab({ pack, state, update }: LabProps) {
           api.searchEx({ query: question, top_k: k, bucket: pack.bucket, hybrid: true, explain: true }),
         ]);
         const explainOf = new Map<string, HitExplain>((hyb.explain?.hits ?? []).map((h) => [h.id, h]));
-        const textOf = (h: Hit) => byId.get(h.id)?.text ?? h.text;
+        const textOf = (h: Hit) => h.text || byId.get(h.id)?.text || "";
         setCols([
           {
             key: "keyword",

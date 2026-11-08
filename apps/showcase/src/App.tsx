@@ -122,7 +122,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { id: "executive", label: "Executive demo", hint: "The 5-minute story", icon: "★", group: "home" },
-  { id: "labs", label: "Labs", hint: "Hands-on search, RAG and reasoning experiments on seven businesses' data", icon: "⚗", group: "home" },
+  { id: "labs", label: "Labs", hint: "Hands-on search, RAG and reasoning experiments on business data — schools, care homes, visas, farming and more", icon: "⚗", group: "home" },
   { id: "blog", label: "Engineering blog", hint: "Notes from running NebulaDB in production", icon: "✎", group: "home" },
   { id: "overview", label: "Overview", hint: "Cluster summary", icon: "◎", group: "home" },
   { id: "documents", label: "Documents", hint: "Ingest + chunk + embed", icon: "❏", group: "data" },
