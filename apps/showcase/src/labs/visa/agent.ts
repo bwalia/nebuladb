@@ -148,6 +148,16 @@ export function finderSql(pack: Pack, q: string, p: Profile): string {
   return [`SELECT * FROM ${pack.bucket}`, ` WHERE semantic_match(text, ${lit(q)})`, ...preds.map((x) => `   AND ${x}`), " LIMIT 200"].join("\n");
 }
 
+/**
+ * Rule search: semantic SQL limited to public documents. Plain hybrid search
+ * ranks by relevance only, so a guest asking about retiring in Chiang Mai got
+ * another client's case note back; the client filter keeps those rows inside
+ * the database. Signed-in clients see their own notes through case_status.
+ */
+export function rulesSql(pack: Pack, q: string): string {
+  return [`SELECT * FROM ${pack.bucket}`, ` WHERE semantic_match(text, ${lit(q)})`, `   AND client_id = 'public'`, " LIMIT 5"].join("\n");
+}
+
 export function caseSql(pack: Pack, clientId: string): string {
   return [
     `SELECT * FROM ${pack.bucket}`,
@@ -184,7 +194,7 @@ export function plan(pack: Pack, text: string, profile: Profile, persona?: Perso
     }
     if (i === "rules") {
       const q = profile.visa && !new RegExp(profile.visa, "i").test(text) ? `${profile.visa} ${text}` : text;
-      calls.push({ tool: "search_rules", why: "rules, documents and fees that answer the question", query: q });
+      calls.push({ tool: "search_rules", why: "public rules, documents and fees that answer the question", query: q, sql: rulesSql(pack, q) });
     }
   }
   return { calls };

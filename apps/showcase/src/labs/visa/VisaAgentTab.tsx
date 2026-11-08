@@ -94,21 +94,16 @@ export function VisaAgentTab() {
         const t0 = performance.now();
         const run: StepRun = { call, rows: [], ms: 0 };
         try {
-          if (call.tool === "search_rules") {
-            const r = await api.searchEx({ query: call.query!, top_k: 5, bucket: PACK.bucket, hybrid: true });
-            run.rows = r.hits.map((h) => ({ id: h.id, text: h.text, meta: h.metadata as Record<string, unknown> }));
-          } else {
-            let sql = call.sql!;
-            let r = await api.sql(sql);
-            // Finder with no exact fit: relax the funds limit, then the purpose, and say so.
-            if (call.tool === "visa_finder" && r.rows.length === 0 && prof.fundsThb !== undefined) {
-              sql = sql.replace(/\n\s+AND min_funds_thb <= \d+/, "");
-              r = await api.sql(sql);
-              run.note = "No visa type matched every limit, so the funds limit was dropped — check the funds each option needs.";
-            }
-            run.call = { ...call, sql };
-            run.rows = r.rows.map((x) => ({ id: x.id, text: String(x.fields.text ?? ""), meta: flatFields(x.fields) }));
+          let sql = call.sql!;
+          let r = await api.sql(sql);
+          // Finder with no exact fit: relax the funds limit, then the purpose, and say so.
+          if (call.tool === "visa_finder" && r.rows.length === 0 && prof.fundsThb !== undefined) {
+            sql = sql.replace(/\n\s+AND min_funds_thb <= \d+/, "");
+            r = await api.sql(sql);
+            run.note = "No visa type matched every limit, so the funds limit was dropped — check the funds each option needs.";
           }
+          run.call = { ...call, sql };
+          run.rows = r.rows.map((x) => ({ id: x.id, text: String(x.fields.text ?? ""), meta: flatFields(x.fields) }));
         } catch (e) {
           run.error = (e as Error).message;
         }
@@ -357,7 +352,7 @@ function ReplyCard({ r }: { r: Reply }) {
                         {s.rows.length} rows · {s.ms} ms
                       </span>
                     </div>
-                    <pre className="mt-1 whitespace-pre-wrap font-mono text-gray-600 dark:text-muted">{s.call.sql ?? `hybrid search: "${s.call.query}"`}</pre>
+                    <pre className="mt-1 whitespace-pre-wrap font-mono text-gray-600 dark:text-muted">{s.call.sql ?? s.call.query}</pre>
                     {s.error && <p className="text-bad">{s.error}</p>}
                   </div>
                 ))}

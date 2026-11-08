@@ -62,5 +62,13 @@ test("plan: safety rules short-circuit before any tool call", () => {
   assert.equal(p.calls.length, 0);
   const q = plan(PACK, "Which visa fits a 55 year old with 900k baht who wants to retire?", parseProfile("55 year old with 900k baht who wants to retire"));
   assert.deepEqual(q.calls.map((c) => c.tool), ["visa_finder", "search_rules"]);
-  for (const c of q.calls) if (c.sql) assert.deepEqual(checkSql(c.sql, PACK.bucket), []);
+  for (const c of q.calls) assert.deepEqual(checkSql(c.sql!, PACK.bucket), []);
+});
+
+test("rule search only reads public documents", () => {
+  const p = plan(PACK, "I want to retire in Chiang Mai, I am 55", parseProfile("I want to retire in Chiang Mai, I am 55"));
+  const rules = p.calls.find((c) => c.tool === "search_rules")!;
+  assert.match(rules.sql!, /client_id = 'public'/);
+  const priv = PACK.docs.filter((d) => d.metadata.kind === "case_note");
+  assert.ok(priv.length > 0 && priv.every((d) => d.metadata.client_id !== "public"), "case notes are never public");
 });
