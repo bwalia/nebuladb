@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, type SqlResponse } from "../../api";
 import { ErrorBanner } from "../../components";
 import { PipelineTrace } from "../../rag/PipelineTrace";
-import { docPasses, filterSql } from "../engine/core";
+import { docPasses, filterSql, flatFields } from "../engine/core";
 import { Bar, PersonaPicker, QuestionBox, fmtPct, personaOf } from "../shell";
 import type { FilterField } from "../types";
 import type { LabProps } from "./props";
@@ -107,7 +107,7 @@ export function FiltersLab({ pack, state, update }: LabProps) {
                   <div className="mt-1 flex flex-wrap gap-1">
                     {pack.filters.map((f) => (
                       <span key={f.field} className="rounded bg-gray-100 dark:bg-carbon-800 px-1.5 py-0.5 text-[10px] font-mono text-gray-600 dark:text-muted">
-                        {f.field}: {JSON.stringify(r.fields[f.field] ?? pack.docs.find((d) => d.id === r.id)?.metadata[f.field])}
+                        {f.field}: {JSON.stringify(flatFields(r.fields)[f.field] ?? pack.docs.find((d) => d.id === r.id)?.metadata[f.field])}
                       </span>
                     ))}
                   </div>

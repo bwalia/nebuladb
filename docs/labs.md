@@ -64,6 +64,30 @@ Each pack also has:
 3. Run `npm test`. `validatePack` checks ids, filters, labels, safety false positives, persona slices, and the SQL rules (`checkSql`).
 4. Run the reference SQL against a live server. The tests check syntax only, not execution.
 
+## Visa AI Agent (`#/tab/visaagent`)
+
+A conversational Thai visa assistant built on the `visa` pack, under **RAG apps → Visa AI Agent** in the sidebar. Code lives in `apps/showcase/src/labs/visa/`.
+
+Small local models (prod runs `llama3.2:3b`) don't follow JSON or tool-calling instructions reliably. So the agent never lets the model decide what to query.
+
+**What code does** (`agent.ts`, unit-tested):
+- Pulls the applicant's age, savings, monthly income, purpose and any visa named from plain text. Purposes in the latest message take priority.
+- Picks the tools:
+  - **visa_finder:** SQL over visa types: `min_age <= age AND min_funds_thb <= funds AND array_contains(purpose, …)`. If nothing matches, it drops the funds limit and says so.
+  - **search_rules:** hybrid search with citations.
+  - **case_status:** reads case notes, only for the signed-in demo client.
+- Runs the safety rules (false documents, detention) before anything else. Those return a fixed card, and the model is never called.
+
+**What the model does:** writes the reply from the numbered sources only, through `/api/v1/ai/chat` with the configured provider.
+
+**What the page shows for each reply:**
+- the matching visa routes as cards, built from the SQL rows rather than the model;
+- a citation per sentence;
+- a check that every number appears in a source;
+- an expandable trace of each SQL and search call.
+
+The Claude-driven agent teams in `examples/nebula-agents` need `ANTHROPIC_API_KEY` on the examples pod. It isn't set on int or prod, so this agent runs on NebulaDB's own LLM gateway instead.
+
 ## When the official rules change (RAG freshness)
 
 Some packs ship `updates`, which are simulated changes to an official source. The `visa` pack has three: changes to a Thai government visa page.

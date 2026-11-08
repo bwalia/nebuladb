@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   Bm25,
   claims,
+  flatFields,
   filterSql,
   labHash,
   lit,
@@ -82,6 +83,11 @@ test("numbers in an answer must come from the evidence", () => {
   assert.deepEqual(unsupportedNumbers("Average 5500 INR [1].", evidence), ["5500"]);
   assert.deepEqual(unsupportedNumbers("Step 2: wait.", evidence), []);
   assert.deepEqual(numbersIn("case cn-3110-02 and -5 degrees"), ["3110", "02", "-5"]);
+});
+
+test("flatFields flattens SELECT * rows and drops seed_version", () => {
+  assert.deepEqual(flatFields({ text: "t", metadata: { a: 1, seed_version: "x" } }), { a: 1, text: "t" });
+  assert.deepEqual(flatFields({ visa: "DTV", n: 2 }), { visa: "DTV", n: 2 });
 });
 
 test("claims split sentences and parse citations", () => {
