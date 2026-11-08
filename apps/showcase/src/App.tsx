@@ -18,6 +18,7 @@ import { MetricsTab } from "./tabs/MetricsTab";
 import { ExecutiveTab } from "./tabs/ExecutiveTab";
 import { McpTab } from "./tabs/McpTab";
 import { LabsTab } from "./labs/LabsTab";
+import { VisaAgentTab } from "./labs/visa/VisaAgentTab";
 import { AgentsTab } from "./tabs/AgentsTab";
 import { ClusterTab } from "./tabs/ClusterTab";
 import { RebalanceTab } from "./tabs/RebalanceTab";
@@ -58,6 +59,7 @@ import { voiceOfCustomerSpec } from "./usecases/specs/voiceOfCustomer";
 
 type TabId =
   | "labs"
+  | "visaagent"
   | "executive"
   | "blog"
   | "overview"
@@ -134,6 +136,7 @@ const NAV: NavItem[] = [
   { id: "agents", label: "AI agents", hint: "Tool-calling agents over MCP", icon: "⬡", group: "ai" },
   { id: "mcp", label: "MCP", hint: "Live MCP server + playground", icon: "⚯", group: "ai" },
   { id: "secureagent", label: "Secure agent", hint: "Identity-bound RAG agent: injection, PII and session-leak guard rails", icon: "⛨", group: "ai" },
+  { id: "visaagent", label: "Visa AI Agent", hint: "Thai visa finder and immigration assistant: SQL visa matching, cited rules, guard rails (demo agency)", icon: "✈", group: "apps" },
   { id: "companies", label: "Companies House", hint: "UK CH search + RAG chat", icon: "⌂", group: "apps" },
   { id: "shop", label: "Shop catalogue", hint: "Stock SOT + product RAG", icon: "▣", group: "apps" },
   { id: "talent", label: "Talent Match", hint: "Job board: SQL hard filters + multi-facet semantic matching + recruiter chat", icon: "♟", group: "apps" },
@@ -326,6 +329,7 @@ export function App() {
               )}
               {tab === "blog" && <BlogTab />}
               {tab === "labs" && <LabsTab />}
+              {tab === "visaagent" && <VisaAgentTab />}
               {tab === "overview" && <OverviewTab onNavigate={(t) => setTab(t as TabId)} />}
               {tab === "documents" && <DocumentsTab />}
               {tab === "sql" && <SqlTab />}

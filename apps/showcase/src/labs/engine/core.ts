@@ -167,6 +167,18 @@ export function labHash(s: LabState): string {
 
 // ---------------------------------------------------------------- SQL
 
+/**
+ * SQL rows: `SELECT *` nests metadata under `fields.metadata`, explicit
+ * columns come back flat. Normalise both to one flat record (minus the
+ * seeding bookkeeping field).
+ */
+export function flatFields(fields: Record<string, unknown>): Record<string, unknown> {
+  const { metadata, ...rest } = fields;
+  const out: Record<string, unknown> = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { ...(metadata as Record<string, unknown>), ...rest } : { ...fields };
+  delete out.seed_version;
+  return out;
+}
+
 /** SQL string literal with '' escaping. */
 export function lit(v: string): string {
   return `'${v.replace(/'/g, "''")}'`;

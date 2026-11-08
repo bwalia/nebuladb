@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { ErrorBanner } from "../../components";
-import { checkSql, extractJson, unsupportedNumbers } from "../engine/core";
+import { checkSql, extractJson, flatFields, unsupportedNumbers } from "../engine/core";
 import { Banner, ModelPicker } from "../shell";
 import type { Pack, ReasonStep } from "../types";
 import type { LabProps } from "./props";
@@ -79,7 +79,7 @@ export function ReasonLab({ pack, state, update, env }: LabProps) {
           const problems = checkSql(st.sql, pack.bucket);
           if (problems.length) throw new Error(problems.join("; "));
           const r = await api.sql(st.sql);
-          out[i] = { ...out[i], status: "ok", rows: r.rows.map((x) => ({ id: x.id, ...x.fields })), ms: Math.round(performance.now() - t0) };
+          out[i] = { ...out[i], status: "ok", rows: r.rows.map((x) => ({ id: x.id, ...flatFields(x.fields) })), ms: Math.round(performance.now() - t0) };
         } else {
           const r = await api.searchEx({ query: st.query, top_k: Math.min(10, st.k || 5), bucket: pack.bucket, hybrid: true });
           out[i] = {
