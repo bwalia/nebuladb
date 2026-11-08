@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type AiChatResponse } from "../../api";
 import { ErrorBanner } from "../../components";
 import { PipelineTrace, type PipelineStep } from "../../rag/PipelineTrace";
@@ -6,6 +6,7 @@ import { claims, filterSql, ragPrompt, unsupportedNumbers } from "../engine/core
 import { matchesSafety } from "../validate";
 import { Banner, ModelPicker, PersonaPicker, QuestionBox, personaOf } from "../shell";
 import type { LabProps } from "./props";
+import type { Pack, PackUpdate } from "../types";
 
 interface Chunk {
   id: string;
@@ -33,7 +34,7 @@ export function RagLab({ pack, state, update, env }: LabProps) {
   const [err, setErr] = useState<string | null>(null);
   const [asked, setAsked] = useState<string | null>(null);
 
-  const run = async (question: string) => {
+  const run = async (question: string): Promise<{ answer: string; sources: string[] } | null> => {
     update({ q: question });
     setAsked(question);
     setBusy(true);
@@ -43,6 +44,7 @@ export function RagLab({ pack, state, update, env }: LabProps) {
     setChunks([]);
     setFocus(null);
     setCard(null);
+    let result: { answer: string; sources: string[] } | null = null;
     const s: PipelineStep[] = [];
     const push = (st: PipelineStep) => {
       s.push(st);
@@ -54,7 +56,7 @@ export function RagLab({ pack, state, update, env }: LabProps) {
       if (rule) {
         push({ label: `Safety rule “${rule.label}” matched — fixed response, no model call`, status: "ok" });
         setCard(rule.card);
-        return;
+        return { answer: rule.card, sources: [] };
       }
       push({ label: "Safety rules checked: none matched", status: "ok", detail: pack.safety.map((r) => r.label).join(" · ") });
 
@@ -68,7 +70,7 @@ export function RagLab({ pack, state, update, env }: LabProps) {
         push({ label: `Retrieve as ${persona.label} (filter inside the SQL)`, detail: sql, rowsOut: got.length, ms: Math.round(performance.now() - t0) });
       } else {
         const r = await api.searchEx({ query: question, top_k: k, bucket: pack.bucket, hybrid: mode === "hybrid" });
-        got = r.hits.map((h) => ({ id: h.id, text: pack.docs.find((d) => d.id === h.id)?.text ?? h.text, score: h.score }));
+        got = r.hits.map((h) => ({ id: h.id, text: h.text || pack.docs.find((d) => d.id === h.id)?.text || "", score: h.score }));
         push({ label: `Retrieve top ${k} (${mode})`, detail: `POST /api/v1/ai/search {bucket: ${pack.bucket}, hybrid: ${mode === "hybrid"}}`, rowsOut: got.length, ms: r.took_ms });
       }
 
@@ -93,6 +95,7 @@ export function RagLab({ pack, state, update, env }: LabProps) {
       ]);
       setBare(a);
       setGrounded(b);
+      result = { answer: b.answer, sources: kept.map((c) => c.id) };
       push({
         label: `Generate twice with ${b.model} (${b.provider}) — without and with sources`,
         detail: `system: ${prompt.system}\n\n${prompt.user}`,
@@ -104,6 +107,7 @@ export function RagLab({ pack, state, update, env }: LabProps) {
     } finally {
       setBusy(false);
     }
+    return result;
   };
 
   const gc = grounded ? claims(grounded.answer) : [];
@@ -196,6 +200,8 @@ export function RagLab({ pack, state, update, env }: LabProps) {
         </div>
       )}
 
+      {pack.updates?.length ? <RuleChangePanel pack={pack} busy={busy} ask={run} /> : null}
+
       {chunks.length > 0 && (
         <div className="card space-y-2">
           <div className="eyebrow">Sources sent to the model</div>
@@ -210,6 +216,169 @@ export function RagLab({ pack, state, update, env }: LabProps) {
               </li>
             ))}
           </ol>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type Snap = { answer: string; sources: string[] };
+
+/**
+ * "The official page changed": re-ingest replacement docs under the same
+ * ids (what a page-watcher would do) and compare answers before/after.
+ * The demo bucket is shared, so the panel shows the live state for
+ * everyone and always offers Revert.
+ */
+function RuleChangePanel({ pack, busy, ask }: { pack: Pack; busy: boolean; ask: (q: string) => Promise<Snap | null> }) {
+  const updates = pack.updates ?? [];
+  const [sel, setSel] = useState(updates[0]?.id);
+  const [applied, setApplied] = useState<Record<string, boolean>>({});
+  const [before, setBefore] = useState<Snap | null>(null);
+  const [after, setAfter] = useState<Snap | null>(null);
+  const [working, setWorking] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const u = updates.find((x) => x.id === sel) ?? updates[0];
+
+  // Is each update currently live in the bucket? (compare stored text)
+  const refresh = async () => {
+    const st: Record<string, boolean> = {};
+    for (const x of updates) {
+      try {
+        const d = await api.getDoc(pack.bucket, x.docs[0].id);
+        st[x.id] = d.text === x.docs[0].text;
+      } catch {
+        st[x.id] = false;
+      }
+    }
+    setApplied(st);
+  };
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pack.id]);
+
+  const write = (docs: { id: string; text: string; metadata: Record<string, unknown> }[]) =>
+    api.bulkDocs(pack.bucket, docs.map((d) => ({ ...d, metadata: { ...d.metadata, seed_version: `lab-${pack.version}` } })));
+  const originals = (x: PackUpdate) => x.docs.map((d) => pack.docs.find((o) => o.id === d.id)!).filter(Boolean);
+
+  const apply = async () => {
+    if (!u) return;
+    setErr(null);
+    setAfter(null);
+    try {
+      setWorking("Asking with the current rules…");
+      setBefore(await ask(u.question));
+      setWorking(`Re-ingesting ${u.docs.length} changed doc(s) from ${u.source}…`);
+      await write(u.docs);
+      setWorking("Asking again…");
+      setAfter(await ask(u.question));
+      await refresh();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setWorking(null);
+    }
+  };
+  const revert = async (x: PackUpdate) => {
+    setErr(null);
+    try {
+      setWorking("Restoring the original docs…");
+      await write(originals(x));
+      await refresh();
+      setAfter(null);
+      setBefore(null);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setWorking(null);
+    }
+  };
+  if (!u) return null;
+  const live = Object.entries(applied).filter(([, v]) => v).map(([k]) => updates.find((x) => x.id === k)!);
+
+  return (
+    <div className="card space-y-3 border-accent/40">
+      <div>
+        <div className="eyebrow text-accent">The rules changed — does the answer?</div>
+        <p className="mt-1 text-sm text-gray-600 dark:text-muted">
+          Official pages change. With RAG nothing is retrained: a watcher re-ingests the changed page into NebulaDB under the same id and the
+          next answer uses it. Pick a simulated change, apply it, and compare.
+        </p>
+      </div>
+      {live.length > 0 && (
+        <Banner kind="warn">
+          Currently applied in the shared demo data: {live.map((x) => x.label).join("; ")}.{" "}
+          {live.map((x) => (
+            <button key={x.id} className="ml-1 underline" onClick={() => void revert(x)} disabled={!!working}>
+              Revert “{x.label}”
+            </button>
+          ))}
+        </Banner>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <select className="input !w-auto !py-1.5 max-w-md" value={u.id} onChange={(e) => setSel(e.target.value)}>
+          {updates.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.label}
+            </option>
+          ))}
+        </select>
+        <button className="btn" onClick={apply} disabled={busy || !!working || applied[u.id]}>
+          {applied[u.id] ? "Applied" : "Apply the change and re-ask"}
+        </button>
+        {applied[u.id] && (
+          <button className="btn-secondary" onClick={() => void revert(u)} disabled={!!working}>
+            Revert
+          </button>
+        )}
+        {working && <span className="text-xs text-gray-500 dark:text-muted">{working}</span>}
+      </div>
+      <p className="text-xs text-gray-500 dark:text-muted">
+        Source: {u.source} · effective {u.effective} · re-ingests {u.docs.map((d) => d.id).join(", ")} · question: “{u.question}”
+      </p>
+      <ErrorBanner err={err} />
+      <details className="rounded-lg border border-gray-200 dark:border-edge p-3" open={!!after}>
+        <summary className="cursor-pointer text-xs font-medium text-gray-700 dark:text-ink">What changed in the source ({u.docs.length} doc{u.docs.length === 1 ? "" : "s"})</summary>
+        <div className="mt-2 space-y-2">
+          {u.docs.map((d) => {
+            const o = pack.docs.find((x) => x.id === d.id);
+            return (
+              <div key={d.id} className="grid gap-2 md:grid-cols-2 text-xs">
+                <div className="rounded bg-bad/5 p-2">
+                  <div className="font-mono text-[10px] text-gray-500 dark:text-muted">{d.id} · before</div>
+                  <p className="text-gray-700 dark:text-ink">{o?.text}</p>
+                </div>
+                <div className="rounded bg-ok/5 p-2">
+                  <div className="font-mono text-[10px] text-gray-500 dark:text-muted">{d.id} · after</div>
+                  <p className="text-gray-700 dark:text-ink">{d.text}</p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </details>
+      {after && (
+        <p className={`text-xs ${after.sources.some((id) => u.docs.some((d) => d.id === id)) ? "text-ok" : "text-warn"}`}>
+          {after.sources.some((id) => u.docs.some((d) => d.id === id))
+            ? "The changed page was among the retrieved sources, so the new rule reached the answer."
+            : "The changed page was NOT among the retrieved sources for this question, so the answer couldn't reflect it. Fresh data only helps if retrieval finds it: with the mock embedder try hybrid retrieval or more sources; a real embedder fixes this."}
+        </p>
+      )}
+      {before && after && (
+        <div className="grid gap-3 md:grid-cols-2">
+          {[
+            ["Before the change", before],
+            ["After re-ingesting", after],
+          ].map(([t, snap]) => (
+            <div key={t as string} className="rounded-lg border border-gray-200 dark:border-edge p-3">
+              <div className="eyebrow">{t as string}</div>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-gray-800 dark:text-ink">{(snap as Snap).answer}</p>
+              <p className="mt-1 text-[11px] font-mono text-gray-500 dark:text-muted">
+                sources: {(snap as Snap).sources.map((id) => (u.docs.some((d) => d.id === id) ? `${id} (changed)` : id)).join(", ") || "—"}
+              </p>
+            </div>
+          ))}
         </div>
       )}
     </div>

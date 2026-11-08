@@ -20,7 +20,27 @@ export type LabId =
   | "scale"
   | "map";
 
-export type PackId = "campus" | "carehome" | "chat" | "cms" | "joyai" | "kisaan" | "source";
+export type PackId = "campus" | "carehome" | "chat" | "cms" | "joyai" | "kisaan" | "source" | "visa";
+
+/**
+ * A simulated change on an official source (e.g. a government visa page
+ * is updated). Applying it re-ingests the affected docs under the SAME
+ * ids — exactly what a page-watcher would do — so RAG answers change
+ * without retraining anything. Reverting re-ingests the originals.
+ */
+export interface PackUpdate {
+  id: string;
+  /** e.g. "Visa exemption cut from 60 to 30 days". */
+  label: string;
+  /** Where the change would come from, e.g. "mfa.go.th notice". */
+  source: string;
+  /** Effective date of the (simulated) change, e.g. "2026-12-01". */
+  effective: string;
+  /** A question whose answer should change after applying. */
+  question: string;
+  /** Replacement docs; each id must already exist in the pack. */
+  docs: PackDoc[];
+}
 
 /** Metadata values a pack doc may carry. Arrays are queried with array_contains. */
 export type MetaValue = string | number | boolean | string[];
@@ -130,4 +150,6 @@ export interface Pack {
   reason: ReasonTask[];
   /** One concrete challenge per lab, phrased for this pack. */
   challenges: Record<LabId, string>;
+  /** Optional simulated source changes for the "rules changed" step of the RAG lab. */
+  updates?: PackUpdate[];
 }

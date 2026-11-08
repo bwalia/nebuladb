@@ -5,8 +5,8 @@ import { LAB_IDS, matchesSafety, validatePack } from "./validate.ts";
 import { LABS } from "./meta.ts";
 import { checkSql, labHash, parseLabHash } from "./engine/core.ts";
 
-test("there are seven packs and eight labs", () => {
-  assert.equal(PACKS.length, 7);
+test("there are eight packs and eight labs", () => {
+  assert.equal(PACKS.length, 8);
   assert.deepEqual(LABS.map((l) => l.id).sort(), [...LAB_IDS].sort());
 });
 

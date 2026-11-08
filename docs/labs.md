@@ -45,6 +45,7 @@ Each pack lives in `apps/showcase/src/labs/packs/<id>.ts` and seeds bucket `lab_
 | `joyai` | Three small UK businesses + tax notes | 95 | 26 |
 | `kisaan` | Punjab/UP farmers — English, Hindi, Punjabi, Hinglish | 90 | 31 |
 | `source` | Source Supplies (B2B cleaning) | 93 | 26 |
+| `visa` | Lotus Gate Visa Desk (fictional Thai visa agency) — Visa Finder / immigration assistant | see `packs/visa.ts` | see `packs/visa.ts` |
 
 Each pack also has:
 - ≥ 3 metadata filters, one of them carrying an apostrophe to test `''` escaping;
@@ -62,6 +63,25 @@ Each pack also has:
 2. Register it in `packs/index.ts`.
 3. Run `npm test`. `validatePack` checks ids, filters, labels, safety false positives, persona slices, and the SQL rules (`checkSql`).
 4. Run the reference SQL against a live server. The tests check syntax only, not execution.
+
+## When the official rules change (RAG freshness)
+
+Some packs ship `updates`, which are simulated changes to an official source. The `visa` pack has three: changes to a Thai government visa page.
+
+The RAG lab's **"The rules changed — does the answer?"** panel does four things:
+1. Asks the update's question against the current documents.
+2. Re-ingests the changed documents under the **same ids**, which is exactly what a page-watcher would do on a real change.
+3. Asks again.
+4. Shows the two answers side by side, marking which sources changed.
+
+No model is retrained; only the retrieved text changed.
+
+The demo bucket is shared, so the panel shows whether an update is currently applied, for everyone viewing it, and always offers **Revert**.
+
+In production, the same loop is a crawler on the official sources that runs on a schedule:
+1. Fetch each page and hash its content.
+2. On a change, chunk and upsert into NebulaDB under the page's stable id, recording `source` and `as_of`.
+3. RAG cites the new text on the next question.
 
 ## Rules the labs follow
 

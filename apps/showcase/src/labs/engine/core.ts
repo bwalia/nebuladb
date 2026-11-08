@@ -253,7 +253,8 @@ export function docPasses(pack: Pack, doc: PackDoc, values: Record<string, strin
 /** Numbers in a text, normalised (commas, currency, % stripped). Citation markers [n] are excluded. */
 export function numbersIn(text: string): string[] {
   const clean = text.replace(/\[\d+(?:\s*,\s*\d+)*\]/g, " ");
-  return (clean.match(/-?\d[\d,]*(?:\.\d+)?/g) ?? []).map((n) => n.replace(/,/g, "")).map((n) => (n.includes(".") ? String(Number(n)) : n));
+  // A leading "-" counts only when it isn't glued to a word (ids like cn-3110-02).
+  return (clean.match(/(?:(?<!\w)-)?(?<!\w)\d[\d,]*(?:\.\d+)?/g) ?? []).map((n) => n.replace(/,/g, "")).map((n) => (n.includes(".") ? String(Number(n)) : n));
 }
 
 /**

@@ -123,6 +123,23 @@ export function validatePack(p: Pack): string[] {
     }
   }
 
+  // Simulated source changes: replace existing docs only, same metadata shape.
+  for (const u of p.updates ?? []) {
+    if (!u.docs.length) err(`update ${u.id} has no docs`);
+    if (!u.question.trim()) err(`update ${u.id} needs a question`);
+    for (const d of u.docs) {
+      const orig = p.docs.find((x) => x.id === d.id);
+      if (!orig) {
+        err(`update ${u.id} replaces unknown doc ${d.id}`);
+        continue;
+      }
+      if (orig.text === d.text) err(`update ${u.id}: doc ${d.id} text is unchanged`);
+      const a = Object.keys(orig.metadata).sort().join(",");
+      const b = Object.keys(d.metadata).sort().join(",");
+      if (a !== b) err(`update ${u.id}: doc ${d.id} metadata keys differ from the original`);
+    }
+  }
+
   for (const l of LAB_IDS) if (!p.challenges[l]?.trim()) err(`missing challenge for lab ${l}`);
   return errs;
 }
