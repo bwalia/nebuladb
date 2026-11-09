@@ -1,8 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { finderSql, intents, parseProfile, plan } from "./agent.ts";
+import { readFileSync } from "node:fs";
+import { answerPrompt, finderSql, gatherEvidence, GOV_BUCKET, intents, OFFICIAL_TAG, officialFollowUps, parseProfile, plan } from "./agent.ts";
 import { PACK } from "../packs/visa.ts";
 import { checkSql } from "../engine/core.ts";
+
+const GOV = JSON.parse(readFileSync(new URL("./gov-corpus.json", import.meta.url), "utf8")) as {
+  docs: { id: string; text: string; metadata: Record<string, unknown> }[];
+};
 
 test("profile: age, savings, income and purpose from plain English", () => {
   const p = parseProfile("I'm 55, British, with 900k THB savings and want to retire in Chiang Mai");
@@ -61,14 +66,47 @@ test("plan: safety rules short-circuit before any tool call", () => {
   assert.equal(p.safety?.id, "no-fraud");
   assert.equal(p.calls.length, 0);
   const q = plan(PACK, "Which visa fits a 55 year old with 900k baht who wants to retire?", parseProfile("55 year old with 900k baht who wants to retire"));
-  assert.deepEqual(q.calls.map((c) => c.tool), ["visa_finder", "search_rules"]);
-  for (const c of q.calls) assert.deepEqual(checkSql(c.sql!, PACK.bucket), []);
+  assert.deepEqual(q.calls.map((c) => c.tool), ["visa_finder", "search_official"]);
+  for (const c of q.calls) assert.deepEqual(checkSql(c.sql!, c.tool === "search_official" ? GOV_BUCKET : PACK.bucket), []);
 });
 
-test("rule search only reads public documents", () => {
+test("answers are grounded in official sources only: agency notes and other clients never reach the model", () => {
   const p = plan(PACK, "I want to retire in Chiang Mai, I am 55", parseProfile("I want to retire in Chiang Mai, I am 55"));
-  const rules = p.calls.find((c) => c.tool === "search_rules")!;
-  assert.match(rules.sql!, /client_id = 'public'/);
-  const priv = PACK.docs.filter((d) => d.metadata.kind === "case_note");
-  assert.ok(priv.length > 0 && priv.every((d) => d.metadata.client_id !== "public"), "case notes are never public");
+  const official = p.calls.find((c) => c.tool === "search_official")!;
+  assert.match(official.sql!, new RegExp(`FROM ${GOV_BUCKET}\\b`));
+  const ev = gatherEvidence([
+    { call: p.calls.find((c) => c.tool === "visa_finder")!, rows: [{ id: "vt-oa", text: "agency summary" }] },
+    { call: official, rows: [{ id: "gov-evisa-22-30", text: "800,000 THB", meta: { url: "https://www.thaievisa.go.th/visa/retirement", authority: "MFA" } }] },
+  ]);
+  assert.deepEqual(ev.map((e) => e.id), ["gov-evisa-22-30"], "finder rows (agency notes) are not evidence");
+  assert.equal(ev[0].url, "https://www.thaievisa.go.th/visa/retirement");
+  const prompt = answerPrompt(PACK, "q", parseProfile("q"), ev, [], "2026-11-09");
+  assert.match(prompt.system, /official Thai government websites/);
+  assert.match(prompt.user, /thaievisa\.go\.th/);
+});
+
+test("finder follow-ups fetch the official requirements for each shortlisted route", () => {
+  const f = officialFollowUps("retire at 55", ["Non-O-A", "Non-O-X", "Non-O-A", "PR", "LTR", "DTV"]);
+  assert.deepEqual(f.map((c) => c.why), ["official requirements for Non-O-A", "official requirements for Non-O-X", "official requirements for LTR"]);
+  for (const c of f) {
+    assert.match(c.sql!, /AND visa = '/);
+    assert.deepEqual(checkSql(c.sql!, GOV_BUCKET), []);
+  }
+});
+
+test("the official corpus: every passage links to a government page and carries the filter keys", () => {
+  assert.ok(GOV.docs.length >= 50);
+  const ids = new Set<string>();
+  for (const d of GOV.docs) {
+    assert.ok(!ids.has(d.id), `duplicate id ${d.id}`);
+    ids.add(d.id);
+    assert.match(String(d.metadata.url), /^https:\/\/[^/]*(\.go\.th|thailandprivilege\.co\.th|tourismthailand\.org)\//, d.id);
+    assert.equal(typeof d.metadata.visa, "string", d.id);
+    assert.equal(d.metadata.kind, "official");
+  }
+  // Every route the agent narrows to has at least one official passage.
+  const tags = new Set(GOV.docs.map((d) => d.metadata.visa));
+  for (const t of new Set(Object.values(OFFICIAL_TAG))) assert.ok(tags.has(t), `no official passage tagged ${t}`);
+  // The e-Visa master data carries the retirement funds rule verbatim.
+  assert.ok(GOV.docs.some((d) => d.metadata.visa === "Non-O-A" && /800,000 THB/.test(d.text)));
 });

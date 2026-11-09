@@ -1,0 +1,1978 @@
+{
+ "fetched": "2026-11-09",
+ "version": "915461cf34fe",
+ "sources": [
+  "thaievisa.go.th",
+  "tdac.immigration.go.th",
+  "ltr.boi.go.th",
+  "smart-visa.boi.go.th",
+  "thailandprivilege.co.th",
+  "tourismthailand.org"
+ ],
+ "docs": [
+  {
+   "id": "gov-evisa-145-83",
+   "text": "Non-Immigrant Visa — B-A. Purpose of visit: Working Holiday (only for ordinary Australian passports with current residency in Australia).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — B-A: Working Holiday (only for ordinary Australian passports with current residency in Australia)",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-56-34",
+   "text": "Tourist Visa. Purpose of visit: To visit family residing in Thailand (less than 60 days).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)\n6. Personal details of a family in Thailand (e.g., ID card, passport and the visa page and stay permit in Thailand)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Tourist Visa: To visit family residing in Thailand (less than 60 days)",
+    "url": "https://www.thaievisa.go.th/visa/tourist-visa",
+    "visa": "TR"
+   }
+  },
+  {
+   "id": "gov-evisa-53-37",
+   "text": "Transit Visa. Purpose of visit: Transit(stopover longer than 12 hours).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Transit Visa: Transit(stopover longer than 12 hours)",
+    "url": "https://www.thaievisa.go.th/visa/transit-visa",
+    "visa": "transit"
+   }
+  },
+  {
+   "id": "gov-evisa-51-35",
+   "text": "Tourist Visa — Medical Treatment. Purpose of visit: Medical treatment (less than 60 days).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)\n6. Letter of appointment from hospital/medical center",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Tourist Visa — Medical Treatment: Medical treatment (less than 60 days)",
+    "url": "https://www.thaievisa.go.th/visa/medical-treatment",
+    "visa": "medical"
+   }
+  },
+  {
+   "id": "gov-evisa-48-34",
+   "text": "Tourist Visa. Purpose of visit: Tourism / Leisure activities.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Tourist Visa: Tourism / Leisure activities",
+    "url": "https://www.thaievisa.go.th/visa/tourist-visa",
+    "visa": "TR"
+   }
+  },
+  {
+   "id": "gov-evisa-46-74",
+   "text": "Courtesy Visa. Purpose of visit: Other purposes.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Note verbale from sending State/international organization or invitation letter",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Courtesy Visa: Other purposes",
+    "url": "https://www.thaievisa.go.th/visa/courtesy-visa",
+    "visa": "courtesy"
+   }
+  },
+  {
+   "id": "gov-evisa-40-44",
+   "text": "SMART Visa — SMART Visa Unit (BOI) for Spouses and Children. Purpose of visit: With letter of qualification endorsement from SMART Visa Unit (BOI) for spouses and children.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement from SMART VISA Unit (BOI)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "SMART Visa — SMART Visa Unit (BOI) for Spouses and Children: With letter of qualification endorsement from SMART Visa Unit (BOI) for spouses and children",
+    "url": "https://www.thaievisa.go.th/visa/smart-visa",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-evisa-39-43",
+   "text": "SMART Visa — SMART Visa Unit (BOI) for Startup. Purpose of visit: With letter of qualification endorsement from SMART Visa Unit (BOI) for Startups.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement from SMART VISA Unit (BOI)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "SMART Visa — SMART Visa Unit (BOI) for Startup: With letter of qualification endorsement from SMART Visa Unit (BOI) for Startups",
+    "url": "https://www.thaievisa.go.th/visa/smart-visa",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-evisa-38-42",
+   "text": "SMART Visa — SMART Visa Unit (BOI) for Excecutive. Purpose of visit: With letter of qualification endorsement from SMART Visa Unit (BOI) for Executives.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement from SMART VISA Unit (BOI)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "SMART Visa — SMART Visa Unit (BOI) for Excecutive: With letter of qualification endorsement from SMART Visa Unit (BOI) for Executives",
+    "url": "https://www.thaievisa.go.th/visa/smart-visa",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-evisa-37-41",
+   "text": "SMART Visa — SMART Visa Unit (BOI) for Investor. Purpose of visit: With letter of qualification endorsement from SMART Visa Unit (BOI) for Investors.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement from SMART VISA Unit (BOI)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "SMART Visa — SMART Visa Unit (BOI) for Investor: With letter of qualification endorsement from SMART Visa Unit (BOI) for Investors",
+    "url": "https://www.thaievisa.go.th/visa/smart-visa",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-evisa-36-40",
+   "text": "SMART Visa — SMART Visa Unit (BOI) for Talent. Purpose of visit: With letter of qualification endorsement from SMART Visa Unit (BOI) for Talents.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement from SMART VISA Unit (BOI)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "SMART Visa — SMART Visa Unit (BOI) for Talent: With letter of qualification endorsement from SMART Visa Unit (BOI) for Talents",
+    "url": "https://www.thaievisa.go.th/visa/smart-visa",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-evisa-33-19",
+   "text": "Non-Immigrant Visa — M (Mass Media). Purpose of visit: Film crew (with the purpose of producing a film, motion picture, or advertisement).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (Single), 120,000 THB (Multiple) (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from Department of Tourism (Thailand Film Office)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — M (Mass Media): Film crew (with the purpose of producing a film, motion picture, or advertisement)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-m",
+    "visa": "Non-M"
+   }
+  },
+  {
+   "id": "gov-evisa-32-18",
+   "text": "Non-Immigrant Visa — M (Mass Media). Purpose of visit: Media / Press based in Thailand.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (Single), 120,000 THB (Multiple) (e.g., bank statements for the last three months, sponsor letter)\n4. Confirmation from the Department of Information",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — M (Mass Media): Media / Press based in Thailand",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-m",
+    "visa": "Non-M"
+   }
+  },
+  {
+   "id": "gov-evisa-31-20",
+   "text": "Non-Immigrant Visa — R (Religion). Purpose of visit: To perform missionary work or other religious activities with approval from the relevant Governmental Department (R).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from the Department of Religious Affairs",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — R (Religion): To perform missionary work or other religious activities with approval from the relevant Governmental Department (R)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-r",
+    "visa": "Non-R"
+   }
+  },
+  {
+   "id": "gov-evisa-30-14",
+   "text": "Non-Immigrant Visa — ED (Education). Purpose of visit: For monk, nun, and priest to study Dharma in Thailand.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence covering tuition fees and living expenses (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from National office of Buddhism",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — ED (Education): For monk, nun, and priest to study Dharma in Thailand",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-ed",
+    "visa": "Non-ED"
+   }
+  },
+  {
+   "id": "gov-evisa-29-13",
+   "text": "Non-Immigrant Visa — ED (Education). Purpose of visit: To attend workshop, training or seminar organized by government agency or foreign mission and international organization in Thailand.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter from the government agency or note verbale from foreign mission and international organization in Thailand\n4. Financial evidence covering living expenses (e.g., bank statements for the last three months, sponsor letter)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — ED (Education): To attend workshop, training or seminar organized by government agency or foreign mission and international organization in",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-ed",
+    "visa": "Non-ED"
+   }
+  },
+  {
+   "id": "gov-evisa-28-5",
+   "text": "Non-Immigrant Visa — B (Employment). Purpose of visit: Internship (Non-Curricular Internship).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (Single), 120,000 THB (Multiple) (e.g., bank statements for the last three months, sponsor letter)\n4. Letter confirming the internship/participation from the company in Thailand",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — B (Employment): Internship (Non-Curricular Internship)",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-27-13",
+   "text": "Non-Immigrant Visa — ED (Education). Purpose of visit: Internship (Curricular internship) or Exchange student.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence covering tuition fees and living expenses (e.g., bank statements for the last three months, sponsor letter)\n4. Letter confirming the curricular internship from the visa applicant's university/educational institute\n5. Letter confirming the internship/participation in a program from the company/international organization",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — ED (Education): Internship (Curricular internship) or Exchange student",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-ed",
+    "visa": "Non-ED"
+   }
+  },
+  {
+   "id": "gov-evisa-26-12",
+   "text": "Non-Immigrant Visa — ED (Education). Purpose of visit: To study (vocational, technical, or university diploma below Bachelor's degree).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence covering tuition fees and living expenses (e.g., bank statements for the last three months, sponsor letter)\n4. Letter confirming enrollment details from the Institute/University, signed by an authorized person, together with a copy of ID card or passport of the signer\n5. Letter from Institute/University",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — ED (Education): To study (vocational, technical, or university diploma below Bachelor's degree)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-ed",
+    "visa": "Non-ED"
+   }
+  },
+  {
+   "id": "gov-evisa-25-11",
+   "text": "Non-Immigrant Visa — ED (Education). Purpose of visit: To study a short course (Thai or English language)/attend Muaythai training.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence covering tuition fees and living expenses (e.g., bank statements for the last three months, sponsor letter)\n4. Letter confirming enrollment details from the Institute/University, signed by an authorized person, together with a copy of ID card or passport of the signer\n5. Letter from relevant authority under the Ministry of Education/Letter from relevant organizations including Sports Authority of Thailand",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — ED (Education): To study a short course (Thai or English language)/attend Muaythai training",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-ed",
+    "visa": "Non-ED"
+   }
+  },
+  {
+   "id": "gov-evisa-24-11",
+   "text": "Non-Immigrant Visa — ED (Education). Purpose of visit: To study (elementary to secondary level).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence covering tuition fees and living expenses (e.g., bank statements for the last three months, sponsor letter)\n4. Letter confirming enrollment details from the Institute/University, signed by an authorized person, together with a copy of ID card or passport of the signer\n5. Letter from relevant authority under the Ministry of Education or International School",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — ED (Education): To study (elementary to secondary level)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-ed",
+    "visa": "Non-ED"
+   }
+  },
+  {
+   "id": "gov-evisa-23-31",
+   "text": "Non-Immigrant Visa — O-X (Longstay 5+5 years). Purpose of visit: Long-stay (O-X) for foreigners aged 50 years or older (who wish to stay in Thailand for 5 years + 5 years).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Proof of permanent residence in the country where the application is submitted\n4. Financial evidence with a fixed deposit of at least 3,000,000 THB or at least 1,800,000 THB together with an income of at least 1,200,000 THB per year in a Thai bank located in Thailand (e.g., bank statements for the last three months, proof of earnings)\n5. Medical certificate issued from the country where the application is submitted, showing no prohibitive diseases as indicated in the Ministerial Regulation No.14 (B.E. 2535) (certificate shall be valid for not more than three months)\n6. Foreign Insurance Certificate, as stipulated by the Office of Insurance Commission and Health Insurance of Thailand, must be completed, signed, and stamped by the insurance company. The form can be downloaded from https://longstay.tgia.org.\n7. Biography\n8. Certificate of criminal record clearance from the country of nationality. (In case the applicants have permanent residence in another country, the aforementioned document is required from both the country of nationality and the country of permanent residence.)\n9. Health insurance issued by an insurer in Thailand, with an outpatient benefit of at least 40,000 THB and an inpatient benefit of at least 400,000 THB.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O-X (Longstay 5+5 years): Long-stay (O-X) for foreigners aged 50 years or older (who wish to stay in Thailand for 5 years + 5 years)",
+    "url": "https://www.thaievisa.go.th/visa/retirement",
+    "visa": "Non-O-X"
+   }
+  },
+  {
+   "id": "gov-evisa-22-30",
+   "text": "Non-Immigrant Visa — O-A (Longstay 1 year). Purpose of visit: Long-stay (O-A) for foreigners aged 50 years or older (who wish to stay in Thailand for no longer than 1 year).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Proof of permanent residence in the country where the application is submitted\n4. Financial evidence showing monthly income of at least 65,000 THB or equivalent, or having the current balance of at least 800,000 THB or equivalent (e.g., bank statements from any banks for the last three months, or proof of earnings)\n5. Medical certificate issued from the country where the application is submitted, showing no prohibitive diseases as indicated in the Ministerial Regulation No.14 (B.E. 2535) (certificate shall be valid for not more than three months)\n6. Health Insurance issued by a Thai or foreign insurer, covering general illnesses, including COVID-19, with a minimum insured sum of 100,000 USD or 3,000,000 THB.\n7. Foreign Insurance Certificate, as stipulated by the Office of Insurance Commission and Health Insurance of Thailand, must be completed, signed, and stamped by the insurance company. The form can be downloaded from https://longstay.tgia.org.\n8. Certificate of criminal record clearance from the country of nationality or the country where the application is submitted",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O-A (Longstay 1 year): Long-stay (O-A) for foreigners aged 50 years or older (who wish to stay in Thailand for no longer than 1 year)",
+    "url": "https://www.thaievisa.go.th/visa/retirement",
+    "visa": "Non-O-A"
+   }
+  },
+  {
+   "id": "gov-evisa-21-27",
+   "text": "Non-Immigrant Visa — O (Others). Purpose of visit: To be a contestant or a witness for the judicial process.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Document showing one-time participation in the judicial process (single) or scheduled series of participation in the judicial process (multiple)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O (Others): To be a contestant or a witness for the judicial process",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-evisa-20-26",
+   "text": "Non-Immigrant Visa — O (Others). Purpose of visit: Thai nationals who abandoned their Thai citizenship.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Proof of previous Thai citizenship",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O (Others): Thai nationals who abandoned their Thai citizenship",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-evisa-19-25",
+   "text": "Non-Immigrant Visa — O (Others). Purpose of visit: To stay with non-Thai family residing in Thailand (more than 60 days).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Personal details of a family in Thailand (e.g., ID card, passport and the visa page and stay permit in Thailand)\n5. Proof of relationship to a family in Thailand (e.g., a copy of marriage certificate/birth certificate/certificate of adoption)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O (Others): To stay with non-Thai family residing in Thailand (more than 60 days)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-evisa-17-24",
+   "text": "Non-Immigrant Visa — O (Others). Purpose of visit: Voluntary work with government agency /state enterprise (without salary).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Letter confirming voluntary work by government agency or state enterprise",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O (Others): Voluntary work with government agency /state enterprise (without salary)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-evisa-15-7",
+   "text": "Non-Immigrant Visa — B (business). Purpose of visit: Employed as an academic staff/teacher in Thailand.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (Single), 120,000 THB (Multiple) (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from relevant authority such as Ministry of Education, University, International School\n5. Certificate of criminal record clearance from the country of residence",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — B (business): Employed as an academic staff/teacher in Thailand",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-14-6",
+   "text": "Non-Immigrant Visa — B (Business visit). Purpose of visit: Business visit.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (Single), 120,000 THB (Multiple) (e.g., bank statements for the last three months, sponsor letter)\n4. Invitation letter from the company in Thailand",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — B (Business visit): Business visit",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-13-5",
+   "text": "Non-Immigrant Visa — B (Employment). Purpose of visit: Employment.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Approval letter from the Minister of Labor for WP32 application or work permit in case of non-b renewal (Japanese is waived from the requirement to submit WP32)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — B (Employment): Employment",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-9-39",
+   "text": "Transit Visa — Crew. Purpose of visit: pilots, captains steering vehicles to Thailand’s ports or stations and crews.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)\n6. Employment certificate as crew",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Transit Visa — Crew: pilots, captains steering vehicles to Thailand’s ports or stations and crews",
+    "url": "https://www.thaievisa.go.th/visa/transit-visa",
+    "visa": "transit"
+   }
+  },
+  {
+   "id": "gov-evisa-8-38",
+   "text": "Transit Visa — Sport. Purpose of visit: Athletes participating in sport events.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)\n6. Letter from sport competition organizer in Thailand",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Transit Visa — Sport: Athletes participating in sport events",
+    "url": "https://www.thaievisa.go.th/visa/transit-visa",
+    "visa": "transit"
+   }
+  },
+  {
+   "id": "gov-evisa-5-28",
+   "text": "Non-Immigrant Visa — O (Others). Purpose of visit: Medical treatment (longer than 60 days).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence covering medical fees and living expenses (e.g., bank statements for the last three months, sponsor letter)\n4. Letter of appointment from hospital/medical center",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O (Others): Medical treatment (longer than 60 days)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-evisa-3-34",
+   "text": "Tourist Visa. Purpose of visit: Football trial.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)\n6. Letter from football club",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Tourist Visa: Football trial",
+    "url": "https://www.thaievisa.go.th/visa/tourist-visa",
+    "visa": "TR"
+   }
+  },
+  {
+   "id": "gov-evisa-2-34",
+   "text": "Tourist Visa. Purpose of visit: Recreation learning or training-related activities, e.g., scuba diving, boxing training, Thai massage training, and Thai culinary learning.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)\n6. Letter of acceptance from institute or company organizing activities",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Tourist Visa: Recreation learning or training-related activities, e.g., scuba diving, boxing training, Thai massage training, and Thai culinary learning",
+    "url": "https://www.thaievisa.go.th/visa/tourist-visa",
+    "visa": "TR"
+   }
+  },
+  {
+   "id": "gov-evisa-62-74",
+   "text": "Courtesy Visa. Purpose of visit: Invited by the Royal Thai Government.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Note verbale from sending State/international organization or invitation letter",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Courtesy Visa: Invited by the Royal Thai Government",
+    "url": "https://www.thaievisa.go.th/visa/courtesy-visa",
+    "visa": "courtesy"
+   }
+  },
+  {
+   "id": "gov-evisa-105-28",
+   "text": "Non-Immigrant Visa — O (Others). Purpose of visit: Retirement for foreigners aged 50 years or older (who wish to stay in Thailand for no longer than 90 days).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence showing monthly income of at least 65,000 THB or equivalent, or having the current balance of at least 800,000 THB or equivalent (e.g., bank statements from any banks for the last three months, or proof of earnings)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O (Others): Retirement for foreigners aged 50 years or older (who wish to stay in Thailand for no longer than 90 days)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-evisa-109-34",
+   "text": "Tourist Visa. Purpose of visit: Duration of stay no longer than 59 days (Filipino holders of ordinary passports only).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Tourist Visa: Duration of stay no longer than 59 days (Filipino holders of ordinary passports only)",
+    "url": "https://www.thaievisa.go.th/visa/tourist-visa",
+    "visa": "TR"
+   }
+  },
+  {
+   "id": "gov-evisa-110-5",
+   "text": "Non-Immigrant Visa — B (Employment). Purpose of visit: Sport-related activities (Trainers/Coach/Instructor/etc.).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Approval letter from the Minister of Labor for WP32 application or work permit in case of non-b renewal (Japanese is waived from the requirement to submit WP32)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — B (Employment): Sport-related activities (Trainers/Coach/Instructor/etc.)",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-121-21",
+   "text": "Non-Immigrant Visa — R-A. Purpose of visit: To perform missionary work or other religious activities with approval from the relevant Governmental Department (R-A).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from the Department of Religious Affairs and the Immigration Bureau",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — R-A: To perform missionary work or other religious activities with approval from the relevant Governmental Department (R-A)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-r",
+    "visa": "Non-R"
+   }
+  },
+  {
+   "id": "gov-evisa-123-22",
+   "text": "Non-Immigrant Visa — RS (Research and Science). Purpose of visit: Research and Science.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from the National Research Council of Thailand (NRCT)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — RS (Research and Science): Research and Science",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-r",
+    "visa": "Non-R"
+   }
+  },
+  {
+   "id": "gov-evisa-124-76",
+   "text": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Highly-skilled professionals. Purpose of visit: Professionals or experts in targeted industries working for business entities or higher education institutions or research centers or specialized training institutions in Thailand or Thai government agencies.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement issued from the Thailand Board of Investment (BOI) (valid for only 60 days since the date of issue). The applicant can apply for the letter of qualification endorsement via https://visa.boi.go.th.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Highly-skilled professionals: Professionals or experts in targeted industries working for business e",
+    "url": "https://www.thaievisa.go.th/visa/ltr-visa",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-evisa-125-77",
+   "text": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Dependents. Purpose of visit: Spouse and children under 20 years old of LTR visa holders (Maximum 4 dependents in total per one LTR holder).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement issued from the Thailand Board of Investment (BOI) (valid for only 60 days since the date of issue). The applicant can apply for the letter of qualification endorsement via https://visa.boi.go.th.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Dependents: Spouse and children under 20 years old of LTR visa holders (Maximum 4 dependents in tota",
+    "url": "https://www.thaievisa.go.th/visa/ltr-visa",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-evisa-126-78",
+   "text": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Wealthy Pensioner. Purpose of visit: Retirees aged 50 years or older with an annual pension or stable income (under BOI’s Long-Term Resident (LTR) Visa).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement issued from the Thailand Board of Investment (BOI) (valid for only 60 days since the date of issue). The applicant can apply for the letter of qualification endorsement via https://visa.boi.go.th.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Wealthy Pensioner: Retirees aged 50 years or older with an annual pension or stable income (under BO",
+    "url": "https://www.thaievisa.go.th/visa/ltr-visa",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-evisa-127-79",
+   "text": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Work-From-Thailand Professional. Purpose of visit: Remote Workers working for well-established overseas companies.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement issued from the Thailand Board of Investment (BOI) (valid for only 60 days since the date of issue). The applicant can apply for the letter of qualification endorsement via https://visa.boi.go.th.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Work-From-Thailand Professional: Remote Workers working for well-established overseas companies",
+    "url": "https://www.thaievisa.go.th/visa/ltr-visa",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-evisa-128-80",
+   "text": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Wealthy Global Citizen. Purpose of visit: Wealthy individuals holding at least USD 1 million in assets.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter of qualification endorsement issued from the Thailand Board of Investment (BOI) (valid for only 60 days since the date of issue). The applicant can apply for the letter of qualification endorsement via https://visa.boi.go.th.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "LTR (Long Term Resident) Visa — Long Term Resident Visa For Wealthy Global Citizen: Wealthy individuals holding at least USD 1 million in assets",
+    "url": "https://www.thaievisa.go.th/visa/ltr-visa",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-evisa-133-81",
+   "text": "Non-Immigrant Visa — B (business). Purpose of visit: Frequent business visit (3 years).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Proof of permanent residence in the country where the application is submitted\n4. Financial evidence amount of no less than 3,000,000 THB\n5. Document proving business credentials: (1) proof of frequent business visit to Thailand, (2) proof of employment in the country of residence, or (3) a certification document from credible trade/business associations in the country of residence. Where applicable, the document should be signed by an authorized person or notarized by relevant agencies",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — B (business): Frequent business visit (3 years)",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-136-5",
+   "text": "Non-Immigrant Visa — B (Employment). Purpose of visit: Sports personnel (Sports Authority of Thailand, etc.).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from sport competition organizer in Thailand\n5. Approval letter from the Minister of Labor for WP32 application or work permit in case of non-b renewal (Japanese is waived from the requirement to submit WP32)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — B (Employment): Sports personnel (Sports Authority of Thailand, etc.)",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-144-82",
+   "text": "Non-Immigrant Visa — B-A. Purpose of visit: Working Holiday (only for ordinary New Zealand passports with current residency in New Zealand).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — B-A: Working Holiday (only for ordinary New Zealand passports with current residency in New Zealand)",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-146-24",
+   "text": "Non-Immigrant Visa — O (Others). Purpose of visit: Voluntary work with foundation or association registered in Thailand (without salary).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Letter confirming voluntary work by registered foundation or association\n5. Proof of registration of the foundation or association, together with a copy of ID card of the signer",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O (Others): Voluntary work with foundation or association registered in Thailand (without salary)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-evisa-148-24",
+   "text": "Non-Immigrant Visa — O (Others). Purpose of visit: Voluntary work with foreign foundation or association with permission to operate in Thailand (without salary).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Letter confirming voluntary work by foreign foundation or association with permission to operate in Thailand\n5. Proof of permission for foreign foundation or association to operate in Thailand together with copy of passport and work permit of the signer",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O (Others): Voluntary work with foreign foundation or association with permission to operate in Thailand (without salary)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-evisa-150-84",
+   "text": "DTV (Destination Thailand Visa). Purpose of visit: Workcation (digital nomad/remote worker/ foreign talent/freelancer) .\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Proof of permanent residence in the country where the application is submitted\n4. Financial evidences: (1) last-3-month bank statement(s) from any bank(s) with a minimum balance of 500,000 THB or equivalent; or (2) sponsorship letter(s)\n5. Employment contract or employment certificate in their country or professional portfolio showcasing digital nomad, remote worker, foreign talent or freelancer status\n6. Certificate of criminal record clearance from the country of nationality or the country where the application is submitted",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "DTV (Destination Thailand Visa): Workcation (digital nomad/remote worker/ foreign talent/freelancer) ",
+    "url": "https://www.thaievisa.go.th/visa/dtv-visa",
+    "visa": "DTV"
+   }
+  },
+  {
+   "id": "gov-evisa-151-84",
+   "text": "DTV (Destination Thailand Visa). Purpose of visit: Thai soft power-related activities (e.g., Muay Thai, Thai culinary training, and medical treatment).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Proof of permanent residence in the country where the application is submitted\n4. Financial evidences: (1) last-3-month bank statement(s) from any bank(s) with a minimum balance of 500,000 THB or equivalent; or (2) sponsorship letter(s)\n5. Proof of confirmation to attend the activity or letter of appointment from hospital/medical center\n6. Certificate of criminal record clearance from the country of nationality or the country where the application is submitted",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "DTV (Destination Thailand Visa): Thai soft power-related activities (e.g., Muay Thai, Thai culinary training, and medical treatment)",
+    "url": "https://www.thaievisa.go.th/visa/dtv-visa",
+    "visa": "DTV"
+   }
+  },
+  {
+   "id": "gov-evisa-152-84",
+   "text": "DTV (Destination Thailand Visa). Purpose of visit: Spouse and children under 20 years old of DTV visa holders.\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Proof of permanent residence in the country where the application is submitted\n4. Financial evidences: (1) last-3-month bank statement(s) from any bank(s) with a minimum balance of 500,000 THB or equivalent; or (2) sponsorship letter(s)\n5. DTV visa of the DTV holder\n6. Proof of relationship to the DTV visa holder (e.g., a copy of marriage certificate/ birth certificate / certificate of adoption)\n7. Certificate of criminal record clearance from the country of nationality or the country where the application is submitted",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "DTV (Destination Thailand Visa): Spouse and children under 20 years old of DTV visa holders",
+    "url": "https://www.thaievisa.go.th/visa/dtv-visa",
+    "visa": "DTV"
+   }
+  },
+  {
+   "id": "gov-evisa-153-85",
+   "text": "Non-Immigrant Visa — ED PLUS. Purpose of visit: To study (Bachelor's degree or higher) (ED PLUS).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence covering tuition fees and living expenses (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from University\n5. Letter confirming enrollment details from University signed by authorized person together with a copy of ID card or passport of the signer",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — ED PLUS: To study (Bachelor's degree or higher) (ED PLUS)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-ed",
+    "visa": "Non-ED"
+   }
+  },
+  {
+   "id": "gov-evisa-155-86",
+   "text": "Non-Immigrant Visa — L-A (Labour). Purpose of visit: Migrant Worker under the MOU (L-A) (Cambodian/Laotian/Burmese holders of ordinary passports only /currently residing in Cambodia/Laos/Myanmar).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — L-A (Labour): Migrant Worker under the MOU (L-A) (Cambodian/Laotian/Burmese holders of ordinary passports only /currently residing in Cambo",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-156-87",
+   "text": "Non-Immigrant Visa — O L-A. Purpose of visit: Children under 18 years old of Non-Immigrant L-A visa holders (O(L-A)) (Cambodian/Laotian/Burmese holders of ordinary passports only /currently residing in Cambodia/Laos/Myanmar).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O L-A: Children under 18 years old of Non-Immigrant L-A visa holders (O(L-A)) (Cambodian/Laotian/Burmese holders of ordinary passports only",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-evisa-157-10",
+   "text": "Non-Immigrant Visa — IB (Investment Through BOI). Purpose of visit: Employed as an academic staff/teacher in Thailand (BOI).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Letter from the Thailand Board of Investment (BOI)\n4. Letter from relevant authority such as Ministry of Education, University, International School\n5. Certificate of criminal record clearance from the country of residence\n6. Financial evidence: an amount of no less than 30,000 THB (e.g., bank statements for the last three months, sponsor letter)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — IB (Investment Through BOI): Employed as an academic staff/teacher in Thailand (BOI)",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-158-88",
+   "text": "Thailand Privilege Card — Special Entry Visa (SE) (Member of the Thailand Privilege Program). Purpose of visit: Special Entry Visa (SE) (Member of the Thailand Privilege Program).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Certification Letter Member's issued by Thailand Privilege Card (TPC) (valid for only 90 days from the date of issue)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Thailand Privilege Card — Special Entry Visa (SE) (Member of the Thailand Privilege Program): Special Entry Visa (SE) (Member of the Thailand Privilege Program)",
+    "url": "https://www.thaievisa.go.th/visa/thailand-privilege-card",
+    "visa": "Privilege"
+   }
+  },
+  {
+   "id": "gov-evisa-159-89",
+   "text": "Thailand Privilege Card — Privilege Entry Visa (PE) (Member of the Thailand Privilege Program). Purpose of visit: Privilege Entry Visa (PE) (Member of the Thailand Privilege Program).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Certification Letter Member's issued by Thailand Privilege Card (TPC) (valid for only 90 days from the date of issue)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Thailand Privilege Card — Privilege Entry Visa (PE) (Member of the Thailand Privilege Program): Privilege Entry Visa (PE) (Member of the Thailand Privilege Prog",
+    "url": "https://www.thaievisa.go.th/visa/thailand-privilege-card",
+    "visa": "Privilege"
+   }
+  },
+  {
+   "id": "gov-evisa-168-93",
+   "text": "Tourist Visa — Participants of MICE industry. Purpose of visit: Participants of MICE industry (Meeting, Incentives, Convention, Exhibitions) supported by TCEB (Thailand Convention Exhibition Bureau).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Travel booking confirmation\n4. Proof of accommodation in Thailand (e.g., accommodation bookings, invitation letters from family/friends in Thailand)\n5. Financial evidence: an amount of no less than 20,000 THB (e.g., bank statements for the last three months, sponsorship letter)\n6. Letter from Thailand Convention and Exhibition Bureau (TCEB)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Tourist Visa — Participants of MICE industry: Participants of MICE industry (Meeting, Incentives, Convention, Exhibitions) supported by TCEB (Thailand Conventio",
+    "url": "https://www.thaievisa.go.th/visa/tourist-visa",
+    "visa": "TR"
+   }
+  },
+  {
+   "id": "gov-evisa-138-94",
+   "text": "Non-Immigrant Visa — IB : Employment (BOI). Purpose of visit: Employment (BOI).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (Single), 120,000 THB (Multiple) (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from the Thailand Board of Investment (BOI)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — IB : Employment (BOI): Employment (BOI)",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-140-95",
+   "text": "Non-Immigrant Visa — IB : Business visit (BOI). Purpose of visit: Business visit (BOI).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence: an amount of no less than 30,000 THB (Single), 120,000 THB (Multiple) (e.g., bank statements for the last three months, sponsor letter)\n4. Letter from the Thailand Board of Investment (BOI)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — IB : Business visit (BOI): Business visit (BOI)",
+    "url": "https://www.thaievisa.go.th/visa/business-investor-visa",
+    "visa": "Non-B"
+   }
+  },
+  {
+   "id": "gov-evisa-143-25",
+   "text": "Non-Immigrant Visa — O (Others). Purpose of visit: To stay with Thai family residing in Thailand (more than 60 days).\nDocuments the Thai e-Visa system asks for:\n1. Biodata page of Passport or Travel Document\n2. Photograph taken within the last six months.\n3. Financial evidence showing monthly income of no less than 40,000 THB or having the current balance of 400,000 THB (e.g., bank statements for the last three months, sponsor letter)\n4. Personal details of a family in Thailand (e.g., ID card, passport and the visa page and stay permit in Thailand)\n5. Proof of relationship to a family in Thailand (e.g., a copy of marriage certificate/birth certificate/certificate of adoption)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Non-Immigrant Visa — O (Others): To stay with Thai family residing in Thailand (more than 60 days)",
+    "url": "https://www.thaievisa.go.th/visa/non-immigrant-o",
+    "visa": "Non-O"
+   }
+  },
+  {
+   "id": "gov-thaievisa-go-th-home-1",
+   "text": "Official Website of Thailand Electronic Visa\nTHAI E-VISA OFFICIAL WEBSITE\nMinistry of Foreign Affairs of the Kingdom of Thailand\nHow to apply online\nCreate an account\nFill in an application form\nUpload supporting documents\nPay visa fee\nWait for the visa to be processed\ne-Visa confirmation document sent by email\nFrequently Asked Questions\nDo I need a tourist visa ?\nCountry/Territory of Passport/TD *\nCountry/Territory of Passport/TD *\nA country or a nationality may be referred to a country or a territory with its own passport-issuing authority. In case where the nationality of the applicant is different from the country or territory issuing the applicant’s travel document, application of tourist visa may be required.\nPlanned to stay in Thailand (Day)Planned to stay in Thailand (Day)\nCheck\nVisa Category\nSelect a visa type to learn more about requirements and eligibility\nDiplomatic & Official Visas\nDiplomatic or official mission\nTourist Visas\nTourism, MICE, Medical treatment\nTransit Visas\nTransit, sport activities, or crew\nWork & Business Visas\nEmployment or Business\nStudying Visas\nStudy visit and training\nMedia & Film Crew Visas",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Official Website of Thailand Electronic Visa",
+    "url": "https://www.thaievisa.go.th/",
+    "visa": "general"
+   }
+  },
+  {
+   "id": "gov-thaievisa-go-th-home-2",
+   "text": "Official Website of Thailand Electronic Visa\nMedia and film crew\nReligious Activities Visas\nReligions activities\nResearch & Science Visas\nResearch or science\nStaying with Family Visas\nRetirement\nCourtesy Visas\nMedical Treatment\nSmart Visas\nTalent, Investor, Executive, Startup\nLong-Term Resident Visas\n10 years visa for long term residents\nDestination Thailand Visa (DTV)\nWorkcation and Thai soft power related activities\nThailand Privilege Card\nLong term visa with more privileges\nOther Visas\n*All applications are subject to approval and the Royal Thai Embassy or Consulate-General may request for an interview or additional documents. Submission of a visa application does not necessarily mean that a visa will be granted. Please also note that the visa fees are non-refundable.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thaievisa.go.th",
+    "authority": "Ministry of Foreign Affairs (Thai e-Visa)",
+    "title": "Official Website of Thailand Electronic Visa",
+    "url": "https://www.thaievisa.go.th/",
+    "visa": "general"
+   }
+  },
+  {
+   "id": "gov-tdac-immigration-go-th-home-1",
+   "text": "Official Thailand Digital Arrival Card (TDAC) – No Fees Required\nIMPORTANT NOTICE\nIn accordance to Immigration Act, B.E. 2522\n1. All passengers must complete the Thailand Digital Arrival Card.\n2. If the alien stays in the Kingdom longer than 90 days, he/she must notify in writing the nearest Immigration Officer, concerning place of stay, as soon as possible upon expiration of 90 days. And required to do so every 90 days.\n3. Aliens are not allowed to work unless they are granted Work Permit.\n4. Foreigners are required to submit their arrival card information 3 days in advance of their arrival date in Thailand.\nArrival Card\nProvide your Thailand Digital Arrival Card details for your coming trip.\nUpdate Arrival Card\nMake change to the Thailand Digital Arrival Card infomation.\nUser's Guide\nCopyright 2024 Project. All rights reserved.\nVersion 2026.10.00-0547\nEnglish",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "tdac.immigration.go.th",
+    "authority": "Immigration Bureau (TDAC)",
+    "title": "Official Thailand Digital Arrival Card (TDAC) – No Fees Required",
+    "url": "https://tdac.immigration.go.th/",
+    "visa": "arrival"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-1",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nThailand Investment and Expat Services Center (TIESC)\nfurther streamlines visa and work permit processes while facilitating investment efficiency. TIESC integrates the functions of One Start One Stop Investment Center (OSOS) and the One Stop Service Center for Visa and Work Permit (OSS), operating in collaboration with the Immigration Bureau and Department of Employment, to enhance convenience for foreign expatriates. We officially open on March 17, 2025.\nLocation: 6th and 7th floors, One Bangkok, PARADE Zone, Rama IV Road, Lumphini, Pathum Wan, Bangkok 10330\nWHAT IS LTR VISA\nThailand is introducing a new visa called “Long-Term Resident (LTR) Visa” which is a program that provides a range of tax and non-tax benefits to enhance the country’s attractiveness as a regional hub for living and doing business for ‘high-potential’ individuals. Today, Thailand is already home to multinational corporations from all over the world and one of the most important tourist destinations in Asia.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-2",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nThailand presents itself as a very attractive location for “work from anywhere” professionals. This new visa program is expected to attract new foreign residents, technologies and talents contributing to domestic spending and investment while supporting economic growth. The Thai government has set the target of attracting one million wealthy or talented foreign residents into the country over the next five years.\nWHAT PRIVILEGES WILL BE OFFERED TO LTR VISA HOLDERS\n10* years renewable visa Permission will be granted to stay in Thailand the first time for five years which can be extended for 5 more years if qualifications are met.\nExemption from 4 Thais to 1 foreigner employment requirement ratio\nFast Track Service at International Airports in Thailand\n90-day report extended to 1-year report and exemption of re-entry permit\nMultiple re-entry permit\nPermission to work in Thailand (Digital Work permit)\n17% Personal income tax for Highly-skilled professionals\nTax exemption for overseas income",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-3",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nImmigration and work permit facilitation services at One Stop Service Center for Visa and Work Permit\nTYPES OF LTR VISA\nThere are four types of LTR visas designed to facilitate different types of individuals: Wealthy Global Citizen, Wealthy Pensioners, Work-from-Thailand Professionals, and Highly skilled Professionals. Spouse and children of LTR visa holder or applicants of any of the 4 types of visas are also eligible to apply for dependents’ visa.\nNOTE FOR ALL VISA TYPES: Every condition and requirement must be maintained during the length of the visa, including investment amounts, employment status, bank account balances, and insurance coverage.\nHigh-Skilled\nProfessionals\nWork-from-Thailand\nProfessionals\nWealthy\nGlobal Citizens\nWealthy\nPensioners\nSpouses\nand dependents\nProfessionals or experts in targeted industries working for\nbusiness entities or higher education institutes or research\ncenters or specialized training institutions in Thailand or\nThai government agencies",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-4",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nMinimum average personal income of USD 80,000 / year in the past two years Applicants who are working for Thai government agencies are exempt from minimum personal\nIn the case that average personal income is lower than USD 80,000 but not lower than USD 40,000, the applicant must show additional documents as proof of qualification, i.e. a certificate for master’s degree or higher in sciences and technology\nEmployed by contract in either Thai or foreign company whose activities fall under the scope of the targeted industries OR the applicant must provide proof of expertise in the fields specified by BOI\nInsured under a health insurance covering a minimum of USD 50,000 OR currently receiving social security benefits in Thailand OR deposit and maintain at least USD 100,000 in bank account balance under the applicant’s name for no less than 12 months\nRemote workers working for well-established overseas companies\nMinimum average personal income of USD 80,000 / year in the past two years",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-5",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nIn the case that average personal income is lower than USD 80,000 but not lower than USD 40,000, the applicant must show additional documents as proof of qualification, i.e. a certificate for master’s degree or higher.\nHave an employment contract with (1) public company listed on a stock exchange or (2) a private company with at least 3 years of operation and combined revenue of USD 50 million in the last 3 years or (3) a wholly owned subsidiary of a public company listed on a stock exchange or a wholly owned subsidiary that holds 100% of the shares of a private company with at least 3 years of operation and a combined revenue of USD 50 million in the last 3 years.\nInsured under a health insurance covering a minimum of USD 50,000 OR currently receiving social security benefits in Thailand OR deposit and maintain at least USD 100,000 in bank account balance under the applicant’s name for no less than 12 months\nWealthy individuals holding at least USD 1 million in assets",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-6",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nInvestment in Thailand of at least USD 500,000 in the applicant’s name, which can be in one or a combination of the following:\nThai Government Bonds with a remaining maturity of no less than 5 years in the applicant’s name, OR\nDirect investment in companies registered in Thailand. If the investment is owned by more than one person, the value will be divided equally or on a pro-rata basis among the owners, OR\nInvestment in Thai property. If the investment is owned by more than one person, the value will be divided equally or on a pro-rata basis among the owners. The applicant must invest or hold ownership in their own name.\n* Note:\nThe applicant must already have made the investment and hold the qualifying assets before applying for the relevant LTR visa.\nOwning at least USD 1 million in global assets or Thai assets in the applicant’s name. (This can include or combine with the investment in Thailand of at least USD 500,000 mentioned above.)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-7",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nInsured under a health insurance covering a minimum of USD 50,000 OR currently receiving social security benefits in Thailand OR deposit and maintain at least USD 100,000 in bank account balance under the applicant’s name for no less than 12 months.\nRetirees aged 50 years and older who have an annual pension or stable passive income\nMinimum unearned or passive income* of USD 80,000 / year at the time of application (Note that earned income and salaries WILL NOT be considered for the personal income requirement for wealthy pensioners)\nunearned or passive income includes, but are not limited to pension, rental, realized capital gain, dividend and interest payments\nIn the case that unearned or passive income is lower than USD 80,000 but not lower than USD 40000, the applicant is required to make additional investments of USD 250,000 in the applicant’s name, which can be in one or a combination of the following:\nThai Government Bonds with a remaining maturity of no less than 5 years in the applicant’s name, OR",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-8",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nDirect investment in companies registered in Thailand. If the investment is owned by more than one person, the value will be divided equally or on a pro-rata basis among the owners, OR\nInvestment in Thai property. The applicant must invest or hold ownership in their own name. If the investment is owned by more than one person, the value will be divided equally or on a pro-rata basis among the owners.\n* Note:\nThe applicant must already have made the investment and hold the qualifying assets before applying for the relevant LTR visa.\nInsured under a health insurance covering a minimum of USD 50,000 OR currently receiving social security benefits in Thailand OR deposit and maintain at least USD 100,000 in bank account balance under the applicant’s name for no less than 12 months.\nSpouse and children under 20 years old of LTR visa holders\n(Maximum 4 dependents in total per one LTR visa holder)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-9",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nInsured under a health insurance covering a minimum of USD 50,000 OR currently receiving social security benefits in Thailand OR deposit and maintain at least USD 25,000 per one dependent in bank account balance under the applicant or the dependent’s name for no less than 12 months.\nDependents must be the legal spouse or children of the LTR visa holder\n* Note:\nSame-sex marriages are now recognized as eligible under the dependent category, and may apply for the LTR Visa accordingly.\nPartnerships are currently not recognized under Thai law and are therefore not eligible to apply for the LTR Visa under the dependent category.\nConsent form for sponsorship of a dependent to confirm the relationship as the family unit with the main LTR applicant.\nChildren will be granted dependents’ visa until 20 years of age.\nAPPLICATION PROCESS OVERVIEW\nLTR Visa Application Steps Overview from Application submission to visa issuance\nApplication Submission\nRegister and submit online an application for qualifications endorsement and supporting documents for LTR Visa.\n* Note:",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-10",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nThe dependent will need to create a separate account, one account per person. The main applicant should initiate the application process in the system to obtain a document number (DOC.NO). Once this is done, the dependent can then submit their application. After the dependent submits their application, the main applicant must log into their account to approve the dependent's request, thereby completing the linking process.\nQualifications Endorsement\nAfter receiving complete and valid documents, the application will be registered and sent for the qualifications endorsement by relevant agencies (such as Immigration, Thailand’s Board of Investment, Department of Consular Affairs, etc.). Applicants will be notified of the qualifications endorsement result within 20 working days (processing time might take longer if additional documents are requested).\n* Note:\n1. Applicants may be requested additional documents/information to support the consideration of the government agencies during this process.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-11",
+   "text": "LTR Visa Thailand - Long Term Resident Program\n2. Please be advised that any decision or judgment made by the government agency regarding the LTR Visa qualification endorsement result is considered final and binding.\nVisa Issuance\nOnce approved, qualified applicants will be notified to submit additional information and documents for the pre-approval process, which takes 1-3 working days (processing time might take longer if additional documents are requested). After the pre-approval request has been approved, the applicant will receive the notification of the qualifications endorsement letter so that he/she can make an appointment for\nLTR Visa issuance at the Royal Thai Embassies/the Royal Thai Consulate Generals overseas or One Stop Service for Visa and Work Permit Center (Bangkok) within 60 days from the issuance date of the letter.\n* Note:",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-12",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nThe processing fee for the 10-year visa with multiple entry is 50,000 Baht per person in case of collecting LTR Visa in Thailand. In the case of collecting LTR Visa at the Royal Thai Embassies/the Royal Thai Consulate Generals overseas or E-visa, the fee may vary and considerably be more expensive than 50,000 THB per person per 10 years. (The fee also depends on the currency exchange rate of each country.)\nWork Permit Issuance\nLTR Visa holders who work for an entity in Thailand are required to apply for permission to work immediately after receiving LTR Visa or before employment with an entity in Thailand starts\nAfter LTR Visa issuance, LTR Visa holders are required to apply for a work permit for their employment in Thailand via LTR Visa application system. The process takes 3-5 working days (processing time might take longer if additional documents are requested).",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-home-13",
+   "text": "LTR Visa Thailand - Long Term Resident Program\nOnce the work permit request is approved, LTR Visa holders can make an appointment to collect the work permit at the Department of Employment at One Stop Service Center for Visa and Work Permit, Chamchuri Square Building, Bangkok. The processing fee is 3,000 Baht per year to maintain the work permit.\n* Note:\n1. While the work permit request is still in process, LTR Visa holders are temporarily allowed to work in Thailand without the work permit.\n2. Work permit will not be granted for Work-From-Thailand Professionals holders since foreigners under this LTR Visa category are applying for the purpose of working for foreign employer abroad remotely from Thailand. Therefore, the person do not have Thai employers according to the digital work permit purpose.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Long Term Resident Program",
+    "url": "https://ltr.boi.go.th/",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-required-documents-html-1",
+   "text": "LTR Visa Thailand - Required Documents\nList of required documents\nRequired Documents for\nWealthy Global Citizens\nRequired Documents for\nWealthy Pensioners\nRequired Documents for\nHigh-Skilled Professionals\nRequired Documents for\nWork-from-Thailand Professionals\nRequired Documents for\nDependents",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Required Documents",
+    "url": "https://ltr.boi.go.th/page/required-documents.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-1-year-reporting-html-1",
+   "text": "LTR Visa Thailand - 1 Year Rreporting\n1-year Reporting to the Immigration bureau\nat the One Stop Service Center for Visa and Work Permit\nLTR Visa holders staying in Thailand for a period longer than 1 year consecutively are required to report the current address to the Immigration Bureau at Thailand Investment and Expat Services Center (TIESC), 6th Floor, PARADE Zone, One Bangkok Building,Bangkok either in person, or by authorizing someone to report for you on your behalf. This report must be done on a yearly basis counting from LTR Visa issuance date (15 days before or 7 days after the date specified on 1-year report notification card). However, in the case of re-entering the Kingdom, the report will be due in 1 year from the date of the latest arrival.\nThe documents required to be submitted to the immigration are as follows.\nTM.95 Form (completely filled out and signed)\nPassport *\nThailand Digital Arrival Card (TDAC) for those arriving in Thailand after May 1st, 2025\nT.M.6 card for those who entered Thailand before July 1st, 2022 or those who entered through a land border checkpoint and were issued T.M.6 card (If any) *",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - 1 Year Rreporting",
+    "url": "https://ltr.boi.go.th/page/1-year-reporting.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-1-year-reporting-html-2",
+   "text": "LTR Visa Thailand - 1 Year Rreporting\nNote: The paper form T.M.6 card has now been replaced by the electronic Thailand Digital Arrival Card (TDAC)\n1-Year report notification card (if any) *\nTM.61 Form (For authorized person reporting at the Immigration Bureau at Thailand Investment and Expat Services Center (TIESC), 6th Floor, PARADE Zone, One Bangkok Building,Bangkok on behalf of LTR visa holder who lives in Bangkok)\n* If LTR Visa is issued at Royal Thai Embassy/ Consulate-General, LTR Visa holders will not receive a 1-year report notification card. In such case, the report will be due in 1 year from the latest arrival date specified on the arrival stamp.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - 1 Year Rreporting",
+    "url": "https://ltr.boi.go.th/page/1-year-reporting.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-1",
+   "text": "LTR Visa Thailand - Visa Issuance\nLTR visa issuance\nAfter you have received an email notifying that your qualifications for LTR visa have been endorsed by relevant government agencies, please follow the steps below to proceed with LTR Visa issuance pre-approval process.\n1. UPDATE INFORMATION AND UPLOAD ADDITIONAL DOCUMENTS IN THE LTR SYSTEM\nPlease log in to LTR Visa application system to update information or upload additional or updated documents by following the instructions below.\nChoose the location for LTR Visa issuance in Thailand or overseas*",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-2",
+   "text": "LTR Visa Thailand - Visa Issuance\nIn case the applicant choses to have LTR visa issued at Thailand Investment and Expat Services Center (TIESC) in Bangkok, the applicant will be required to update latest travel information and upload passport pages with all Thai stamps (The file must be scanned both left and right pages per one sheet AND ALL SHEETS MERGED IN ONE PDF FILE), particularly biodata page, current visa which has been cancelled with the remaining permission to stay sufficient to receive LTR Visa*, last entry stamp of immigration, last extension of visa and the initial Thai visa used to enter Thailand (in case you have changed a visa type in Thailand before changing to the current visa type) (if any). E-Visa (if any), photocopy of TM.6 (if any), Thailand Digital Arrival Card (TDAC) for those arriving in Thailand after May 1st, 2025, photocopy of TM.47’s receipt of notification (previous notifications of staying over 90 days or 1 year) (if any)*",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-3",
+   "text": "LTR Visa Thailand - Visa Issuance\nafter the updated information and additional documents have been submitted, the status of the application in the system will be changed to Status: Document Review for Visa / WP Issuance.\n* Note:\nThe location for LTR Visa issuance cannot be changed once the above information/documents have already been submitted.\nFor visa issuance at Thailand Investment and Expat Services Center (TIESC), the applicant is required to be in Thailand and certain type of visa such as NON-B visa must be terminated with the remaining permission to stay sufficient to receive LTR Visa in Thailand.\nIf you do not have TM.6 as you have entered Thailand after 1st July 2022 via air route, please fill “00000” in the TM.6 field or in case you have entered Thailand after May 1st, 2025, please fill Thailand Digital Arrival Card No. in the TM.6 field.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-4",
+   "text": "LTR Visa Thailand - Visa Issuance\nIf you have lost TM.6 or TM.47’s receipt or you have passed the 90 days limit without making the 90-day reporting, you must get a police notice from any police station before the appointment and pay fine 2,000 Baht (fine applies only in case of failing to make the 90-day report) to the immigration on the appointment date\nIf an applicant is currently on NON-Immigrant O for guardian, the evidence of the child’s current enrollment in an educational institution is required.\n2. MAKE AN APPOINTMENT FOR LTR VISA ISSUANCE\nIf the information and documents submitted in step 1. are considered complete and valid, applicants will receive an email informing you that your application has been approved for LTR Visa issuance. Then please make an appointment for LTR visa issuance in Thailand or make an arrangement for LTR visa issuance overseas by following the instructions below.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-5",
+   "text": "LTR Visa Thailand - Visa Issuance\nIn case of LTR visa issuance at Thailand Investment and Expat Services Center (TIESC) in Bangkok, your status now will be changed to Status: Visa/ WP Issuance Pre-approved. You can make an appointment for the LTR Visa issuance via LTR Visa application system and then print out the Notification of qualification endorsement for Long-Term Resident Visa, TM.94 form, STM.8 form and the appointment confirmation document / processing fee payment form for the system.\nPlease note that the result of the qualifications endorsement for LTR Visa is valid for a period of 60 days after the Notification of qualification endorsement for Long-Term Resident Visa is issued. Therefore, please make an appointment and collect the visa before the result expires, otherwise you must apply for the qualifications endorsement again.\nIn case of LTR visa issuance at Thai embassies or consulate generals overseas, your status now will be changed to Status: Final approval. You can contact the Royal Thai Embassy/Consulate-General or visit e-Visa* website to make an arrangement for visa issuance overseas*\n* Note:",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-6",
+   "text": "LTR Visa Thailand - Visa Issuance\nPlease follow the instructions in No.4 COLLECT YOUR LTR VISA AT ROYAL THAI EMBASSY/CONSULATE-GENERAL FOR VISA ISSUANCE OVERSEAS\nE-Visa is available only in some Embassies/Consulates. To check if it's available in your area of residency, please go to www.thaievisa.go.th . Moreover applicant must apply for e-Visa via a specific Embassy/Consulate conforming with his/her consular jurisdiction and residency. The applicant is required to upload documents that can verify his/her current residency.\n3. COLLECT YOUR LTR VISA\nGuidelines for LTR Visa issuance procedures at Thailand Investment and Expat Services Center (TIESC)\nOnce you have successfully made the appointment for LTR Visa issuance at Thailand Investment and Expat Services Center (TIESC), please follow the guidelines below for visa issuance procedures.\nStep 1 : Preparation of required documents for visa issuance (Prior to the appointment date)\nLog in to your LTR Visa account and print out the following documents and bring them with you on the appointment date.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-7",
+   "text": "LTR Visa Thailand - Visa Issuance\nA. Application Form for LTR Visa (TM.94 Form)* – must be printed double-sided and signed\nB. Appointment confirmation document and for LTR Visa processing fee payment form* and Digital Work Permit fee payment form (in case you applied for the Digital Work Permit)*\nC. Criteria and Conditions Acknowledgement Form for a Temporary Stay Permit in the Kingdom (LTR Visa) (STM.8 Form)* – must be print double-sided and signed\nD. Notification Letter from the Board of Investment to the Immigration Bureau within 60 days from the issuance date of the endorsement letter*\nPrepare other required documents and fee to bring with you on the appointment date\nE. Original and photocopy of passport pages (biodata page and pages with visas and stamps) of yourself and your dependents** who wish to receive the visa on the same appointment date\nBiodata page showing name / surname / Passport No., ect.\nCurrent visa\nLast entry stamp of immigration\nLast extension of visa\nThe previous visa before changing to the current visa (if any)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-8",
+   "text": "LTR Visa Thailand - Visa Issuance\nF. Photocopy of documents proving relationship such as a marriage certificate AND the original and photocopy of Kor.Ror. 2 form (in case of a foreigner married to a Thai citizen), registration of child legitimization, household registration certificate or child adoption registration certificate, or other evidence from the government or relevant agency (for dependents)\nG. One passport size photo (4 cm x 6 cm) (white background, dressed in business attire (t-shirt is not allowed) without wearing glasses or headgear, taken within 6 months (a photocopy or poor quality photos will not be accepted)\nH. Original and photocopy of TM.6*** (front of your arrival/departure card) (in case you have entered Thailand before July 1st, 2022 or entered through the immigration control at land border checkpoints and have received TM. 6 card) or Thailand Digital Arrival Card (TDAC) (in case you have entered Thailand Thailand after May 1st, 2025)\nI. Original TM.47’s receipt of notification*** (previous notifications of staying over 90 days) (if any)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-9",
+   "text": "LTR Visa Thailand - Visa Issuance\nJ. The LTR Visa processing fee of 50,000 THB per person per 10 years and the Digital Work Permit processing fee (for applicants who applied for Digital Work Permit only). The total work permit fee can be seen on the work permit payment form. The total fee is calculated base on the annual fee of 3,000 THB per person per 1 year) – Acceptable payment options include Thai mobile banking (QR code scanning) and cash only.\n* Remarks:\n* Dependents who receive the visa on a different date, must also bring the original passport of the main LTR visa holder\n** If you have lost TM6 or TM.47’s receipt or you have passed the 90 days limit without making the 90-day reporting, you must get a police notice from any police station before the appointment and pay fine 2,000 Baht (fine applies only in case of failing to make the 90-day report) to the immigration on the appointment date\nStep 2 : Visa issuance (on the appointment date*)\nDocumentation check by LTR visa staff at Thailand Investment and Expat Services Center (TIESC):",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-10",
+   "text": "LTR Visa Thailand - Visa Issuance\nPlease be on time on your visa issuance appointment date and contact the LTR visa staff at the reception counter of Thailand Investment and Expat Services Center (TIESC), One Bangkok (MRT Lumphini) PARADE Zone, Rama IV Road, Lumphini, Pathum Wan, Bangkok. for the documentation check. You will get the documentation check receipt from the LTR visa staff after the documentation check is complete. Please note that the documents in Step 1 are the prerequisite for the subsequent steps of the visa issuance. If any is missing, THE VISA CANNOT BE ISSUED.\nDigital Work Permit fee payment at the Department of Employment’s payment counter:\n(for applicants who applied for Digital Work Permit)\nPlease bring the printed Digital Work Permit payment form and proceed to the Department of Employment’s work permit for LTR counter to collect a queue number for work permit issuance and once your queue is called, please proceed to the payment counter to pay for the Digital Work Permit fee.\nPhoto taking at Single Window section:",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-11",
+   "text": "LTR Visa Thailand - Visa Issuance\nPlease proceed to the Single Window’s photograph-taking section and hand the printed appointment confirmation document together with the documentation check receipt to the officer and have your photo taken. (Your photo will be uploaded to the Single Window and LTR Visa system.)\nDocumentation check at the Immigration’s information counter:\nAfter the photo taking, please proceed to the Immigration’s information counter and submit the required documents for LTR visa issuance to the Immigration officer for the documentation check and collect the queue number for LTR visa issuance.\nSubmit the documents to the immigration counter 11:\nPlease submit the documents to Immigration’s counter 11 for LTR Visa issuance and wait in the immigration area until your name is called.\nVisa processing fee payment at the immigration payment counter:\nPlease follow the Immigration officer’s guidance on the visa processing fee payment which must be paid at the immigration fee payment counter\nLTR Visa issuance at the immigration counter 11:",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-12",
+   "text": "LTR Visa Thailand - Visa Issuance\nOnce the visa fee payment has been made, please return to LTR Visa counter 11 and show the receipt to the Immigration officer to have the visa stamped in your passport.\nFinal visa check at Thailand Investment and Expat Services Center (TIESC):\nAfter you have received the visa, please contact the LTR visa staff at the reception counter of Thailand Investment and Expat Services Center (TIESC) to have your visa checked by the LTR visa staff. This is very important in order to have any wrong information corrected if any!\n* Remarks:\n* Please dress politely in proper formal clothes and shoes. The immigration officer reserves the right to refuse service if inappropriate clothing is observed.\nPROCEDURES FOR VISA ISSUANCE AT ROYAL THAI EMBASSY/CONSULATE-GENERAL\nFor e-Visa\nPlease check your eligibility to apply for e-visa and submit the following documents via www.thaievisa.go.th\nBiodata page of Passport or Travel Document\nDeclaration\nPhotograph * taken within the last six months. If the photograph does not reflect your current appearance, you may be refused to enter the Kingdom of Thailand",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-13",
+   "text": "LTR Visa Thailand - Visa Issuance\nLetter from BOI\nOther documents as required\nE-visa will be issued and be notified via email and your e-Visa account\nVisa Fee * LTR visa processing fee at each Royal Thai Embassy/Consulate-General is based on the fee in Thailand (50,000 THB per person per 10 years), but may vary and is usually more than the fee in Thailand, depending on the currency rate and the additional fee which might be applied in some countries.\nPlease note that the processing fee for the e-Visa application is non-refundable. In case the e-Visa application is rejected due to incorrect information, mistyped letters, etc., a new e-Visa application shall require the applicant to withdraw and re-submit and the applicant has to pay for the processing fee again in full.\nIt is advisable that you contact Royal Thai Embassy/Consulate-General, who is the main responsible organization of the e-Visa, for further advice and suggestion prior to applying for the e-Visa\nVisa period and staying permission",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-14",
+   "text": "LTR Visa Thailand - Visa Issuance\nAccording to the annoucement of the Ministry of Interior Affairs, the applicant who passed the qualifications endorsement for LTR visa (and has had the visa issued in the period within 60 days from the date of qualifications endorsement letter issuance) will receive the 10-year visa stamp from the Immigration/Thai Embassy on the date of your LTR Visa issuance. However, the immigrantion will grant the permission to stay in Thailand with unlimited accesses to the Royal Thai Kingdom (multiple re-entry) for no more than 5 years. This means that you will get a 5-year visa stamp first. And, before the expiration of your first staying permission, your qualifications and criteria will be verified again (you will be required to submit documents and proof via the system). If your qualifications and criteria do not meet the requirement e.g. for Wealthy Global Citizens catagory, if the value of your investment in Thailand is less than USD 500,000 because you sold your property, or have canceled your health insurance and did not have a proof of the health insurance for the past years* etc., in such cases, the LTR visa shall be revoked.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-15",
+   "text": "LTR Visa Thailand - Visa Issuance\n* Remarks:\n* You are required to report to LTR Visa unit if your purpose of staying in Thailand is different to the purpose you applied for the LTR visa i.e. For LTR : W and LTR- H as staying in Thailand with an incorrect type of visa might be against the law.\n4. WORK PERMIT APPLICATION AND ISSUANCE\nLTR Visa holders who work for an entity in Thailand are required to apply for permission to work immediately after receiving LTR Visa or before employment with an entity in Thailand starts\nAfter LTR Visa issuance, LTR Visa holders are required to apply for a work permit for their employment in Thailand via LTR Visa application system. The process takes 3-5 working days (processing time might take longer if additional documents are requested).",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-16",
+   "text": "LTR Visa Thailand - Visa Issuance\nOnce the work permit request is approved, LTR Visa holders can make an appointment to collect the work permit at the Department of Employment at Thailand Investment and Expat Services Center (TIESC), One Bangkok (MRT Lumphini) PARADE Zone, Rama IV Road, Lumphini, Pathum Wan, Bangkok. The processing fee is 3,000 Baht per year to maintain the work permit.\n* Note:\nWhile the work permit request is still in process, LTR Visa holders are temporarily allowed to work in Thailand without the work permit.\nWork permit will not be granted for Work-From-Thailand Professionals holders since foreigners under this LTR Visa category are applying for the purpose of working for foreign employer abroad remotely from Thailand. Therefore, the person do not have Thai employers according to the digital work permit purpose.\nChange of employment for LTR: Highly-Skilled Professionals",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-visa-issuance-info-html-17",
+   "text": "LTR Visa Thailand - Visa Issuance\nLTR: Highly-Skilled Professionals holders who would like to change their employer in Thailand are required to inform LTR Visa unit prior the resignation and must get an official approval for the new employer to sustain the status of LTR- H visa before the current employment terminated. The new company must be endorsed as a company under LTR Visa’s targeted industries. In case the new company does not qualify for LTR Visa, the current LTR: Highly-Skilled Professionals visa must be terminated once the employment with the current company ends.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Visa Issuance",
+    "url": "https://ltr.boi.go.th/page/visa-issuance-info.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-1",
+   "text": "LTR Visa Thailand - Exchange Rates\nGeneral Frequently Asked Questions (FAQs)\nIs it possible to submit the LTR Visa application directly to the LTR Visa unit ?\nNo, the application must be submitted online only through the official website: https://ltr.boi.go.th\nWhat is the application fee for applying for the LTR visa? When is the full payment of 50,000 baht due ?\nThe application and processing for the LTR visa are free of charge. However, once your application is approved, you will need to make a full payment of 50,000 baht for the issuance of the LTR visa. This payment is due on the appointment date at the Immigration Bureau office located at TIESC in Bangkok.\nIf I have the LTR visa, do I still need to register for the Thailand Digital Arrival Card (TDAC) after May 1st when I want to enter Thailand ?\nYes, the TDAC is required for all foreigners entering Thailand starting May 1st, 2025. You will need to register for the TDAC every time you enter Thailand.\nI am interested in applying for an LTR visa. If I apply, when do I need to terminate my current visa?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-2",
+   "text": "LTR Visa Thailand - Exchange Rates\nOnce your LTR visa is approved, the officer will send you an email regarding the termination of your current visa (on a case-by-case basis). The email will include details on the next steps and the required documents for receiving your LTR visa. If you are still in the process of applying for an LTR visa, do not terminate your current visa beforehand.\nWhat are the choices of payments for LTR Visa processing fee?\nAcceptable payment options include Thai mobile banking (QR code scanning and cash only. However, if you choose to issue e-visa abroad, please follow the Royal Thai Consular protocol.\nWhich type of LTR visa can one apply for a work permit?\nWealthy Global Citizens, Wealthy Pensioners, Highly Skilled Professionals and Dependents types are included, except for those in the Work-from-Thailand Professionals category, as they are required to be remote workers according to our criteria.\nWhat are the requirements for translated documents, and which stamp is required?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-3",
+   "text": "LTR Visa Thailand - Exchange Rates\nWe only accept documents that have been translated by a certified translator, a notary public or through a notary translation by embassy or consulate.\nIf I have been unable to contact the LTR Visa unit using the provided contact information, what should I do?\nIn such cases, you may schedule an appointment to consult with us through the Online Clinic. Please contact ltr@boi.go.th or add our official LINE ID: @smartvisathailand to access the appointment booking system.\nHow should I dress when visiting Thailand Investment and Expat Services Center (TIESC) for LTR Visa issuance or to consult with the officer?\nIt is advised to dress politely in proper business attire and appropriate shoes. Please note that the immigration or LTR Visa officer reserve the right to refuse service if they deem the clothing to be inappropriate.\nIf I obtain the LTR visa from the embassy in the form of a sticker visa or an e-visa, is it necessary to transfer the visa to my new passport or is it acceptable to carry both passports?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-4",
+   "text": "LTR Visa Thailand - Exchange Rates\nIf the passport in which your LTR visa was issued is lost or expired, you must transfer the visa to your new passport before the old one expires. Otherwise, the visa will be considered invalid.\nHigh-skilled Professionals\nFor the Highly skilled Professionals category, how can we determine if the company in Thailand with which I have an employment contract aligns with the targeted industry defined by the LTR?\nTo determine if the company aligns with the targeted industry, review the list of targeted industries provided in the No.Por.3/2568 (TH) or the No.Por.3/2568 (EN) in Section 3.4, available on our website. You should carefully assess which industry your company fits into based on its primary business operations.\nIn case an LTR visa holder, categorized as a High-Skilled Professionals, changes their employer or moves to work with another company, will their current LTR visa be canceled or what else they can do?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-5",
+   "text": "LTR Visa Thailand - Exchange Rates\nIt depends on whether the new company's business meets the LTR targeted industry criteria. If it does, we can assist LTR-H holders in changing employers without canceling their visa. To do so, they must notify the LTR staff by email ltr@boi.go.th at least 1 month before ending the contract with the previous company. If the new company does not meet the LTR criteria, the LTR visa will need to be terminated.\nIf a Highly skilled professional needs to change their company, how can they maintain their LTR visa?\nIf Highly Skilled Professionals wish to add a company (not as their main employer), they may submit a request through the LTR system to add an additional employer by going to the account and click on the work permit the click a button “add”\nInvestment in Thailand for Wealthy Global Citizens and Wealthy Pensioners\nIf my investment in Thailand does not meet the required criteria, can I make additional investments after my LTR Visa is approved?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-6",
+   "text": "LTR Visa Thailand - Exchange Rates\nYou must have made investments in Thailand that meet the criteria before applying for the LTR Visa, as this is one of the requirements for the application.\nWhat kind of real estate is acceptable as an investment in Thailand?\nFreehold: Condominiums or buildings or houses, on top of the land, in the name of the applicant. (Evidence of Investment showing ownership of the property e.g. Or.Chor.2, Nor.Sor.4 or Certificate of substitution for a title deed and copy of the sale and purchase agreement of the property issued by Department of Land)\nLeasehold: Condominiums, buildings, or houses on top of the land or land being leased in the name of the applicant with a remaining time of lease agreement of no less than 10 years as of the date of application.\nFor investment in Thailand, If I use proof of condo co-ownership with a spouse, will the officer consider the entire value of the condo or divide the value in half for individual consideration?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-7",
+   "text": "LTR Visa Thailand - Exchange Rates\nIf you provide proof of condominium co-ownership with a spouse, the officer will consider dividing the value equally or according to the number of names listed on the ownership documentation.\nFor investment in Thailand, If I am listed as the buyer of the condominium, but the title deed is in someone else's name, such as my wife or child, is that acceptable?\nRegarding investment qualifications in Thailand, the applicant must invest and have ownership of the asset\nWealthy Global Citizens\nCan I combine a Thailand investment of at least USD 500,000 with personal assets in Thailand or abroad for the remaining amount in order to meet at least USD 1 million in total global assets?\nYes, you can combine your Thailand investment with assets in Thailand or abroad according to the criteria.\nWhat types of assets are required to meet the minimum value of USD 1 million?\nAssets can include real estate, the latest bank statements, the latest investment portfolio or evidence of investment in Thailand, such as Thai Government Bonds or a company shareholder list.\nWealthy Pensioners",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-8",
+   "text": "LTR Visa Thailand - Exchange Rates\nFor now, I have passive income of more than 40,000 USD. If I invest 250,000 USD in Thailand to obtain the LTR visa, is it possible for me to be approved for the LTR visa as a Wealthy Pensioner?\nHowever, for investment in Thailand, you must have the intention to invest and accept any potential risks. This decision is entirely up to you. Please note that we cannot guarantee visa approval, as LTR visa applicants must meet all the required criteria and provide the necessary documentation. Additionally, several authorities are involved in the visa approval process.\nIf I lived in a tax-free country such as Monaco or Dubai and I do not have any tax returns to submit, what is the alternative for proving my income?\nIf you live in a tax-free country, you must provide legal documentation showing that your country is tax-free, along with evidence of your income.\nAre monthly withdrawals from the principal considered passive income for wealthy pensioners?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-9",
+   "text": "LTR Visa Thailand - Exchange Rates\nMonthly withdrawals of principal that are not clearly from retirement accounts, privet pensions or provident funds are not counted as passive income.\nWork-from-Thailand Professionals\nAre holders of LTR Visas under the Work from Thailand Professional type permitted to engage in part-time work within Thailand?\nHolders of the LTR visa under the Work-from-Thailand category cannot engage in work or activities with Thai employers that generate income in Thailand because this visa does not allow for a work permit. It is suitable only for individuals who earn income from their employment with overseas companies that allow them to work remotely.\nDependents\nIf my spouse and I get married in a country that is not our country of nationality, will our marriage certificate be accepted?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-10",
+   "text": "LTR Visa Thailand - Exchange Rates\nYou must provide a marriage certificate that has been notarized by the embassy or consulate of your country of nationality, or by the embassy or consulate of the country that issued the marriage certificate, which is no older than 6 months and notarized by country's ministry of foreign affairs or royal Thai consulate or Thai MFA.\nI already have an LTR visa and I have one stepchild. Can he apply to be dependent?\nHe can apply if he is your legally dependent child and you must submit a court order confirming you as the guardian. Additionally, according to our specified criteria, dependent children must be under 20 years of age.\nIf my LTR visa application is approved, will my spouse automatically receive LTR visa status as a dependent?\nTo apply for an LTR visa, applicants must use one account per applicant for processing their visa applications. Therefore, for the dependent category, you need to create an account for each person to apply and submit documents for consideration such such as marriage certificates, birth certificates, etc.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-11",
+   "text": "LTR Visa Thailand - Exchange Rates\nIs it possible for an unmarried partner to be dependent of an LTR Visa applicant?\nUnfortunately, the spouse of an LTR Visa applicant must be legally married and is required to provide a marriage certificate.\nHealth Insurance\nFor applying for the LTR visa, do I need to purchase health insurance immediately when I start the application, or can I buy and submit it later after the visa is approved?\nPlease note that health insurance is a required document for the LTR visa application. Therefore, you must prepare it before submitting your application or provide alternative documents that meet our criteria.\nIf the applicant is unable to purchase health insurance when submitting the application, the officer may request the additional document during the review process and the applicant must provide the health insurance document immediately upon request.\nDigital Work Permit\nCan I apply for a digital work permit without having an employment certificate yet?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-12",
+   "text": "LTR Visa Thailand - Exchange Rates\nUnfortunately, you cannot apply for a digital work permit without having an employment certificate. The employment certificate is a required document for the application process.\nWhy can't holders of the Work-From-Thailand Professionals LTR visa apply for a digital work permit?\nBecause this visa is specially crafted for individual who set intention to work remotely while living exclusively in Thailand so if they have an on-site work engage, they will need to switch type of visa.\nIf a LTR holder needs to add their company, how can they maintain their Digital Work Permit?\nTo add an employer, please log in to the LTR system, go to the ‘Digital Work Permit’ section, click the ‘ADD’ button, follow the instructions and then click ‘Submit’\nIf a LTR holder needs to change their company details, how can they maintain their Digital Work Permit?\nThe request must be submitted via email ltr@boi.go.th. The officer will issue a certification letter, which you can use along with the required document to proceed with the 400 baht fee payment at the Department of Employment\nApplication Step",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-13",
+   "text": "LTR Visa Thailand - Exchange Rates\nCan I change the location for collecting the LTR Visa stamp?\nThe applicant will be able to change the location to receive the LTR Visa stamp during the application status has been shown \"Qualification Approved\". For dependents, the visa issuance place must be the same as that of the main LTR applicant.\nIf my application for the LTR visa is rejected, can I reapply using the same account?\nYou can use the same account if your status shows as \"Final Reject\" and you want to reapply with the same email. After you submit your information into the system, the document number (doc no.) will be a new number for visa consideration.\nThe 'Qualification Approved' status\nIn the process of the 'Qualification Approved' status, I have filled in all the required information and clicked the 'Submit' button. Why hasn't the status changed?\nPlease check for any blank spaces; if there are any, fill them in with the symbol '-'.\nFor the TM 6:\n• If you do not have TM.6 as you have entered Thailand after 1st July 2022 via air route, please fill “00000” in the TM.6 field.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-14",
+   "text": "LTR Visa Thailand - Exchange Rates\n• If you have entered Thailand after May 1st, 2025, please fill Thailand Digital Arrival Card No. in the TM.6 field.\nAfter clicking 'Submit,' if successful, your status will change to 'Document Review for Visa/WP Issuance' immediately.\nLTR Management Guide\nIf I lose my passport while abroad, can I re-enter Thailand using a new passport with a different visa type and later transfer my LTR visa to the new passport?\nYou must first file a police report then contact our staff via email at ltr@boi.go.th Our staff will advise you on the next steps, as the procedure may vary depending on the format of the LTR visa you were issued.\nIs maintaining a TM30 (Notification form for Housemaster, owner, or possessor of the residence where the foreign has stayed) still required after the LTR visa is issued?\nYes, maintaining a TM30 is required. The house owner, householder, or hotel manager who receives a foreigner permitted to stay temporarily in Thailand must report to the immigration office or through the website www.immigration.go.th within 24 hours of the foreigner's arrival.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-15",
+   "text": "LTR Visa Thailand - Exchange Rates\nCan LTR Visa holder switch visa category without cost after the initial 5 years?\nTo change the category of an LTR visa, the applicant must reapply for the qualification endorsement process according to the criteria for each type of LTR visa. Therefore, the applicant will be required to pay the visa fee upon receiving a new stamp for the new category.\nDo I need to renew my LTR visa every year?\nEven though the LTR Visa is valid for 10 years, the Immigration Bureau initially grants a stay permit for the first 5 years in accordance with the announcement. You must reconfirm your eligibility to extend the LTR Visa for the remaining 5 years (the second validation does not require a visa fee).\nHow do LTR holders get a Tax ID?\nFor LTR visa holders with income in Thailand, you can apply for a Taxpayer Identification Number (TIN) at any Revenue Department office nationwide. For more information, you can contact the Call A Center at 1161 or visit https://www.rd.go.th\nI have an LTR visa and plan to open a business in Thailand. What requirements must I meet?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-16",
+   "text": "LTR Visa Thailand - Exchange Rates\nIf you are interested in establishing a company in Thailand, it is advisable to contact the Department of Business Development directly at https://www.dbd.go.th to understand the requirements and additional details about setting up a business in Thailand.\n1-year Reporting\nIf I leave Thailand and return, should I submit the 1-year report based on the date of my last report or the date of my return to Thailand?\nIf you leave Thailand and return, the next reporting date will reset to one year from the date of your most recent return.\nDo LTR visa holders need to submit TM47 (90-day report) in addition to the TM30 (notification of residence)?\nIn case LTR visa holders stay in Thailand for 1 year without leaving the country, they need to file TM.95 (1-year report) at the Immigration Office instead of TM.47 (90-day report). This is one of the benefits of the LTR visa. However, TM.30 (Notification of residence for housemaster, owner, possessor or hotel manager where the foreigner has stayed) is still required.\nTransferring a LTR Visa to a new passport",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-17",
+   "text": "LTR Visa Thailand - Exchange Rates\nWhen I receive a new passport, should I contact the LTR Unit or go directly to the Immigration Office at the Thailand Investment and Expat Services Center (TIESC) to transfer the LTR visa to the new passport?\nYou can directly contact the Immigration Office at the Thailand Investment and Expat Services Center (TIESC), if you are ready to prepare the documents for the transfer visa. The list of required documents is available on our website. Alternatively, you can contact the LTR Unit for assistance in reviewing the documents before proceeding.\nOpening a Bank Account in Thailand\nCan LTR Visa holders open a bank account in Thailand?\nYes, LTR Visa holders can open a bank account in Thailand at Bangkok Bank and Kasikorn Bank. For detailed steps and the required documents, please visit our website. Please note that some branches may request additional documents.\n5-Year LTR Visa Renewal\nWhat documents are required for the renewal of the 5-year LTR Visa?",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-ltr-boi-go-th-page-faq-html-18",
+   "text": "LTR Visa Thailand - Exchange Rates\nAt this stage, you may refer to the general information available at https://ltr.boi.go.th/page/news.html Once the official requirements are announced, we will update you accordingly.\nWhen should I submit the documents for my LTR Visa 5-year extension?\nYou should submit your application within 120 to 60 days prior to the expiration of your current permission to stay in order to obtain a qualification endorsement letter from the BOI.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "ltr.boi.go.th",
+    "authority": "Board of Investment (LTR)",
+    "title": "LTR Visa Thailand - Exchange Rates",
+    "url": "https://ltr.boi.go.th/page/faq.html",
+    "visa": "LTR"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-index-html-1",
+   "text": "Smart Visa\nTypes of Smart Visa\nThe following categories of Smart Visa will be allocated to Smart Visa applicants, depending on the purpose or activity that foreigners wish to conduct in the Kingdom of Thailand.\nSMART \"S 2-year \"\nSMART \"O\"\nSmart S (Startup)\nTechnology-based startup entrepreneurs in the targeted industries\nDeposit of ≥ 600,000 baht which has been held for at least 3 months\nHealth insurance\nMust be a director or hold 25% share in the company in the targeted industries which has established in Thailand already.\nSmart O (Other)\nRefer to the legal dependents spouse and children of the main Smart Visa holders to live and work in Thailand equivalent to Smart Visa holders.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/index.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-required-document-html-1",
+   "text": "Required Documents | Smart Visa\nDocuments Required\nDocuments Required for SMART Visa \"S\" (Startup)\nDocuments Required for SMART Visa \"O\" (Spouses and Children)\nDocuments Required for SMART Visa Extension",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "Required Documents | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/required-document.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-1",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\nHow to Manage your Smart Visa and Beyond\n1. Working condition for Smart Visa holder as well as spouse and children\nIn the following event, a Smart Visa holder must notify in written to the Smart Visa Unit by filling\nout Smart Visa Qualifications Update Form and e-mail to smartvisa@boi.go.th as soon as\npossible.\nChanging of a position, job title, responsibility or assignment within the same company\nAdditional employment: Working for another endorsed company or employer or sponsor\nLegal spouses of all Smart Visa holders and children of “Smart” T holders (18 years old\nof age or older) holding Smart “O” visa who wish to work.\nRemarks:\n1) Legal children of Smart “E” “I” and “S” holders holding Smart “O” wishing to work in Thailand must apply\nfor a work permit at One Stop Service Center for Visa and Work Permit (OSS), following the criteria and\nregulations set by the Department of Employment.\n2) The job must not be on prohibited list of occupations and professions for foreigners.\n2. Smart visa extension\nSmart S visa holders wishing to extend their permission to stay under Smart Visas must",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-2",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\napply for a renewal of qualification endorsement at Smart Visa Extension at least 60 days\nbefore the expiry of Smart Visa.\nAfter being notified of the result of qualification endorsement, the Smart visa holders must\nproceed with applying for Smart Visa extension at the Immigration Bureau at Thailand Investment\nand Expat Services Center (TIESC), 6th Floor, PARADE Zone, One Bangkok Building, Bangkok\nbefore the expiry of Smart Visa.\nDocuments need to be presented at the time of Smart Visa extension are as follows.\nPassport or travel document and a copy of all passport or travel document pages with\nimmigration or consular stamps\nNOTIFICATION LETTER from the Board of Investment to the Immigration Bureau within\n60 days from issuance date of the endorsement letter (PRINT ONE SIDED)\nTM7 Form – APPLICATION FOR EXTENSION OF TEMPORARY STAY IN THE KINGDOM\n(PRINT ON BOTH SIDES)\nTM8 Form – ACKNOWLEDGEMENT OF TERMS AND CONDITIONS FOR PERMIT OF\nTEMPORARY STAY IN THE KINGDOM OF THAILAND (PRINT ON BOTH SIDES)\nSTM6 Form\n– CRITERIA AND CONDITIONS ACKNOWLEDGEMENT FORM FOR THE",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-3",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\nTEMPORARY STAY PERMIT IN THE KINGDOM (SMART VISA) (PRINT ON BOTH SIDES)\n– CRITERIA AND CONDITIONS ACKNOWLEDGEMENT FORM FOR THE\nTEMPORARY STAY PERMIT IN THE KINGDOM (SMART VISA) (PRINT ON BOTH SIDES) WITH STAMP\nTHE ACKNOWLEDGEMENT FORM OF PENALTIES FOR A VISA OVERSTAY ( PRINT ONE SIDED)\nTHE ACKNOWLEDGEMENT OF PRACTICES FOR RECIPIENTS OF SMART VISA (PRINT ONE SIDED)\nThailand Digital Arrival Card (TDAC) for those arriving in Thailand after May 1st, 2025\nT.M.6 card for those who entered Thailand before July 1st, 2022 or those who entered through a land border checkpoint and were issued T.M.6 card (If any)\nNote: The paper form T.M.6 card has now been replaced by the electronic Thailand Digital Arrival Card (TDAC)\n1-Year notification card\nTwo passport size photo (4cm x 6cm) White background, without wearing glasses or headgear,\ntaken within 6 months (a photocopy or poor quality photos will not be accepted)\nThe processing fee is 10,000 Baht per year of visa permission, for example the\npermitted duration of 1 year 4 months will cost 20,000 Baht and has to be paid to the Immigration at",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-4",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\nthe time of visa extension.\n3. Transferring a Smart Visa to a new passport\nIf you need to transfer a Smart Visa to a new passport, you must apply to have your Smart\nVisa transferred at the Immigration at One Stop Service Center for Visa and Work Permit (OSS). The\nrequired documents are as follows;\nTransfer stamp to new passport form\nCertificate from embassy (Original one only)\nCopy of former passport with your photo\nCopy of new passport with your photo\nCopy of last arrival stamp in your passport\nCopy of visa stamp in your passport\nCopy of last extended visa in your passport\nThailand Digital Arrival Card (TDAC) for those arriving in Thailand after May 1st, 2025\nT.M.6 card for those who entered Thailand before July 1st, 2022 or those who entered through a land border checkpoint and were issued T.M.6 card (If any)\nNote: The paper form T.M.6 card has now been replaced by the electronic Thailand Digital Arrival Card (TDAC)\nCopy of Smart Visa notification letter of qualification endorsement which is addressed to the Immigration Bureau\n1-Year notification card",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-5",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\n4. Reporting requirements for Smart Visa holders\n4.1) 1-year Reporting to the Immigration bureau at the One Stop Service Center for Visa and Work Permit\n1. Smart Visa holders staying in Thailand for a period longer than 1 year consecutively are required to report the current address to the Immigration at One Stop Service Center for Visa and Work Permit (OSS) either in person, or by authorizing someone to report for you on your behalf. This report must be done on a yearly basis counting from Smart Visa issuance date (15 days before or 7 days after the date specified on 1-year report notification card). However, in the case of re-entering the Kingdom, the report will be due in 1 year from the date of the latest arrival.\nThe documents required to be submitted to the immigration are as follows.\nTM.91 Form (completely filled out and signed)\nPassport\nThailand Digital Arrival Card (TDAC) for those arriving in Thailand after May 1st, 2025\nT.M.6 card for those who entered Thailand before July 1st, 2022 or those who entered through a land border checkpoint and were issued T.M.6 card (If any)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-6",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\nNote: The paper form T.M.6 card has now been replaced by the electronic Thailand Digital Arrival Card (TDAC)\n1-Year report notification card (if any) *\nT.M. 61 Form (For authorized person reporting on behalf of smart visa holder who lives in Bangkok)\n* If Smart Visa is issued at Royal Thai Embassy/ Consulate-General, Smart Visa holders will not receive a 1-year report notification card. In such case, the report will be due in 1 year from the latest arrival date specified on the arrival stamp.\nRemarks: Smart Visa extension is NOT considered the same as Smart Visa issuance. Therefore, even Smart Visa holders have recently extended their Smart Visa, they are still required to refer to the 1-year report notification card for the date of 1-year report (except in case of re-entering the Kingdom). For example, an extension from 6-month Smart “S” to 2-year Smart “S” does not mean that the 1-year report is due in 1 year from the Smart Visa extension date.\n4.2) Online 1-year Status Reporting to the Smart Visa Unit",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-7",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\nIn addition to the above 1-year reporting requirement, Smart Visa holders must SEPARATELY report their status and eligibility for Smart Visa to the Smart Visa Unit by filing STATUS REPORT FORM OF THE SMART VISA HOLDER with supporting documents and email to smartvisa@boi.go.th\nAll SMART Visa holders must submit a 1-Year Status Report to the SMART Visa Unit in September. Those who obtained their SMART Visa before June are required to begin reporting in September of the same year, while those who receive their visa after June will start reporting in September of the following year.\nThe required documents are as follows.\nAll Smart Visa : STATUS REPORT FORM OF THE SMART VISA HOLDER\nRequired documents for SMART S holder:\nThe signed Status Report application form\nCompany affidavit from DBD stating your company’s objectives (issued within the past 3 months and bearing the Garuda emblem)\nShareholder list in Thailand (issued within the past 3 months and bearing the Garuda emblem)\nLatest audited corporate annual financial report",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-8",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\nForeign Business License or Foreign Business Certificate (If any) *For foreign-majority companies operating in activities restricted by the Foreign Business Act.\nRequired documents for SMART E holder:\nThe signed Status Report application form\nP.N.D.91 with receipt or P.N.D.90 with receipt\nP.N.D.1 of each month for the last 1 year\nRequired documents for SMART T holder:\nThe signed Status Report application form\nP.N.D.91 with receipt or P.N.D.90 with receipt\nP.N.D.1 of each month for the last 1 year\nRequired documents for SMART O holder:\nThe signed Status Report application form\n5. Smart Visa Termination\nProcedures for Smart Visa cancellation/termination at One Stop Service Center for Visa and Work Permit (OSS) are as follows.\n1. Smart Visa holder who would like to cancel or terminate Smart Visa before or on the expiry date of Smart Visa must notify in written to the Smart Visa Unit by filling out\nSMART VISA TERMINATION REQUEST FORM and email it together with supporting documents to\nsmartvisa@boi.go.th as soon as possible. The supporting documents are as follows:",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-9",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\nTermination letter of employment issued by the employer\nCopy of Smart Visa stamp\n* It will take 5-7 working days to issue the notification letter of Smart Visa termination.\n2. Smart Visa holder will be notified via email once the notification letter of Smart Visa termination is ready. After being notified, Smart Visa holder is required to make an appointment via Smart Visa appointment booking system or\nsmartvisa@boi.go.th (if the booking system is not available at the time) to schedule the date and time for Smart Visa termination at OSS center.\n3. On the actual date, Smart Visa holder must arrive at the OSS center before the appointment time to collect the notification letter of Smart Visa termination from Smart Visa staff.\n4. Smart Visa holder gets immigration documents and passport ready and then proceeds to the Immigration side.\n5. Smart Visa holder has the Immigration’s information counter officer review the documents. After receiving the queue number, Smart Visa holder waits for the queue number to be called for the termination process at Counter no.15",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-10",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\n6. After the Smart Visa termination, a foreigner is advised to leave the country or change to other types of visa before the end date of permission to stay in Thailand, as appeared on the termination stamp.\n6. Procedures for Smart Visa holders who wish to obtain a personal driving license\nThe Department of Land Transport has established regulations for aliens applying for a driving license\nto submit work permit or proof of residence in the Kingdom issued by government agencies or foreign government agencies.\nTherefore, Smart Visa holders wishing to obtain a personal driving license must provide proof of\nthe current residence which can be obtained from\n1. The Embassy or Consulate of their own nationality.\nFor more information please contact the Embassy or Consulate of your nationality directly\n2. The Immigration Bureau at the Immigration Bureau at\nThailand Investment and Expat Services Center (TIESC), 6th Floor, PARADE Zone, One Bangkok Building, Bangkok\nby applying for Residence Certificate and submit following documents in person;",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-11",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\nCOMPLETED APPLICATION FORM RESIDENCE CERTIFICATE IN THAILAND\nThe receipt of\nTM.30 (notification to immigration that house-master, owner or the possessor notify you has stayed)\nPassport and copy of your passport (Bio page, visa page and the latest Thailand entry stamp page)\nThailand Digital Arrival Card (TDAC) for those arriving in Thailand after May 1st, 2025\nT.M.6 card for those who entered Thailand before July 1st, 2022 or those who entered through a land border checkpoint and were issued T.M.6 card (If any)\nNote: The paper form T.M.6 card has now been replaced by the electronic Thailand Digital Arrival Card (TDAC)\nPlease note that the processing time will takes 15 days after submitting request form.\n7. List of Insurance Companies which offer Health Insurance Policy for Smart Visa Holders\nHealth insurance for Smart Visa type “S” must meet the following criteria\nMinimum coverage for hospitalization care in Thailand of at least 500,000 THB\nMust cover the entire period of stay in Thailand for the applicant as well as spouse and children",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-12",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\nShould cover also any expenses which might arise in connection with repatriation for medical\nreasons, urgent health attention and/or emergency hospital treatment or death\nThe list of health insurance companies which offer insurances for Smart Visa applicants / holders\n1. Aetna Health Insurance Thailand Company Limited\nAddress : 98 Sathorn Square Office Tower, 14th-15th Floor, North Sathorn Road, Silom, Bangrak, Bangkok 10500\nContact : Khun Kamolchanok Kasemsamran, Sales Executive\nTel. : 02-677-0681\nEmail : kns@aetna.co.th\n2. Muang Thai Insurance Public Company Limited\nAddress : 252 Rachadaphisek Road, Huaykwang, Bangkok 10310\nContact : Khun Panlop Hotriem, First Vice President International Business Office\nTel. : 02-665-4006, 084-439-1946\nEmail : panlop.h@muangthaiinsurance.com\n3. Luma Health Insurance Thailand Company Limited\nAddress : 57, 9th Floor, Park Ventures Ecoplex, Wireless Road, Lumpini, Pathumwan, Bangkok 10330\nContact : Khun Xaynaly Souvannavong\nTel. : 02-665-3630, 083-097-1232\nEmail : Xaynaly.s@lumahealth.com, consult@lumahealth.com",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-smart-visa-boi-go-th-smart-pages-how-to-manage-html-13",
+   "text": "How to Manage your Smart Visa and Beyond | Smart Visa\n4. Muang Thai Life Assurance Public Company Limited\nAddress : 250 Rachadaphisek Rd., Huaykwang, Bangkok 10310\nContact : Khun Sasikarn Rujijanakul, Senior Officer International Business\nTel. : 02-274-9400 Ext 2474, 081-809-2421\nEmail : sasikarn_r@muangthai.co.th\n5. Insurance consulting service for foreigners residing in Koh Phangan, Koh Samui and Surat Thani province.\nContact : Khun Panida Pahugarn,\nNon-life insurance broker licenss no. 6404004447\nTel. : 098-903-8679 (Line, WhatApps)\nEmail : panida.pahugarn@gmail.com\nFacebook page: PAHUGARN-THAILANDs Insurance Broker\n6. AXA Insurance Public Company Limited\nAddress : 1168/67 Lumpini Tower 24 Fl., Rama 4 rd.,Thung Mahamek, Sathorn, Bangkok 10120\nContact : Ms. Arunrat Salee (Head Office Sales)\nTel. : 02-118-8311, 062 602 8662\nEmail : arunrat.sa@axa.co.th, healthsalesbkk@axa.co.th",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "smart-visa.boi.go.th",
+    "authority": "Board of Investment (SMART Visa)",
+    "title": "How to Manage your Smart Visa and Beyond | Smart Visa",
+    "url": "https://smart-visa.boi.go.th/smart/pages/how-to-manage.html",
+    "visa": "SMART"
+   }
+  },
+  {
+   "id": "gov-thailandprivilege-co-th-en-1",
+   "text": "Long-term visa with more privileges\nMake Thailand\nYour Home​\nHassle-Free Living in Thailand\nwith Unlimited Entries\nThailand’s Most ExcLusive\nLong-Term Residency PRogram\n“Live with more possibilities”\nWorld’s Premier Residency Program and\nPrivileged Services Providers for Exclusive Individuals.​\nThailand’s Most ExcLusive\nLong-Term Residency PRogram\n“Live with more possibilities”\nWorld’s Premier Residency Program and\nPrivileged Services Providers for Exclusive Individuals.​",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thailandprivilege.co.th",
+    "authority": "Thailand Privilege (a TAT company)",
+    "title": "Long-term visa with more privileges",
+    "url": "https://www.thailandprivilege.co.th/en",
+    "visa": "Privilege"
+   }
+  },
+  {
+   "id": "gov-thailandprivilege-co-th-living-in-thailand-1",
+   "text": "Living in Thailand with long-term visa.\nAnswer: Residence Certificate is an official one-page document that states you are living in Thailand. A Residence Certificate is a document issued by immigration that confirms where a foreigner resides. This document can be used to obtain a Thai driver's license/ buy a car.\nPlease be aware that a residence certificate is a letter confirming your address in Thailand that can be obtained from either your home embassy in Thailand or the immigration bureau nearest to your address.\nYou can actually obtain this document at the immigration residing your residence if you have done a 90-day report from your latest arrival in Thailand.\nPlease be advised that there are 3 ways to obtain the residence certificate, which are as\nfollows;\n- The embassy of your country in Thailand (Please check with your embassy to see if they are still able to issue this letter as some embassy cannot do that)\n- The immigration where you are residing (If you are in Bangkok, you can do it at Immigration Chaeng Wattana; if you are in other provinces, you can do it at the immigration bureau where you live in Thailand.)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thailandprivilege.co.th",
+    "authority": "Thailand Privilege (a TAT company)",
+    "title": "Living in Thailand with long-term visa.",
+    "url": "https://www.thailandprivilege.co.th/living-in-thailand",
+    "visa": "general"
+   }
+  },
+  {
+   "id": "gov-thailandprivilege-co-th-living-in-thailand-2",
+   "text": "Living in Thailand with long-term visa.\n- Our service provider is called \"Star Visa.\"(Please contact us again, if you are interested in using the service provided by our service provider.)\nFor providing you with an agency to do the residence certificate, it is cost THB3,000 per issue and we can provide this service for our members who reside in Bangkok, please see the required document as listed below;\nThe required documents:\nA valid passport\nA copy of valid Thailand Privilege visa (PE visa or SE visa)\nA copy of latest entry stamp and latest stay extension (if any)\nApplication form for Residence Certificate in Thailand\nReceipt of 90-day report notification\nTM.30\nHere are the processes for a residence certificate in Thailand as below;\nScan and send us all required documents via email: memberservice@thailandprivilege.co.th (one set per person)\nWhen you got a confirmation from us that all documents are completed, please make a payment for THB3,000 per issue by transferring money to the account as shown below;\n- Bank: Bangkok Bank\n- Account Name: Star Visa Service LTD., PART. (ห้างหุ้นส่วนจำกัด สตาร์วีซ่า)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "thailandprivilege.co.th",
+    "authority": "Thailand Privilege (a TAT company)",
+    "title": "Living in Thailand with long-term visa.",
+    "url": "https://www.thailandprivilege.co.th/living-in-thailand",
+    "visa": "general"
+   }
+  },
+  {
+   "id": "gov-tourismthailand-org-articles-plan-your-trip-passportandvisa-1",
+   "text": "Passport & Visa (page dated 18 Jul 2024)\nSearch\nRedeem\nDestinations\nExperiences\nPlan Your Trip\nInternational\nLogin\nHome\nArticle\nPassport & Visa\nPassport & Visa\nTourismThailand, 18 Jul 2024\nPrint\nShare to\nKeep This\nVisa Exemption\nThailand will grant visa exemption for nationals of 93 countries and territories, up from 57 countries previously. Visitors under this scheme will be allowed to stay for tourism purposes and short-term business engagements for a period not exceeding 60 days, which can be extended at the Immigration Office for another period not exceeding 30 days.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "tourismthailand.org",
+    "authority": "Tourism Authority of Thailand",
+    "title": "Passport & Visa",
+    "url": "https://www.tourismthailand.org/Articles/plan-your-trip-passportandvisa",
+    "visa": "exemption",
+    "page_date": "18 Jul 2024"
+   }
+  },
+  {
+   "id": "gov-tourismthailand-org-articles-plan-your-trip-passportandvisa-2",
+   "text": "Passport & Visa (page dated 18 Jul 2024)\nAlbania, Andorra, Australia, Austria, Bahrain, Belgium, Bhutan, Brazil, Brunei, Bulgaria, Cambodia, Canada, China, Colombia, Croatia, Cuba, Cyprus, Czech Republic, Denmark, Dominica, Dominican Republic, Ecuador, Estonia, Fiji, Finland, France, Georgia, Germany, Greece, Guatemala, Hong Kong, Hungary, Iceland, India, Indonesia, Ireland, Israel, Italy, Jamaica, Japan, Jordan, Kazakhstan, Korea (ROK), Kosovo, Kuwait, Laos, Latvia, Liechtenstein, Lithuania, Luxembourg, Macao, Malaysia, Maldives, Malta, Mauritius, Mexico, Monaco, Mongolia, Morocco, Netherlands, New Zealand, Norway, Oman, Panama, Papua New Guinea, Peru, Philippines, Poland, Portugal, Qatar, Romania, Russia, San Marino, Saudi Arabia, Singapore, Slovakia, Slovenia, South Africa, Spain, Sri Lanka, Sweden, Switzerland, Taiwan, Tonga, Trinidad and Tobago, Türkiye, Ukraine, United Arab Emirates, United Kingdom, United States of America, Uruguay, Uzbekistan, and Vietnam.\nVisa on Arrival (VOA)",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "tourismthailand.org",
+    "authority": "Tourism Authority of Thailand",
+    "title": "Passport & Visa",
+    "url": "https://www.tourismthailand.org/Articles/plan-your-trip-passportandvisa",
+    "visa": "exemption",
+    "page_date": "18 Jul 2024"
+   }
+  },
+  {
+   "id": "gov-tourismthailand-org-articles-plan-your-trip-passportandvisa-3",
+   "text": "Passport & Visa (page dated 18 Jul 2024)\nThailand will allow nationals of 31 countries and territories, up from 19 countries previously, to apply for VOA at the immigration checkpoints on arrival. Visitors under this scheme will be allowed to stay for tourism purposes for a period not exceeding 15 days. The visa fee is 2,000 Baht.\nArmenia, Belarus, Bhutan*, Bolivia, Bulgaria*, China*, Costa Rica, Cyprus*, El Salvador, Ethiopia, Fiji*, Georgia*, India*, Kazakhstan*, Kyrgyzstan, Malta*, Mexico*, Namibia, Nauru, Papua New Guinea*, Paraguay, Romania*, Russia*, Saudi Arabia*, Serbia, Seychelles, Taiwan*, Tunisia, Uzbekistan*, Vanuatu, and Venezuela.\n*Countries/Territories eligible for 60-day visa exemption scheme.\nDestination Thailand Visa (DTV)\nThailand is introducing a new visa measure, Destination Thailand Visa (DTV) for remote workers, digital nomads, and freelancers as well as participants of activities – Muay Thai courses, Thai cooking classes, sport training, medical treatments, seminars, and music festivals. Spouses and dependent children of DTV holders will also be eligible.",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "tourismthailand.org",
+    "authority": "Tourism Authority of Thailand",
+    "title": "Passport & Visa",
+    "url": "https://www.tourismthailand.org/Articles/plan-your-trip-passportandvisa",
+    "visa": "exemption",
+    "page_date": "18 Jul 2024"
+   }
+  },
+  {
+   "id": "gov-tourismthailand-org-articles-plan-your-trip-passportandvisa-4",
+   "text": "Passport & Visa (page dated 18 Jul 2024)\nForeigners who wish to apply for this visa must have a proof of funds or a guarantee of not less than 500,000 Baht for the duration of stay. The visa fee is 10,000 Baht.\nDTV holders, together with spouses and dependent children, will be entitled to a five-year stay with multiple entries for cumulative stays not exceeding 180 days, which can be extended for another 180 days.\nStudent Visa (Non-Immigrant ED Plus)\nThailand is extending the stay for foreign students of higher education to stay for one more year after graduation. They can also find work during the extended period and, if employed locally, could change the type of visa to Non-Immigration B without having to leave Thailand.\nFor more information, please contact the Thai Embassy or consulate in your area of residence.\nwww.thaiembassy.org\nRelated Content : Visitors from 93 countries will now be able to enjoy visa-free entry to Thailand\nFor more info.\nRelated Content : Welcome to our Chinese friends with visa exemption.\nFor more info.\nRelated Content : Tourist Visa Exemption Scheme for Chinese and Kazakhstani Tourists",
+   "metadata": {
+    "kind": "official",
+    "fetched": "2026-11-09",
+    "lang": "en",
+    "site": "tourismthailand.org",
+    "authority": "Tourism Authority of Thailand",
+    "title": "Passport & Visa",
+    "url": "https://www.tourismthailand.org/Articles/plan-your-trip-passportandvisa",
+    "visa": "DTV",
+    "page_date": "18 Jul 2024"
+   }
+  }
+ ]
+}

@@ -74,17 +74,45 @@ Small local models (prod runs `llama3.2:3b`) don't follow JSON or tool-calling i
 - Pulls the applicant's age, savings, monthly income, purpose and any visa named from plain text. Purposes in the latest message take priority.
 - Picks the tools:
   - **visa_finder:** SQL over visa types: `min_age <= age AND min_funds_thb <= funds AND array_contains(purpose, …)`. If nothing matches, it drops the funds limit and says so.
-  - **search_rules:** semantic SQL limited to `client_id = 'public'`, with citations. (Plain hybrid search returned another client's case note to a guest; on this pack vector search also measured better than hybrid.)
+  - **search_official:** semantic SQL over `lab_visa_gov`, the passages from official Thai government websites, narrowed with `AND visa = '<route>'` when the question names a visa. After the Visa Finder runs, one more `search_official` per shortlisted route (up to 3) fetches that route's official requirements.
   - **case_status:** reads case notes, only for the signed-in demo client.
 - Runs the safety rules (false documents, detention) before anything else. Those return a fixed card, and the model is never called.
 
-**What the model does:** writes the reply from the numbered sources only, through `/api/v1/ai/chat` with the configured provider.
+**What the model does:** writes the reply through `/api/v1/ai/chat` from the numbered passages only: official government text, plus the signed-in client's own case notes. The agency's notes (the `visa` pack) only build the Visa Finder shortlist; they never reach the model. When the passages don't cover a question, the model says "The official sources I checked don't cover that" and points to the closest official site. If no official passage matches at all, the reply is a fixed message and the model isn't called.
 
 **What the page shows for each reply:**
-- the matching visa routes as cards, built from the SQL rows rather than the model;
-- a citation per sentence;
-- a check that every number appears in a source;
-- an expandable trace of each SQL and search call.
+- the shortlisted visa routes as cards, built from the SQL rows rather than the model and labelled as the agency's notes;
+- a citation per sentence, and an **Official sources** list with the authority and a link for each page;
+- a check that every number appears in an official passage. If the first draft has a number that isn't, the model is asked once to rewrite from the passages, and the page says so;
+- an expandable trace of each SQL call.
+
+### Official sources (`gov-corpus.json`)
+
+`apps/showcase/scripts/visa-gov-fetch.mjs` builds `apps/showcase/src/labs/visa/gov-corpus.json`. The showcase loads it as a separate chunk and seeds `lab_visa_gov` when its `version` (a hash of the passages) changes.
+
+| Source | Authority | What it gives |
+|---|---|---|
+| Thai e-Visa master data (`thaievisa.go.th/ApiGateway/masterdata/…`) | Ministry of Foreign Affairs | One passage per visa sub-type and purpose of visit: the exact documents, funds, insurance and age rules the e-Visa system asks for |
+| `thaievisa.go.th` | Ministry of Foreign Affairs | How to apply online |
+| `tdac.immigration.go.th` | Immigration Bureau | Thailand Digital Arrival Card, 90-day notification |
+| `ltr.boi.go.th` | Board of Investment | LTR types, criteria, fees, 1-year reporting, FAQ |
+| `smart-visa.boi.go.th` | Board of Investment | SMART visa types, documents, how to manage it |
+| `thailandprivilege.co.th` | Thailand Privilege Card Co. (TAT) | Living-in-Thailand guidance |
+| `tourismthailand.org` | Tourism Authority of Thailand | Visa exemption list, visa on arrival, DTV, ED Plus |
+
+To refresh it: install `playwright-core` somewhere, then run `CHROME=<chrome binary> node apps/showcase/scripts/visa-gov-fetch.mjs` from that directory, run `npm test` (it checks every passage links to a government page and every route tag has a passage) and commit the JSON.
+
+Not included: `www.immigration.go.th` answers automated clients with a bot challenge, and we don't work around it. Two TAT articles refused automated fetches too. So questions such as the overstay fine per day get "The official sources I checked don't cover that" rather than an answer from the agency's notes.
+
+**Measured on prod (2026-11-09, `llama3.2:3b`):** the same 8 questions answered from the agency's notes (before) and from official passages (after):
+
+| Question | Before: agency notes | After: official sources |
+|---|---|---|
+| Health insurance for the O-A visa? | "health insurance covering your stay"; the minimum "is not explicitly stated" | "minimum insured sum of 100,000 USD or 3,000,000 THB" (thaievisa.go.th) |
+| Money for the O-X visa? | "3 million THB" | "3,000,000 THB, or at least 1,800,000 THB together with an income of at least 1,200,000 THB per year in a Thai bank" (thaievisa.go.th) |
+| Arrival card before I fly? | the paper TM.6 "has since been replaced by the online digital arrival card" | "submit their arrival card information 3 days in advance of their arrival date" (tdac.immigration.go.th) |
+| Overstay fine per day? | "500 THB" (from an agency note) | "The official sources I checked don't cover that" |
+| VOA, LTR fee, DTV funds and fee | same figures as the notes | same figures, now each linked to TAT, BOI or the e-Visa page |
 
 The Claude-driven agent teams in `examples/nebula-agents` need `ANTHROPIC_API_KEY` on the examples pod. It isn't set on int or prod, so this agent runs on NebulaDB's own LLM gateway instead.
 

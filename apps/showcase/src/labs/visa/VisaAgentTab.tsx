@@ -4,15 +4,31 @@
  * Code decides what to look up (profile extraction, tool choice, SQL),
  * NebulaDB answers the lookups, and the configured LLM only writes the
  * reply from those results. Every reply shows its tool calls, sources and
- * a numbers check. Data: the Labs `visa` pack (fictional agency).
+ * a numbers check. The Visa Finder shortlist comes from the Labs `visa` pack
+ * (a fictional agency's notes); the written answer is grounded only in
+ * passages from official Thai government websites (gov-corpus.json).
  */
 import { useEffect, useRef, useState } from "react";
+import { ensureSeeded } from "../../rag/seed";
 import { api } from "../../api";
 import { ErrorBanner } from "../../components";
 import { claims, flatFields, unsupportedNumbers } from "../engine/core";
 import { PACK } from "../packs/visa";
 import { Banner, ModelPicker, useLabEnv, usePackSeed } from "../shell";
-import { answerPrompt, parseProfile, plan, type Evidence, type Profile, type ToolCall, type Turn } from "./agent";
+import {
+  answerPrompt,
+  gatherEvidence,
+  GOV_BUCKET,
+  NOT_COVERED,
+  officialFollowUps,
+  parseProfile,
+  plan,
+  rewritePrompt,
+  type Evidence,
+  type Profile,
+  type ToolCall,
+  type Turn,
+} from "./agent";
 
 interface StepRun {
   call: ToolCall;
@@ -31,6 +47,8 @@ interface Reply {
   answer?: string;
   model?: string;
   unsupported: string[];
+  /** Numbers the first draft invented, when the reply was rewritten from the passages. */
+  rewritten?: string[];
   error?: string;
 }
 
@@ -45,9 +63,42 @@ const STARTERS = [
 
 const CLIENTS = PACK.personas.filter((p) => p.filter.client_id);
 
+interface GovCorpus {
+  fetched: string;
+  version: string;
+  sources: string[];
+  docs: { id: string; text: string; metadata: Record<string, string> }[];
+}
+
+/** Load the official-sources corpus (a separate chunk) and make sure NebulaDB has this version. */
+function useGovSeed() {
+  const [s, setS] = useState<{ status: "seeding" | "ready" | "error"; corpus?: GovCorpus; error?: string }>({ status: "seeding" });
+  useEffect(() => {
+    let live = true;
+    import("./gov-corpus.json")
+      .then(async (m) => {
+        const corpus = (m.default ?? m) as GovCorpus;
+        await ensureSeeded(GOV_BUCKET, corpus.docs, `gov-${corpus.version}`);
+        if (live) setS({ status: "ready", corpus });
+      })
+      .catch((e: Error) => live && setS({ status: "error", error: e.message }));
+    return () => {
+      live = false;
+    };
+  }, []);
+  return s;
+}
+
 export function VisaAgentTab() {
   const env = useLabEnv();
-  const seed = usePackSeed(PACK);
+  const packSeed = usePackSeed(PACK);
+  const gov = useGovSeed();
+  const seed =
+    packSeed.status === "error" || gov.status === "error"
+      ? { ...packSeed, status: "error" as const, error: packSeed.error ?? gov.error }
+      : gov.status === "ready" && packSeed.status === "ready"
+        ? packSeed
+        : { ...packSeed, status: "seeding" as const };
   const [client, setClient] = useState<string>("");
   const [provider, setProvider] = useState<string | undefined>();
   const [profile, setProfile] = useState<Profile>({ purposes: [] });
@@ -90,7 +141,7 @@ export function VisaAgentTab() {
         setHistory((h) => [...h, { role: "user", text: question }, { role: "agent", text: p.safety!.card }]);
         return;
       }
-      for (const call of p.calls) {
+      const run1 = async (call: ToolCall) => {
         const t0 = performance.now();
         const run: StepRun = { call, rows: [], ms: 0 };
         try {
@@ -110,23 +161,42 @@ export function VisaAgentTab() {
         run.ms = Math.round(performance.now() - t0);
         reply.steps.push(run);
         push();
+        return run;
+      };
+      for (const call of p.calls) {
+        const run = await run1(call);
+        // The shortlist comes from the agency's notes; fetch the government's own requirements for its top routes.
+        if (call.tool === "visa_finder")
+          for (const f of officialFollowUps(question, run.rows.slice(0, 6).map((r) => String(r.meta?.visa ?? "")))) await run1(f);
       }
-      // Evidence: finder hits first (ranked by meaning), then rule passages; dedupe; cap.
-      const seen = new Set<string>();
-      for (const s of reply.steps)
-        for (const row of s.rows.slice(0, s.call.tool === "search_rules" ? 5 : 6)) {
-          if (seen.has(row.id) || !row.text) continue;
-          seen.add(row.id);
-          reply.evidence.push({ id: row.id, text: row.text, from: s.call.tool });
-        }
-      reply.evidence = reply.evidence.slice(0, 10);
+      // Evidence for the model: official passages (+ the client's own case notes), never the agency's notes.
+      reply.evidence = gatherEvidence(reply.steps);
       push();
+      if (!reply.evidence.length) {
+        reply.answer = `${NOT_COVERED}. Please check www.thaievisa.go.th (Ministry of Foreign Affairs) or ask the Thai embassy or Immigration Bureau.`;
+        reply.model = "fixed reply — no official passage matched, the model was not asked";
+        push();
+        setHistory((h) => [...h, { role: "user", text: question }, { role: "agent", text: reply.answer! }]);
+        return;
+      }
 
-      const prompt = answerPrompt(PACK, question, prof, reply.evidence, history);
-      const r = await api.aiChat({ provider, system: prompt.system, message: prompt.user, temperature: 0.1, max_tokens: 600 });
+      const prompt = answerPrompt(PACK, question, prof, reply.evidence, history, gov.corpus?.fetched);
+      const asked = [question, gov.corpus?.fetched ?? "", ...history.filter((h) => h.role === "user").map((h) => h.text)].join(" ");
+      let r = await api.aiChat({ provider, system: prompt.system, message: prompt.user, temperature: 0.1, max_tokens: 600 });
+      let unsupported = unsupportedNumbers(r.answer, reply.evidence.map((e) => e.text), asked);
+      // A number that is in no official passage: ask once for a rewrite from the passages, keep the better reply.
+      if (unsupported.length) {
+        const again = await api.aiChat({ provider, system: prompt.system, message: `${prompt.user}\n\n${rewritePrompt(r.answer, unsupported)}`, temperature: 0, max_tokens: 600 });
+        const still = unsupportedNumbers(again.answer, reply.evidence.map((e) => e.text), asked);
+        if (still.length < unsupported.length) {
+          reply.rewritten = unsupported;
+          r = again;
+          unsupported = still;
+        }
+      }
       reply.answer = r.answer;
       reply.model = `${r.model} (${r.provider})`;
-      reply.unsupported = unsupportedNumbers(r.answer, reply.evidence.map((e) => e.text), [question, ...history.filter((h) => h.role === "user").map((h) => h.text)].join(" "));
+      reply.unsupported = unsupported;
       push();
       setHistory((h) => [...h, { role: "user", text: question }, { role: "agent", text: r.answer }]);
     } catch (e) {
@@ -144,7 +214,8 @@ export function VisaAgentTab() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <p className="max-w-3xl text-sm text-gray-600 dark:text-muted">
             A Thai visa assistant for <b>{PACK.name}</b> (a fictional agency). Ask in plain words. It works out your age, money and purpose,
-            looks up the visa routes that fit with SQL in NebulaDB, searches the rules, and answers only from what it found, with sources.
+            shortlists visa routes with SQL in NebulaDB, then answers <b>only from official Thai government websites</b>
+            {gov.corpus && <> ({gov.corpus.sources.join(", ")}, checked {gov.corpus.fetched})</>}, with a link for every claim.
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <label className="inline-flex items-center gap-2 text-xs text-gray-500 dark:text-muted">
@@ -167,14 +238,17 @@ export function VisaAgentTab() {
           </div>
         </div>
         <Banner kind="info">
-          Demo data, not legal advice. Thai immigration rules change often — every answer must be checked with Thai Immigration or a Thai
-          embassy. The agent never prepares false documents and never files anything.
+          Not legal advice. Answers quote official government pages as they were when last checked; rules change, so confirm with the Thai
+          embassy or Immigration before you apply. Clients and case notes are fictional. The agent never prepares false documents and never
+          files anything.
         </Banner>
         {env?.mockLlmOnly && <Banner kind="warn">Only the mock LLM is configured: lookups and sources are real, the written reply is a placeholder.</Banner>}
         {env?.mockEmbedder && <Banner kind="warn">Mock embedder: rule search ranks by keywords only on this server.</Banner>}
         {seed.status !== "ready" && (
           <p className="text-xs text-gray-500 dark:text-muted">
-            {seed.status === "error" ? `Couldn't load the visa data: ${seed.error}` : `Loading visa data into NebulaDB… ${seed.done}/${seed.total}`}
+            {seed.status === "error"
+              ? `Couldn't load the visa data: ${seed.error}`
+              : `Loading visa data and official sources into NebulaDB… ${packSeed.done}/${packSeed.total}${gov.status === "ready" ? "" : " · official pages"}`}
           </p>
         )}
       </div>
@@ -238,8 +312,10 @@ export function VisaAgentTab() {
             {PACK.safety.map((s) => (
               <div key={s.id}>• {s.label}</div>
             ))}
+            <div>• Answers only from official government pages</div>
+            <div>• Agency notes shortlist, never answer</div>
             <div>• Case notes only for the signed-in client</div>
-            <div>• Numbers in replies checked against sources</div>
+            <div>• Numbers in replies checked against official text</div>
           </div>
         </aside>
       </div>
@@ -284,7 +360,7 @@ function ReplyCard({ r }: { r: Reply }) {
           <>
             {finder && finder.rows.length > 0 && (
               <div>
-                <div className="eyebrow mb-1.5">Visa routes that fit (from NebulaDB, not the model)</div>
+                <div className="eyebrow mb-1.5">Shortlist from Lotus Gate's notes (SQL in NebulaDB) — the answer below uses official sources only</div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {finder.rows.slice(0, 6).map((row) => (
                     <div key={row.id} className="rounded-lg border border-gray-200 dark:border-edge p-2.5 text-xs">
@@ -312,7 +388,7 @@ function ReplyCard({ r }: { r: Reply }) {
                     {c.cites.map((n) => (
                       <span
                         key={n}
-                        title={r.evidence[n - 1]?.text ?? "no such source"}
+                        title={r.evidence[n - 1] ? `${r.evidence[n - 1].authority ?? "Your case file"}\n${r.evidence[n - 1].url ?? ""}\n\n${r.evidence[n - 1].text}` : "no such source"}
                         className={`mx-0.5 rounded px-1 font-mono text-[10px] ${r.evidence[n - 1] ? "bg-accent/15 text-accent" : "bg-bad/15 text-bad"}`}
                       >
                         {n}
@@ -329,10 +405,12 @@ function ReplyCard({ r }: { r: Reply }) {
                   {cs.filter((c) => c.cites.length).length}/{cs.length} sentences cited
                 </span>
                 <span className={r.unsupported.length ? "text-bad" : "text-ok"}>
-                  {r.unsupported.length ? `numbers not in any source: ${r.unsupported.join(", ")}` : "every number is in a source"}
+                  {r.unsupported.length ? `numbers not in any official passage: ${r.unsupported.join(", ")}` : "every number is in an official passage"}
                 </span>
+                {r.rewritten && <span className="text-warn">first draft quoted {r.rewritten.join(", ")} (not in any passage) — rewritten from the sources</span>}
               </div>
             )}
+            {r.answer !== undefined && r.evidence.length > 0 && <SourceList evidence={r.evidence} />}
             {r.error && <p className="text-xs text-bad">{r.error}</p>}
           </>
         )}
@@ -359,7 +437,8 @@ function ReplyCard({ r }: { r: Reply }) {
                 <ol className="space-y-1">
                   {r.evidence.map((e, i) => (
                     <li key={e.id} className="text-[11px] text-gray-600 dark:text-muted">
-                      <span className="font-mono text-accent">[{i + 1}]</span> <span className="font-mono">{e.id}</span> — {e.text}
+                      <span className="font-mono text-accent">[{i + 1}]</span> <span className="font-mono">{e.id}</span>
+                      {e.url && <> · {e.url}</>} — {e.text}
                     </li>
                   ))}
                 </ol>
@@ -368,6 +447,37 @@ function ReplyCard({ r }: { r: Reply }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Official pages behind a reply, one line each with a link. */
+function SourceList({ evidence }: { evidence: Evidence[] }) {
+  const pages = new Map<string, { authority: string; nums: number[] }>();
+  evidence.forEach((e, i) => {
+    const key = e.url || "case";
+    const p = pages.get(key) ?? { authority: e.authority || "Your case file", nums: [] };
+    p.nums.push(i + 1);
+    pages.set(key, p);
+  });
+  return (
+    <div className="rounded-md bg-gray-50 dark:bg-white/5 p-2 text-[11px]">
+      <div className="eyebrow mb-1">Official sources</div>
+      <ul className="space-y-0.5">
+        {[...pages].map(([url, p]) => (
+          <li key={url} className="text-gray-600 dark:text-muted">
+            <span className="font-mono text-accent">[{p.nums.join(",")}]</span> {p.authority}
+            {url !== "case" && (
+              <>
+                {" — "}
+                <a className="text-accent hover:underline break-all" href={url} target="_blank" rel="noreferrer">
+                  {url.replace(/^https:\/\//, "")}
+                </a>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
