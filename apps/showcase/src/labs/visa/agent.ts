@@ -7,6 +7,13 @@
  * tools and builds the SQL; the LLM only writes the final answer from
  * the tool outputs, and every number it writes is checked against them.
  *
+ * Grounding: the model only ever sees passages from OFFICIAL Thai
+ * government websites (bucket `lab_visa_gov`, built by
+ * scripts/visa-gov-fetch.mjs) plus, for a signed-in client, their own case
+ * notes. The agency's own notes (the Labs pack) drive the Visa Finder
+ * shortlist but never reach the model, so when a note is vague or out of
+ * date the official text wins.
+ *
  * Pure functions only (no React, no network) so `node --test` covers them.
  */
 import { lit, matchesSafetyRule } from "./util.ts";
@@ -132,10 +139,60 @@ export function intents(text: string, _profile: Profile, persona?: Persona): Int
 }
 
 export interface ToolCall {
-  tool: "visa_finder" | "search_rules" | "case_status";
+  tool: "visa_finder" | "search_official" | "case_status";
   why: string;
   sql?: string;
   query?: string;
+}
+
+/** NebulaDB bucket holding passages from official Thai government websites. */
+export const GOV_BUCKET = "lab_visa_gov";
+
+/** Official-sources search: one semantic_match, optionally narrowed to one visa route. */
+export function officialSql(q: string, visa?: string, limit = 6): string {
+  return [`SELECT * FROM ${GOV_BUCKET}`, ` WHERE semantic_match(text, ${lit(q)})`, ...(visa ? [`   AND visa = ${lit(visa)}`] : []), ` LIMIT ${limit}`].join("\n");
+}
+
+/**
+ * The agency's visa names → the `visa` tag on official passages. Routes with
+ * no official passage (PR, citizenship) are left out, so they only get the
+ * general search.
+ */
+export const OFFICIAL_TAG: Record<string, string> = {
+  exemption: "exemption",
+  VOA: "exemption",
+  TR: "TR",
+  transit: "transit",
+  DTV: "DTV",
+  "Non-B": "Non-B",
+  BOI: "Non-B",
+  SMART: "SMART",
+  LTR: "LTR",
+  Privilege: "Privilege",
+  "Non-O retirement": "Non-O",
+  "Non-O-A": "Non-O-A",
+  "Non-O-X": "Non-O-X",
+  "Non-O marriage": "Non-O",
+  "Non-O dependant": "Non-O",
+  "Non-O volunteer": "Non-O",
+  "Non-ED": "Non-ED",
+  "Non-M": "Non-M",
+  medical: "medical",
+};
+
+/**
+ * After the Visa Finder runs: fetch the official requirements for the top
+ * shortlisted routes (one search per route, 2 passages each), so the answer
+ * quotes the government's figures rather than the agency's summary.
+ */
+export function officialFollowUps(q: string, finderVisas: string[], max = 3): ToolCall[] {
+  const tags = [...new Set(finderVisas.map((v) => OFFICIAL_TAG[v]).filter(Boolean))].slice(0, max);
+  return tags.map((tag) => ({
+    tool: "search_official" as const,
+    why: `official requirements for ${tag}`,
+    query: q,
+    sql: officialSql(`${tag} visa requirements: ${q}`, tag, 2),
+  }));
 }
 
 /** Visa Finder SQL: visa types whose minimums the applicant meets, for their purpose. */
@@ -146,16 +203,6 @@ export function finderSql(pack: Pack, q: string, p: Profile): string {
   const purpose = p.purposes[0];
   if (purpose) preds.push(`array_contains(purpose, ${lit(purpose)})`);
   return [`SELECT * FROM ${pack.bucket}`, ` WHERE semantic_match(text, ${lit(q)})`, ...preds.map((x) => `   AND ${x}`), " LIMIT 200"].join("\n");
-}
-
-/**
- * Rule search: semantic SQL limited to public documents. Plain hybrid search
- * ranks by relevance only, so a guest asking about retiring in Chiang Mai got
- * another client's case note back; the client filter keeps those rows inside
- * the database. Signed-in clients see their own notes through case_status.
- */
-export function rulesSql(pack: Pack, q: string): string {
-  return [`SELECT * FROM ${pack.bucket}`, ` WHERE semantic_match(text, ${lit(q)})`, `   AND client_id = 'public'`, " LIMIT 5"].join("\n");
 }
 
 export function caseSql(pack: Pack, clientId: string): string {
@@ -194,7 +241,13 @@ export function plan(pack: Pack, text: string, profile: Profile, persona?: Perso
     }
     if (i === "rules") {
       const q = profile.visa && !new RegExp(profile.visa, "i").test(text) ? `${profile.visa} ${text}` : text;
-      calls.push({ tool: "search_rules", why: "public rules, documents and fees that answer the question", query: q, sql: rulesSql(pack, q) });
+      const tag = profile.visa ? OFFICIAL_TAG[profile.visa] : undefined;
+      calls.push({
+        tool: "search_official",
+        why: tag ? `official ${tag} passages that answer the question` : "official government passages that answer the question",
+        query: q,
+        sql: officialSql(q, tag),
+      });
     }
   }
   return { calls };
@@ -204,6 +257,9 @@ export interface Evidence {
   id: string;
   text: string;
   from: ToolCall["tool"];
+  /** Official passages: where it came from. */
+  url?: string;
+  authority?: string;
 }
 
 export interface Turn {
@@ -211,15 +267,18 @@ export interface Turn {
   text: string;
 }
 
-export function answerPrompt(pack: Pack, question: string, profile: Profile, evidence: Evidence[], history: Turn[]): { system: string; user: string } {
+/** Said when the official passages don't cover the question. Fixed text, so tests and the UI can spot it. */
+export const NOT_COVERED = "The official sources I checked don't cover that";
+
+export function answerPrompt(pack: Pack, question: string, profile: Profile, evidence: Evidence[], history: Turn[], fetched = ""): { system: string; user: string } {
   const system = [
     `You are the visa assistant for ${pack.name}, a Thai visa agency (demo).`,
-    "Answer ONLY from the numbered sources. Cite each sentence like [1] or [2,3].",
-    'If the sources don\'t answer it, say "I can\'t confirm that from our documents" and suggest booking a consultation.',
-    "Quote amounts, ages and days exactly as written in the sources.",
-    "When several visas fit, list each with its key requirement in one line, then say which you'd look at first and why.",
-    "Always end with: Rules change often — verify with Thai Immigration or a Thai embassy. This is not legal advice.",
-    pack.system,
+    "Answer ONLY from the numbered passages. They come from official Thai government websites (Ministry of Foreign Affairs e-Visa, Immigration Bureau, Board of Investment, Tourism Authority of Thailand); passages marked CASE are the client's own file.",
+    "Never use your own knowledge of Thai visa rules, even if you believe a passage is out of date. Cite each sentence like [1] or [2,3].",
+    "Quote amounts, ages, days and fees exactly as written in the passages.",
+    `If the passages don't answer part of the question, say "${NOT_COVERED}" and name the official website from the passages that is closest, then answer the parts they do cover.`,
+    "When several visas fit, list each with its key official requirement in one line.",
+    `Always end with: Source: official Thai government websites${fetched ? ` (checked ${fetched})` : ""}. Rules change — confirm with the Thai embassy or Immigration before you apply. This is not legal advice.`,
   ].join(" ");
   const facts = [
     profile.age !== undefined && `age ${profile.age}`,
@@ -228,11 +287,44 @@ export function answerPrompt(pack: Pack, question: string, profile: Profile, evi
     profile.purposes.length && `purpose: ${profile.purposes.join(", ")}`,
   ].filter(Boolean);
   const recent = history.slice(-4).map((h) => `${h.role === "user" ? "Client" : "Assistant"}: ${h.text.slice(0, 400)}`);
+  const label = (e: Evidence) => (e.from === "case_status" ? "CASE" : `${e.authority ?? "official"}, ${e.url ?? ""}`);
   const user = [
     recent.length ? `Conversation so far:\n${recent.join("\n")}\n` : "",
     facts.length ? `What we know about the client: ${facts.join("; ")}.\n` : "",
-    `Sources:\n${evidence.map((e, i) => `[${i + 1}] (${e.id}) ${e.text}`).join("\n")}`,
+    `Passages:\n${evidence.map((e, i) => `[${i + 1}] (${label(e)}) ${e.text}`).join("\n")}`,
     `\nClient's question: ${question}`,
   ].join("\n");
   return { system, user };
+}
+
+/** Follow-up when a reply quotes numbers that are in no passage: ask once for a rewrite. */
+export function rewritePrompt(answer: string, unsupported: string[]): string {
+  return [
+    `Your answer below contains numbers that are not in any passage: ${unsupported.join(", ")}.`,
+    "Rewrite it using only numbers written in the passages, citing each sentence. If the passages don't give a figure, say so.",
+    `\nYour answer:\n${answer}`,
+  ].join("\n");
+}
+
+/**
+ * Evidence for the model: official passages and the client's own case
+ * notes, never the agency's Visa Finder rows. Deduplicated, capped.
+ */
+export function gatherEvidence(steps: { call: ToolCall; rows: { id: string; text: string; meta?: Record<string, unknown> }[] }[], cap = 10): Evidence[] {
+  const out: Evidence[] = [];
+  const seen = new Set<string>();
+  // Route-specific official lookups first (they carry the requirements), then the general search, then case notes.
+  const order = (c: ToolCall) => (c.tool === "search_official" && /^official requirements/.test(c.why) ? 0 : c.tool === "search_official" ? 1 : 2);
+  for (const s of [...steps].filter((s) => s.call.tool !== "visa_finder").sort((a, b) => order(a.call) - order(b.call)))
+    for (const row of s.rows.slice(0, 6)) {
+      if (seen.has(row.id) || !row.text) continue;
+      seen.add(row.id);
+      out.push({
+        id: row.id,
+        text: row.text,
+        from: s.call.tool,
+        ...(s.call.tool === "search_official" ? { url: String(row.meta?.url ?? ""), authority: String(row.meta?.authority ?? "") } : {}),
+      });
+    }
+  return out.slice(0, cap);
 }
