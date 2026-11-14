@@ -430,6 +430,33 @@ async function request<T>(
 export const api = {
   health: () => request<Health>("/healthz"),
 
+  /** Probe a peer through the showcase nginx `/peer/<id>/` rewrite. */
+  peerHealth: (peer: "follower" | "region-b") =>
+    request<Health>(`/peer/${peer}/healthz`),
+
+  /** Embed model/dim migrate progress (dump → flip → drain). */
+  embedMigrate: () =>
+    request<{
+      state: string;
+      source_model?: string;
+      source_dim?: number;
+      target_model?: string;
+      target_dim?: number;
+      dumped?: number;
+      total?: number;
+      drained?: number;
+      error?: string | null;
+    }>("/api/v1/admin/embed/migrate"),
+
+  /** Resource / memory mode snapshot (design 0010). */
+  reliability: () =>
+    request<{
+      mode?: string;
+      memory_used_bytes?: number;
+      memory_limit_bytes?: number;
+      [k: string]: unknown;
+    }>("/api/v1/admin/reliability"),
+
   upsertDoc: (bucket: string, id: string, text: string, metadata: unknown = {}) =>
     request<{ bucket: string; id: string; dim: number }>(
       `/api/v1/bucket/${encodeURIComponent(bucket)}/doc`,
