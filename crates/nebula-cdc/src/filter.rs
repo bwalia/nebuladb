@@ -100,10 +100,7 @@ impl CdcFilter {
                 return false;
             }
         }
-        if self.vectors_only && !event.has_vector() {
-            return false;
-        }
-        true
+        !self.vectors_only || event.has_vector()
     }
 }
 
