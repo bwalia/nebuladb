@@ -39,6 +39,7 @@ import { LookalikeTab } from "./tabs/LookalikeTab";
 import { FraudTab } from "./tabs/FraudTab";
 import { RecommendTab } from "./tabs/RecommendTab";
 import { BlogTab } from "./tabs/BlogTab";
+import { CockpitPage, ensureCockpitPath, isCockpitPath } from "./cockpit/CockpitPage";
 import { SourceHomeTab } from "./source/SourceHomeTab";
 import { FinderTab } from "./source/FinderTab";
 import { SafetyTab } from "./source/SafetyTab";
@@ -97,6 +98,7 @@ type TabId =
   | "mcp"
   | "cluster"
   | "rebalance"
+  | "cockpit"
   | "metrics"
   | "admin";
 
@@ -172,6 +174,7 @@ const NAV: NavItem[] = [
   { id: "voc", label: "Voice of Customer", hint: "Theme → nearest reviews → sentiment, rating and product mix (no LLM)", icon: "☊", group: "industry" },
   { id: "cluster", label: "Cluster", hint: "Topology, regions, failover", icon: "⬢", group: "cluster" },
   { id: "rebalance", label: "Rebalance", hint: "Zero-downtime node swap", icon: "⇄", group: "cluster" },
+  { id: "cockpit", label: "Cockpit", hint: "Mission Control — live cluster, XDCR, integrity and ops controls", icon: "🛰", group: "ops" },
   { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },
   { id: "admin", label: "Admin", hint: "Buckets, EXPLAIN, audit, slow queries", icon: "⚙", group: "ops" },
 ];
@@ -194,22 +197,52 @@ function tabFromHash(): TabId | null {
   const h = window.location.hash;
   if (h.startsWith("#/blog")) return "blog";
   if (h.startsWith("#/labs")) return "labs";
+  if (h.startsWith("#/cockpit")) return "cockpit";
   const m = /^#\/tab\/([a-z]+)/.exec(h);
   return m && NAV.some((t) => t.id === m[1]) ? (m[1] as TabId) : null;
+}
+
+function openCockpit() {
+  // Real path so nginx auth_request / basic-auth gate /cockpit the same
+  // way as `/` — never a public deep-link bypass.
+  if (window.location.pathname !== "/cockpit") {
+    window.location.assign("/cockpit");
+    return;
+  }
+  ensureCockpitPath();
 }
 
 export function App() {
   // `#/blog/...` deep links (shared posts, landing-page cards) open the blog;
   // `#/tab/<id>` opens any demo directly (e.g. #/tab/secureagent).
-  const [tab, setTab] = useState<TabId>(() => tabFromHash() ?? "executive");
+  // `/cockpit` is a full-bleed Mission Control view (still login-gated).
+  const [cockpit, setCockpit] = useState(() => {
+    ensureCockpitPath();
+    return isCockpitPath();
+  });
+  const [tab, setTab] = useState<TabId>(() =>
+    isCockpitPath() ? "cockpit" : tabFromHash() ?? "executive"
+  );
   // In-page `#/blog/...` links (e.g. a demo's "Setup guide") switch to the blog.
   useEffect(() => {
     const onHash = () => {
+      if (window.location.hash.startsWith("#/cockpit")) {
+        openCockpit();
+        return;
+      }
       const t = tabFromHash();
       if (t) setTab(t);
     };
+    const onPop = () => {
+      ensureCockpitPath();
+      setCockpit(isCockpitPath());
+    };
     window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("popstate", onPop);
+    };
   }, []);
   const [theme, setThemeState] = useState(getTheme());
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -272,6 +305,34 @@ export function App() {
 
   const active = NAV.find((n) => n.id === tab);
 
+  const leaveCockpit = () => {
+    window.history.pushState(null, "", "/");
+    setCockpit(false);
+    setTab("executive");
+  };
+
+  if (cockpit) {
+    return (
+      <div className="h-full flex flex-col bg-[#070b10]">
+        <TopBar
+          theme={theme}
+          onToggleTheme={() => setThemeState(toggleTheme())}
+          health={health}
+          healthErr={healthErr}
+          viewer={viewer}
+          onToggleSidebar={() => leaveCockpit()}
+          sidebarCollapsed={false}
+          cockpit
+          onLeaveCockpit={leaveCockpit}
+        />
+        <div className="flex-1 overflow-auto">
+          <CockpitPage onLeave={leaveCockpit} />
+        </div>
+        <StatusBar health={health} err={healthErr} />
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col">
       <TopBar
@@ -290,6 +351,10 @@ export function App() {
           grouped={grouped}
           active={tab}
           onSelect={(id) => {
+            if (id === "cockpit") {
+              openCockpit();
+              return;
+            }
             if (id !== "blog" && window.location.hash.startsWith("#/blog")) {
               history.replaceState(null, "", window.location.pathname + window.location.search);
             }
@@ -324,6 +389,10 @@ export function App() {
               {tab === "executive" && (
                 <ExecutiveTab
                   onNavigate={(t) => {
+                    if (t === "cockpit") {
+                      openCockpit();
+                      return;
+                    }
                     // "blog:<slug>" opens a specific post.
                     if (t.startsWith("blog:")) window.location.hash = `#/blog/${t.slice(5)}`;
                     setTab((t.startsWith("blog:") ? "blog" : t) as TabId);
@@ -389,6 +458,8 @@ function TopBar({
   viewer,
   onToggleSidebar,
   sidebarCollapsed,
+  cockpit = false,
+  onLeaveCockpit,
 }: {
   theme: string;
   onToggleTheme: () => void;
@@ -397,27 +468,59 @@ function TopBar({
   viewer: ShowcaseUser | null;
   onToggleSidebar: () => void;
   sidebarCollapsed: boolean;
+  cockpit?: boolean;
+  onLeaveCockpit?: () => void;
 }) {
   return (
-    <header className="border-b border-gray-200 dark:border-edge bg-white/80 dark:bg-carbon-950/80 backdrop-blur">
+    <header
+      className={
+        cockpit
+          ? "border-b border-[#1c2a37] bg-[#0c131b]/90 backdrop-blur"
+          : "border-b border-gray-200 dark:border-edge bg-white/80 dark:bg-carbon-950/80 backdrop-blur"
+      }
+    >
       <div className="px-4 py-2.5 flex items-center gap-4">
         <button
           onClick={onToggleSidebar}
           className="btn-secondary !py-1 !px-2 !text-xs"
-          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-label="Toggle sidebar"
+          title={
+            cockpit
+              ? "Back to showcase"
+              : sidebarCollapsed
+                ? "Expand sidebar"
+                : "Collapse sidebar"
+          }
+          aria-label={cockpit ? "Back to showcase" : "Toggle sidebar"}
         >
-          ☰
+          {cockpit ? "←" : "☰"}
         </button>
         <div className="flex items-center gap-2.5">
           <Mark />
           <div className="flex items-baseline gap-2">
-            <span className="font-display text-base font-semibold tracking-tight text-black dark:text-ink">
+            <span
+              className={`font-display text-base font-semibold tracking-tight ${
+                cockpit ? "text-[#dce7f1]" : "text-black dark:text-ink"
+              }`}
+            >
               NebulaDB
             </span>
-            <span className="eyebrow hidden sm:inline">Knowledge Ops</span>
+            <span className={`eyebrow hidden sm:inline ${cockpit ? "!text-[#566a7c]" : ""}`}>
+              {cockpit ? "Mission Control" : "Knowledge Ops"}
+            </span>
           </div>
         </div>
+        {cockpit && (
+          <a
+            href="/"
+            onClick={(e) => {
+              e.preventDefault();
+              onLeaveCockpit?.();
+            }}
+            className="hidden sm:inline text-xs font-mono uppercase tracking-wider text-[#8598ab] hover:text-[#3fc8ff] no-underline"
+          >
+            Showcase demos
+          </a>
+        )}
 
         <div className="ml-auto flex items-center gap-2.5 text-xs">
           {viewer && (
