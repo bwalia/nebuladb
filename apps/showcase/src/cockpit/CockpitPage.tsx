@@ -20,6 +20,7 @@ import {
   type StatsSnapshot,
 } from "../api";
 import "./cockpit.css";
+import { regionLabel } from "../region";
 
 const POLL_MS = 4000;
 
@@ -238,13 +239,13 @@ export function CockpitPage({
         pushLog(
           "xdcr",
           "error",
-          `${r.region}: ${r.last_error || "unhealthy"} (errors=${r.consecutive_errors})`
+          `${regionLabel(r.region)}: ${r.last_error || "unhealthy"} (errors=${r.consecutive_errors})`
         );
       } else {
         pushLog(
           "xdcr",
           "info",
-          `${r.region} applied=${r.applied_records} ok`
+          `${regionLabel(r.region)} applied=${r.applied_records} ok`
         );
       }
     }
@@ -305,7 +306,7 @@ export function CockpitPage({
         out.push({
           id: `remote-${r.region}`,
           sev: "error",
-          title: `XDCR ${r.region}`,
+          title: `XDCR ${regionLabel(r.region)}`,
           detail: r.last_error || "unhealthy",
           at: now,
         });
@@ -479,7 +480,7 @@ export function CockpitPage({
               </div>
               <div>
                 <div className="ck-metric-label">Region</div>
-                <div className="ck-metric-value">{repl?.region ?? "—"}</div>
+                <div className="ck-metric-value">{regionLabel(repl?.region) ?? "—"}</div>
               </div>
               <div>
                 <div className="ck-metric-label">Requests</div>
@@ -564,7 +565,7 @@ export function CockpitPage({
             </div>
             {(repl?.remotes ?? []).slice(0, 2).map((r) => (
               <div key={r.region} className="ck-sub" style={{ marginTop: 8, marginBottom: 0 }}>
-                <span className="ck-role region">{r.region}</span>{" "}
+                <span className="ck-role region">{regionLabel(r.region)}</span>{" "}
                 {r.healthy ? "healthy" : r.last_error || "down"} · {r.grpc_url}
               </div>
             ))}

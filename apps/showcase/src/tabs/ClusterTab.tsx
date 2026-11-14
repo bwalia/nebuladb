@@ -15,6 +15,7 @@ import {
   type RemoteRegionStatus,
 } from "../api";
 import { Panel, ErrorBanner } from "../components";
+import { regionLabel } from "../region";
 import { OriginBadge } from "../components/Provenance";
 import { UnderTheHood } from "../components/UnderTheHood";
 
@@ -165,7 +166,7 @@ export function ClusterTab() {
           />
           <Metric
             label="local region"
-            value={repl?.region ?? "—"}
+            value={regionLabel(repl?.region) ?? "—"}
           />
         </div>
         {repl?.follower_applied && (
@@ -206,7 +207,7 @@ function SelfCard({
         <RoleBadge role={role} />
         {region && (
           <span className="rounded border border-gray-200 px-1 font-mono text-[9px] text-gray-500 dark:border-edge dark:text-muted">
-            {region}
+            {regionLabel(region)}
           </span>
         )}
         <span className="ml-auto font-mono text-[10px] text-gray-500 dark:text-muted">this node</span>
@@ -266,7 +267,7 @@ function RemoteCard({ remote }: { remote: RemoteRegionStatus }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className={`dot ${dot}`} />
         <span className="font-mono text-[11px] font-semibold text-gray-900 dark:text-ink">
-          {remote.region}
+          {regionLabel(remote.region)}
         </span>
         <span className="rounded border border-accent/40 bg-accent/10 px-1 font-mono text-[9px] text-accent">
           XDCR
