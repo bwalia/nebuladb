@@ -13,6 +13,7 @@ import {
   type ReplicationInfo,
 } from "../api";
 import { Panel, ErrorBanner } from "../components";
+import { regionLabel } from "../region";
 import { OriginBadge } from "../components/Provenance";
 import { UnderTheHood } from "../components/UnderTheHood";
 
@@ -119,7 +120,7 @@ export function RebalanceTab() {
     if (!bucket) return;
     if (
       !confirm(
-        `Write home_region=${region} seed doc into bucket "${bucket}" on the primary? Wrong-home writes will then be rejected elsewhere.`
+        `Write home_region=${regionLabel(region)} seed doc into bucket "${bucket}" on the primary? Wrong-home writes will then be rejected elsewhere.`
       )
     ) {
       return;
@@ -127,7 +128,7 @@ export function RebalanceTab() {
     setBusy(true);
     setErr(null);
     try {
-      push(`seed home_region=${region} on ${bucket}…`);
+      push(`seed home_region=${regionLabel(region)} on ${bucket}…`);
       await api.upsertDoc(bucket, "__nebuladb_operator_seed__", "nebuladb operator seed", {
         kind: "nebuladb-operator-seed",
         bucket,
@@ -137,7 +138,7 @@ export function RebalanceTab() {
       });
       const h = await api.homeRegion(bucket);
       setHome(h);
-      push(`home_region now ${h.home_region ?? "unset"} epoch=${h.home_epoch ?? "?"}`);
+      push(`home_region now ${regionLabel(h.home_region) ?? "unset"} epoch=${h.home_epoch ?? "?"}`);
     } catch (e) {
       const msg = e instanceof ApiError ? e.body || e.message : (e as Error).message;
       setErr(msg);
@@ -189,7 +190,7 @@ export function RebalanceTab() {
           <ul className="mt-3 space-y-1 font-mono text-[10px] text-gray-500 dark:text-muted">
             {remotes.map((r) => (
               <li key={r.region}>
-                {r.region}: {r.healthy ? "healthy" : "unhealthy"} · {r.applied_records} applied
+                {regionLabel(r.region)}: {r.healthy ? "healthy" : "unhealthy"} · {r.applied_records} applied
                 {r.last_error ? ` · ${r.last_error}` : ""}
               </li>
             ))}
@@ -245,7 +246,7 @@ export function RebalanceTab() {
         </div>
         {home && (
           <p className="mt-3 font-mono text-[11px] text-gray-600 dark:text-muted">
-            home_region={home.home_region ?? "(unset)"} epoch={home.home_epoch ?? "—"}
+            home_region={regionLabel(home.home_region) ?? "(unset)"} epoch={home.home_epoch ?? "—"}
             {home.replicated_to?.length ? ` · replicated_to=[${home.replicated_to.join(", ")}]` : ""}
           </p>
         )}
@@ -274,7 +275,7 @@ export function RebalanceTab() {
             disabled={busy || !bucket}
             onClick={() => void onSeedHome("us-west-2")}
           >
-            Home bucket → us-west-2
+            Home bucket → {regionLabel("us-west-2")}
           </button>
           <button className="btn !text-xs" disabled={busy} onClick={() => void onPromote()}>
             Promote follower

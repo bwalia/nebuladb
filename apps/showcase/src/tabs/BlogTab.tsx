@@ -290,7 +290,7 @@ function TopologyFigure() {
       <rect x="10" y="10" width="470" height="310" rx="14" className="fill-transparent stroke-gray-300 dark:stroke-edge" strokeDasharray="5 5" />
       <text x="26" y="34" className={`${sub} font-mono`} fontSize="11">REGION us-east-1 · k3s namespace prod</text>
       <rect x="500" y="10" width="250" height="310" rx="14" className="fill-transparent stroke-gray-300 dark:stroke-edge" strokeDasharray="5 5" />
-      <text x="516" y="34" className={`${sub} font-mono`} fontSize="11">REGION us-west-2</text>
+      <text x="516" y="34" className={`${sub} font-mono`} fontSize="11">REGION uk-west-2</text>
 
       {/* clients */}
       <rect x="30" y="52" width="190" height="52" rx="10" className={box} />
@@ -553,7 +553,7 @@ function BlogPost({ onOpen }: { onOpen: (slug: string) => void }) {
           Our k3s cluster runs Kubernetes 1.36, where in-place pod resize is generally available. A single{" "}
           <C>kubectl patch --subresource resize</C> raised the leader's memory limit from 32Gi to 48Gi.
           The kubelet updated the cgroup underneath the running process: no restart and no failover. The
-          leader, its within-region follower and the us-west-2 peer leader all stayed up. Seconds later,
+          leader, its within-region follower and the uk-west-2 peer leader all stayed up. Seconds later,
           NebulaDB's <C>/admin/reliability</C> endpoint reported the new 51.5 GB ceiling and dropped back
           to <C>normal</C> mode.
         </p>
@@ -658,7 +658,7 @@ function TechNote() {
         </p>
 
         <H2 id="topology">2. The topology</H2>
-        <Figure n={1} caption="Prod runs a leader on debworker00, a within-region follower that tails the leader's WAL, and a cross-region peer leader in us-west-2. The showcase nginx pins Companies House routes to the leader, and the bulk loader writes there too. Only the leader's limit changed.">
+        <Figure n={1} caption="Prod runs a leader on debworker00, a within-region follower that tails the leader's WAL, and a cross-region peer leader in uk-west-2. The showcase nginx pins Companies House routes to the leader, and the bulk loader writes there too. Only the leader's limit changed.">
           <TopologyFigure />
         </Figure>
         <p>
