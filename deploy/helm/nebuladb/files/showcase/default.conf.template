@@ -446,9 +446,11 @@ server {
     # Named peer admin paths for live Cluster / Rebalance actions that
     # must hit a specific node (promote on follower, import on region-b).
     # Variable proxy_pass so a missing Service still lets nginx boot.
+    # `set` must come before `rewrite ... break`: break stops the rewrite
+    # module, so a `set` after it never runs and proxy_pass gets "" (500).
     location /peer/follower/ {
-        rewrite ^/peer/follower/(.*)$ /$1 break;
         set $peer_up "http://${NEBULA_FOLLOWER_HOST}:8080";
+        rewrite ^/peer/follower/(.*)$ /$1 break;
         proxy_pass $peer_up;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -460,8 +462,8 @@ server {
         proxy_read_timeout 300s;
     }
     location /peer/region-b/ {
-        rewrite ^/peer/region-b/(.*)$ /$1 break;
         set $peer_up "http://${NEBULA_REGION_B_HOST}:8080";
+        rewrite ^/peer/region-b/(.*)$ /$1 break;
         proxy_pass $peer_up;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
