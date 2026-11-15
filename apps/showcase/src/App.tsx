@@ -17,6 +17,9 @@ import { AdminTab } from "./tabs/AdminTab";
 import { MetricsTab } from "./tabs/MetricsTab";
 import { ExecutiveTab } from "./tabs/ExecutiveTab";
 import { McpTab } from "./tabs/McpTab";
+import { LabsTab } from "./labs/LabsTab";
+import { VisaAgentTab } from "./labs/visa/VisaAgentTab";
+import { JiraAgentTab } from "./labs/jira/JiraAgentTab";
 import { AgentsTab } from "./tabs/AgentsTab";
 import { ClusterTab } from "./tabs/ClusterTab";
 import { RebalanceTab } from "./tabs/RebalanceTab";
@@ -36,6 +39,7 @@ import { LookalikeTab } from "./tabs/LookalikeTab";
 import { FraudTab } from "./tabs/FraudTab";
 import { RecommendTab } from "./tabs/RecommendTab";
 import { BlogTab } from "./tabs/BlogTab";
+import { CockpitPage, ensureCockpitPath, isCockpitPath } from "./cockpit/CockpitPage";
 import { SourceHomeTab } from "./source/SourceHomeTab";
 import { FinderTab } from "./source/FinderTab";
 import { SafetyTab } from "./source/SafetyTab";
@@ -56,6 +60,9 @@ import { priorArtSpec } from "./usecases/specs/priorArt";
 import { voiceOfCustomerSpec } from "./usecases/specs/voiceOfCustomer";
 
 type TabId =
+  | "labs"
+  | "visaagent"
+  | "jiraagent"
   | "executive"
   | "blog"
   | "overview"
@@ -91,6 +98,7 @@ type TabId =
   | "mcp"
   | "cluster"
   | "rebalance"
+  | "cockpit"
   | "metrics"
   | "admin";
 
@@ -120,6 +128,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { id: "executive", label: "Executive demo", hint: "The 5-minute story", icon: "★", group: "home" },
+  { id: "labs", label: "Labs", hint: "Hands-on search, RAG and reasoning experiments on business data — schools, care homes, visas, farming and more", icon: "⚗", group: "home" },
   { id: "blog", label: "Engineering blog", hint: "Notes from running NebulaDB in production", icon: "✎", group: "home" },
   { id: "overview", label: "Overview", hint: "Cluster summary", icon: "◎", group: "home" },
   { id: "documents", label: "Documents", hint: "Ingest + chunk + embed", icon: "❏", group: "data" },
@@ -131,6 +140,8 @@ const NAV: NavItem[] = [
   { id: "agents", label: "AI agents", hint: "Tool-calling agents over MCP", icon: "⬡", group: "ai" },
   { id: "mcp", label: "MCP", hint: "Live MCP server + playground", icon: "⚯", group: "ai" },
   { id: "secureagent", label: "Secure agent", hint: "Identity-bound RAG agent: injection, PII and session-leak guard rails", icon: "⛨", group: "ai" },
+  { id: "visaagent", label: "Visa AI Agent", hint: "Thai visa finder and immigration assistant: SQL visa matching, cited rules, guard rails (demo agency)", icon: "✈", group: "apps" },
+  { id: "jiraagent", label: "Jira Triage Agent", hint: "Watches a custom Priority Score field: daily/weekly manager digest, relative ranking, duplicate triage and a Confluence history table (demo data)", icon: "▲", group: "apps" },
   { id: "companies", label: "Companies House", hint: "UK CH search + RAG chat", icon: "⌂", group: "apps" },
   { id: "shop", label: "Shop catalogue", hint: "Stock SOT + product RAG", icon: "▣", group: "apps" },
   { id: "talent", label: "Talent Match", hint: "Job board: SQL hard filters + multi-facet semantic matching + recruiter chat", icon: "♟", group: "apps" },
@@ -163,6 +174,7 @@ const NAV: NavItem[] = [
   { id: "voc", label: "Voice of Customer", hint: "Theme → nearest reviews → sentiment, rating and product mix (no LLM)", icon: "☊", group: "industry" },
   { id: "cluster", label: "Cluster", hint: "Topology, regions, failover", icon: "⬢", group: "cluster" },
   { id: "rebalance", label: "Rebalance", hint: "Zero-downtime node swap", icon: "⇄", group: "cluster" },
+  { id: "cockpit", label: "Cockpit", hint: "Mission Control — live cluster, XDCR, integrity and ops controls", icon: "🛰", group: "ops" },
   { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },
   { id: "admin", label: "Admin", hint: "Buckets, EXPLAIN, audit, slow queries", icon: "⚙", group: "ops" },
 ];
@@ -184,22 +196,53 @@ const SIDEBAR_KEY = "nebula-sidebar";
 function tabFromHash(): TabId | null {
   const h = window.location.hash;
   if (h.startsWith("#/blog")) return "blog";
+  if (h.startsWith("#/labs")) return "labs";
+  if (h.startsWith("#/cockpit")) return "cockpit";
   const m = /^#\/tab\/([a-z]+)/.exec(h);
   return m && NAV.some((t) => t.id === m[1]) ? (m[1] as TabId) : null;
+}
+
+function openCockpit() {
+  // Real path so nginx auth_request / basic-auth gate /cockpit the same
+  // way as `/` — never a public deep-link bypass.
+  if (window.location.pathname !== "/cockpit") {
+    window.location.assign("/cockpit");
+    return;
+  }
+  ensureCockpitPath();
 }
 
 export function App() {
   // `#/blog/...` deep links (shared posts, landing-page cards) open the blog;
   // `#/tab/<id>` opens any demo directly (e.g. #/tab/secureagent).
-  const [tab, setTab] = useState<TabId>(() => tabFromHash() ?? "executive");
+  // `/cockpit` is a full-bleed Mission Control view (still login-gated).
+  const [cockpit, setCockpit] = useState(() => {
+    ensureCockpitPath();
+    return isCockpitPath();
+  });
+  const [tab, setTab] = useState<TabId>(() =>
+    isCockpitPath() ? "cockpit" : tabFromHash() ?? "executive"
+  );
   // In-page `#/blog/...` links (e.g. a demo's "Setup guide") switch to the blog.
   useEffect(() => {
     const onHash = () => {
+      if (window.location.hash.startsWith("#/cockpit")) {
+        openCockpit();
+        return;
+      }
       const t = tabFromHash();
       if (t) setTab(t);
     };
+    const onPop = () => {
+      ensureCockpitPath();
+      setCockpit(isCockpitPath());
+    };
     window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    window.addEventListener("popstate", onPop);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("popstate", onPop);
+    };
   }, []);
   const [theme, setThemeState] = useState(getTheme());
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -262,6 +305,34 @@ export function App() {
 
   const active = NAV.find((n) => n.id === tab);
 
+  const leaveCockpit = () => {
+    window.history.pushState(null, "", "/");
+    setCockpit(false);
+    setTab("executive");
+  };
+
+  if (cockpit) {
+    return (
+      <div className="h-full flex flex-col bg-[#070b10]">
+        <TopBar
+          theme={theme}
+          onToggleTheme={() => setThemeState(toggleTheme())}
+          health={health}
+          healthErr={healthErr}
+          viewer={viewer}
+          onToggleSidebar={() => leaveCockpit()}
+          sidebarCollapsed={false}
+          cockpit
+          onLeaveCockpit={leaveCockpit}
+        />
+        <div className="flex-1 overflow-auto">
+          <CockpitPage onLeave={leaveCockpit} />
+        </div>
+        <StatusBar health={health} err={healthErr} />
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col">
       <TopBar
@@ -280,7 +351,14 @@ export function App() {
           grouped={grouped}
           active={tab}
           onSelect={(id) => {
+            if (id === "cockpit") {
+              openCockpit();
+              return;
+            }
             if (id !== "blog" && window.location.hash.startsWith("#/blog")) {
+              history.replaceState(null, "", window.location.pathname + window.location.search);
+            }
+            if (id !== "labs" && window.location.hash.startsWith("#/labs")) {
               history.replaceState(null, "", window.location.pathname + window.location.search);
             }
             setTab(id);
@@ -311,6 +389,10 @@ export function App() {
               {tab === "executive" && (
                 <ExecutiveTab
                   onNavigate={(t) => {
+                    if (t === "cockpit") {
+                      openCockpit();
+                      return;
+                    }
                     // "blog:<slug>" opens a specific post.
                     if (t.startsWith("blog:")) window.location.hash = `#/blog/${t.slice(5)}`;
                     setTab((t.startsWith("blog:") ? "blog" : t) as TabId);
@@ -318,6 +400,9 @@ export function App() {
                 />
               )}
               {tab === "blog" && <BlogTab />}
+              {tab === "labs" && <LabsTab />}
+              {tab === "visaagent" && <VisaAgentTab />}
+              {tab === "jiraagent" && <JiraAgentTab />}
               {tab === "overview" && <OverviewTab onNavigate={(t) => setTab(t as TabId)} />}
               {tab === "documents" && <DocumentsTab />}
               {tab === "sql" && <SqlTab />}
@@ -373,6 +458,8 @@ function TopBar({
   viewer,
   onToggleSidebar,
   sidebarCollapsed,
+  cockpit = false,
+  onLeaveCockpit,
 }: {
   theme: string;
   onToggleTheme: () => void;
@@ -381,27 +468,59 @@ function TopBar({
   viewer: ShowcaseUser | null;
   onToggleSidebar: () => void;
   sidebarCollapsed: boolean;
+  cockpit?: boolean;
+  onLeaveCockpit?: () => void;
 }) {
   return (
-    <header className="border-b border-gray-200 dark:border-edge bg-white/80 dark:bg-carbon-950/80 backdrop-blur">
+    <header
+      className={
+        cockpit
+          ? "border-b border-[#1c2a37] bg-[#0c131b]/90 backdrop-blur"
+          : "border-b border-gray-200 dark:border-edge bg-white/80 dark:bg-carbon-950/80 backdrop-blur"
+      }
+    >
       <div className="px-4 py-2.5 flex items-center gap-4">
         <button
           onClick={onToggleSidebar}
           className="btn-secondary !py-1 !px-2 !text-xs"
-          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-label="Toggle sidebar"
+          title={
+            cockpit
+              ? "Back to showcase"
+              : sidebarCollapsed
+                ? "Expand sidebar"
+                : "Collapse sidebar"
+          }
+          aria-label={cockpit ? "Back to showcase" : "Toggle sidebar"}
         >
-          ☰
+          {cockpit ? "←" : "☰"}
         </button>
         <div className="flex items-center gap-2.5">
           <Mark />
           <div className="flex items-baseline gap-2">
-            <span className="font-display text-base font-semibold tracking-tight text-black dark:text-ink">
+            <span
+              className={`font-display text-base font-semibold tracking-tight ${
+                cockpit ? "text-[#dce7f1]" : "text-black dark:text-ink"
+              }`}
+            >
               NebulaDB
             </span>
-            <span className="eyebrow hidden sm:inline">Knowledge Ops</span>
+            <span className={`eyebrow hidden sm:inline ${cockpit ? "!text-[#566a7c]" : ""}`}>
+              {cockpit ? "Mission Control" : "Knowledge Ops"}
+            </span>
           </div>
         </div>
+        {cockpit && (
+          <a
+            href="/"
+            onClick={(e) => {
+              e.preventDefault();
+              onLeaveCockpit?.();
+            }}
+            className="hidden sm:inline text-xs font-mono uppercase tracking-wider text-[#8598ab] hover:text-[#3fc8ff] no-underline"
+          >
+            Showcase demos
+          </a>
+        )}
 
         <div className="ml-auto flex items-center gap-2.5 text-xs">
           {viewer && (

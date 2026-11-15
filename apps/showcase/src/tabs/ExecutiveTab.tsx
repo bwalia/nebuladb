@@ -134,6 +134,7 @@ export function ExecutiveTab({ onNavigate }: { onNavigate?: (t: string) => void 
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
           {[
+            ["cockpit", "Mission Control"],
             ["rag", "Explore RAG"],
             ["entity", "Entity Resolve"],
             ["lookalike", "Lookalikes"],

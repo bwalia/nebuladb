@@ -8,7 +8,8 @@
 # before a public /livez health check can pass.
 #
 # Deployer is `github` (RP_GITHUB_TOKEN). Edge registration is DNS +
-# control-plane only; the showcase deploy builds images and helm-upgrades.
+# control-plane only; the showcase deploy builds images and swaps only the
+# showcase image (showcase-only), so a promotion never restarts the database.
 
   - name: nebuladb-edge
     display_name: "NebulaDB edge (DNS + vhost)"
@@ -42,7 +43,9 @@
       env_input: TARGET_ENV
       version_input: IMAGE_TAG
       mode_input: DEPLOYMENT_TYPE
-      deploy_mode: build-and-deploy
+      # showcase-only: build, then swap only the showcase image. Server
+      # releases are dispatched by hand.
+      deploy_mode: showcase-only
       token_env: RP_GITHUB_TOKEN
       poll_interval: 20s
       run_lookup_timeout: 90s

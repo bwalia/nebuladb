@@ -1,0 +1,637 @@
+/*
+ * NebulaDB Mission Control — Glass Cockpit
+ *
+ * Aviation / NASA flight-controller deck adapted from NebulaCB Mission
+ * Control. Cool instrument graphite; annunciator green / amber / red.
+ * Same type stack as the rest of the showcase (Poppins / Unbounded /
+ * JetBrains Mono). Scoped under .nebula-cockpit so the main console
+ * theme is untouched.
+ */
+
+.nebula-cockpit {
+  --ck-void: #070b10;
+  --ck-deck: #0c131b;
+  --ck-bezel: #111c26;
+  --ck-card: #16222e;
+  --ck-trench: #080e15;
+  --ck-line: #1c2a37;
+  --ck-line-strong: #2a3c4c;
+  --ck-sheen: rgba(255, 255, 255, 0.045);
+  --ck-text: #dce7f1;
+  --ck-muted: #8598ab;
+  --ck-faint: #566a7c;
+  --ck-green: #33e1a0;
+  --ck-amber: #ffb43d;
+  --ck-red: #ff5d6e;
+  --ck-blue: #3fc8ff;
+  --ck-teal: #2cd4c8;
+  --ck-glow-green: 0 0 10px rgba(51, 225, 160, 0.45);
+  --ck-glow-blue: 0 0 10px rgba(63, 200, 255, 0.4);
+  --ck-glow-amber: 0 0 10px rgba(255, 180, 61, 0.4);
+
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(63, 200, 255, 0.06), transparent 60%),
+    radial-gradient(900px 500px at 100% 100%, rgba(51, 225, 160, 0.04), transparent 55%),
+    var(--ck-void);
+  color: var(--ck-text);
+  min-height: 100%;
+  font-family: "Poppins", "Helvetica Neue", Arial, sans-serif;
+}
+
+.nebula-cockpit .ck-mono {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.nebula-cockpit .ck-display {
+  font-family: "Unbounded", "Poppins", sans-serif;
+}
+
+.nebula-cockpit .ck-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 16px 20px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.nebula-cockpit .ck-status-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, var(--ck-bezel), var(--ck-deck));
+  border: 1px solid var(--ck-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.nebula-cockpit .ck-status-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(63, 200, 255, 0.08), transparent);
+  animation: ck-sweep 4.5s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes ck-sweep {
+  0% { transform: translateX(-30%); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateX(280%); opacity: 0; }
+}
+
+.nebula-cockpit .ck-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  z-index: 1;
+}
+
+.nebula-cockpit .ck-pill.green {
+  color: var(--ck-green);
+  border-color: rgba(51, 225, 160, 0.4);
+  background: rgba(51, 225, 160, 0.06);
+}
+.nebula-cockpit .ck-pill.amber {
+  color: var(--ck-amber);
+  border-color: rgba(255, 180, 61, 0.45);
+  background: rgba(255, 180, 61, 0.06);
+  animation: ck-caution 1.8s ease-in-out infinite;
+}
+.nebula-cockpit .ck-pill.red {
+  color: var(--ck-red);
+  border-color: rgba(255, 93, 110, 0.5);
+  background: rgba(255, 93, 110, 0.08);
+  animation: ck-caution 1s ease-in-out infinite;
+}
+
+@keyframes ck-caution {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.25); }
+}
+
+.nebula-cockpit .ck-pill-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 9px currentColor;
+  animation: ck-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes ck-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.82); }
+}
+
+.nebula-cockpit .ck-meta {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  z-index: 1;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--ck-muted);
+}
+.nebula-cockpit .ck-meta strong {
+  color: var(--ck-text);
+  font-weight: 700;
+}
+.nebula-cockpit .ck-meta .good { color: var(--ck-green); }
+.nebula-cockpit .ck-meta .warn { color: var(--ck-amber); }
+.nebula-cockpit .ck-meta .bad { color: var(--ck-red); }
+
+.nebula-cockpit .ck-top-strip {
+  display: grid;
+  grid-template-columns: 1.1fr 1.1fr 1.3fr 1fr;
+  gap: 14px;
+}
+@media (max-width: 1400px) {
+  .nebula-cockpit .ck-top-strip { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 800px) {
+  .nebula-cockpit .ck-top-strip { grid-template-columns: 1fr; }
+}
+
+.nebula-cockpit .ck-tile {
+  position: relative;
+  background: linear-gradient(180deg, var(--ck-bezel), var(--ck-deck));
+  border: 1px solid var(--ck-line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  min-height: 190px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+.nebula-cockpit .ck-tile::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--ck-sheen), transparent);
+}
+.nebula-cockpit .ck-tile-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  min-height: 190px;
+}
+.nebula-cockpit .ck-tile-stack > * {
+  flex: 1;
+  padding: 12px 16px;
+  min-height: 0;
+}
+.nebula-cockpit .ck-tile-stack > *:not(:first-child) {
+  border-top: 1px solid var(--ck-line);
+}
+
+.nebula-cockpit .ck-legend {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ck-faint);
+  margin-bottom: 10px;
+}
+
+.nebula-cockpit .ck-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--ck-line-strong);
+  color: var(--ck-muted);
+}
+.nebula-cockpit .ck-role.leader {
+  color: var(--ck-blue);
+  border-color: rgba(63, 200, 255, 0.45);
+  background: rgba(63, 200, 255, 0.08);
+}
+.nebula-cockpit .ck-role.follower {
+  color: var(--ck-teal);
+  border-color: rgba(44, 212, 200, 0.4);
+  background: rgba(44, 212, 200, 0.07);
+}
+.nebula-cockpit .ck-role.region {
+  color: #a98bff;
+  border-color: rgba(169, 139, 255, 0.4);
+  background: rgba(169, 139, 255, 0.08);
+}
+
+.nebula-cockpit .ck-title {
+  font-family: "Unbounded", "Poppins", sans-serif;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 8px 0 2px;
+}
+.nebula-cockpit .ck-sub {
+  font-size: 0.78rem;
+  color: var(--ck-muted);
+  margin-bottom: 12px;
+}
+
+.nebula-cockpit .ck-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+.nebula-cockpit .ck-metric-label {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ck-faint);
+}
+.nebula-cockpit .ck-metric-value {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ck-text);
+  margin-top: 2px;
+}
+
+.nebula-cockpit .ck-flow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 14px 0 10px;
+}
+.nebula-cockpit .ck-flow-node {
+  flex: 1;
+  text-align: center;
+  padding: 10px 8px;
+  background: var(--ck-trench);
+  border: 1px solid var(--ck-line);
+  border-radius: 8px;
+}
+.nebula-cockpit .ck-flow-node .ck-metric-value { font-size: 0.85rem; }
+.nebula-cockpit .ck-flow-arrow {
+  color: var(--ck-blue);
+  font-size: 1.1rem;
+  text-shadow: var(--ck-glow-blue);
+  animation: ck-pulse 2s ease-in-out infinite;
+}
+
+.nebula-cockpit .ck-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 36px;
+  margin-top: 8px;
+}
+.nebula-cockpit .ck-spark span {
+  flex: 1;
+  background: linear-gradient(180deg, var(--ck-blue), rgba(63, 200, 255, 0.15));
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+  opacity: 0.85;
+}
+
+.nebula-cockpit .ck-alert-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  font-size: 0.75rem;
+}
+.nebula-cockpit .ck-alert-row:last-child { border-bottom: 0; }
+.nebula-cockpit .ck-sev {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.nebula-cockpit .ck-sev.info { color: var(--ck-blue); background: rgba(63, 200, 255, 0.1); }
+.nebula-cockpit .ck-sev.warn { color: var(--ck-amber); background: rgba(255, 180, 61, 0.1); }
+.nebula-cockpit .ck-sev.error { color: var(--ck-red); background: rgba(255, 93, 110, 0.12); }
+
+.nebula-cockpit .ck-timeline {
+  background: linear-gradient(180deg, var(--ck-bezel), var(--ck-deck));
+  border: 1px solid var(--ck-line);
+  border-radius: 12px;
+  padding: 14px 18px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+.nebula-cockpit .ck-timeline-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.nebula-cockpit .ck-timeline-title {
+  font-family: "Unbounded", "Poppins", sans-serif;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.nebula-cockpit .ck-timeline-versions {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--ck-muted);
+}
+.nebula-cockpit .ck-timeline-versions .arrow { color: var(--ck-blue); margin: 0 4px; }
+.nebula-cockpit .ck-phase-badge {
+  margin-left: auto;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--ck-trench);
+  border: 1px solid var(--ck-line);
+  color: var(--ck-muted);
+}
+
+.nebula-cockpit .ck-phase-rail {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin: 8px 0 14px;
+  position: relative;
+  padding: 0 8px;
+}
+.nebula-cockpit .ck-phase-rail::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 8px;
+  height: 2px;
+  background: var(--ck-line-strong);
+}
+.nebula-cockpit .ck-phase-step {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  text-align: center;
+}
+.nebula-cockpit .ck-phase-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--ck-trench);
+  border: 2px solid var(--ck-line-strong);
+}
+.nebula-cockpit .ck-phase-step.done .ck-phase-dot {
+  background: var(--ck-green);
+  border-color: var(--ck-green);
+  box-shadow: var(--ck-glow-green);
+}
+.nebula-cockpit .ck-phase-step.active .ck-phase-dot {
+  background: var(--ck-blue);
+  border-color: var(--ck-blue);
+  box-shadow: var(--ck-glow-blue);
+  animation: ck-pulse 1.4s ease-in-out infinite;
+}
+.nebula-cockpit .ck-phase-label {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ck-faint);
+}
+.nebula-cockpit .ck-phase-step.done .ck-phase-label,
+.nebula-cockpit .ck-phase-step.active .ck-phase-label {
+  color: var(--ck-text);
+}
+
+.nebula-cockpit .ck-progress {
+  height: 6px;
+  background: var(--ck-trench);
+  border: 1px solid var(--ck-line);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.nebula-cockpit .ck-progress > i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--ck-blue), var(--ck-teal));
+  box-shadow: 0 0 12px rgba(63, 200, 255, 0.5);
+  transition: width 0.6s ease;
+}
+
+.nebula-cockpit .ck-events {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.nebula-cockpit .ck-event {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--ck-trench);
+  border-left: 2px solid var(--ck-blue);
+  border-radius: 0 6px 6px 0;
+  font-size: 0.75rem;
+}
+.nebula-cockpit .ck-event.warn { border-left-color: var(--ck-amber); }
+.nebula-cockpit .ck-event.error { border-left-color: var(--ck-red); }
+.nebula-cockpit .ck-event-title { font-weight: 600; min-width: 140px; }
+.nebula-cockpit .ck-event-detail {
+  flex: 1;
+  color: var(--ck-muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nebula-cockpit .ck-event-time {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.65rem;
+  color: var(--ck-faint);
+  min-width: 64px;
+  text-align: right;
+}
+
+.nebula-cockpit .ck-bottom {
+  display: grid;
+  grid-template-columns: 1.1fr 1.4fr 1fr;
+  gap: 14px;
+}
+@media (max-width: 1400px) {
+  .nebula-cockpit .ck-bottom { grid-template-columns: 1fr; }
+}
+
+.nebula-cockpit .ck-col {
+  background: linear-gradient(180deg, var(--ck-bezel), var(--ck-deck));
+  border: 1px solid var(--ck-line);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+  overflow: hidden;
+}
+.nebula-cockpit .ck-col-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ck-line);
+}
+.nebula-cockpit .ck-col-body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.nebula-cockpit .ck-log-tail {
+  flex: 1;
+  min-height: 220px;
+  max-height: 340px;
+  overflow-y: auto;
+  background: var(--ck-trench);
+  border: 1px solid var(--ck-line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+.nebula-cockpit .ck-log-line {
+  display: flex;
+  gap: 10px;
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+.nebula-cockpit .ck-log-line .ts { color: var(--ck-faint); min-width: 64px; }
+.nebula-cockpit .ck-log-line .src { color: var(--ck-teal); min-width: 72px; }
+.nebula-cockpit .ck-log-line.error .msg { color: var(--ck-red); }
+.nebula-cockpit .ck-log-line.warn .msg { color: var(--ck-amber); }
+
+.nebula-cockpit .ck-proof-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.nebula-cockpit .ck-proof-cell {
+  background: var(--ck-trench);
+  border: 1px solid var(--ck-line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.nebula-cockpit .ck-proof-cell .ck-metric-value { font-size: 1.15rem; }
+.nebula-cockpit .ck-verdict {
+  margin-top: auto;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+.nebula-cockpit .ck-verdict.ok {
+  color: var(--ck-green);
+  border-color: rgba(51, 225, 160, 0.4);
+  background: rgba(51, 225, 160, 0.08);
+  box-shadow: var(--ck-glow-green);
+}
+.nebula-cockpit .ck-verdict.warn {
+  color: var(--ck-amber);
+  border-color: rgba(255, 180, 61, 0.45);
+  background: rgba(255, 180, 61, 0.08);
+}
+.nebula-cockpit .ck-verdict.bad {
+  color: var(--ck-red);
+  border-color: rgba(255, 93, 110, 0.5);
+  background: rgba(255, 93, 110, 0.08);
+}
+
+.nebula-cockpit .ck-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.nebula-cockpit .ck-btn {
+  appearance: none;
+  border: 1px solid var(--ck-line-strong);
+  background: var(--ck-card);
+  color: var(--ck-text);
+  border-radius: 8px;
+  padding: 10px 8px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.nebula-cockpit .ck-btn:hover:not(:disabled) {
+  border-color: var(--ck-blue);
+  color: var(--ck-blue);
+  background: rgba(63, 200, 255, 0.08);
+}
+.nebula-cockpit .ck-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.nebula-cockpit .ck-btn.danger:hover:not(:disabled) {
+  border-color: var(--ck-red);
+  color: var(--ck-red);
+  background: rgba(255, 93, 110, 0.08);
+}
+.nebula-cockpit .ck-btn.ok:hover:not(:disabled) {
+  border-color: var(--ck-green);
+  color: var(--ck-green);
+  background: rgba(51, 225, 160, 0.08);
+}
+.nebula-cockpit .ck-cmd-msg {
+  margin-top: 10px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--ck-muted);
+  min-height: 1.2em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nebula-cockpit .ck-status-bar::after,
+  .nebula-cockpit .ck-pill-dot,
+  .nebula-cockpit .ck-pill.amber,
+  .nebula-cockpit .ck-pill.red,
+  .nebula-cockpit .ck-flow-arrow,
+  .nebula-cockpit .ck-phase-step.active .ck-phase-dot {
+    animation: none !important;
+  }
+}

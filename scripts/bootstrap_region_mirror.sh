@@ -3,7 +3,7 @@
 # current .nsnap so it holds the full corpus. XDCR / TailWal cannot
 # backfill compacted history — this is the supported catch-up path.
 #
-# Transfers in 128 MiB chunks via: kubectl exec dd → local → kubectl cp
+# Transfers in CHUNK_MB (default 32 MiB) chunks via: kubectl exec dd → local → kubectl cp
 # (direct exec|exec pipes drop binary stdin into alpine helpers).
 #
 # Critical: the live snapshot can be rewritten while we copy. We freeze a
@@ -13,14 +13,30 @@
 #   KUBECONFIG=~/.kube/k3s1.yaml \
 #     NS=prod SOURCE=nebuladb TARGET=nebuladb-region-b \
 #     ./scripts/bootstrap_region_mirror.sh
+#
+# Finalise only (the snapshot was already copied onto the target PVC some
+# other way, e.g. an HTTP pull after kubectl exec kept dropping): verify
+# the hash, bless the snapshot with its .ok marker, wipe stale WAL/cursor
+# state, seed the resume cursor and scale the target back to 1.
+#   FINALIZE_ONLY=1 SNAP_BASE=snapshot-<seq>.nsnap \
+#     EXPECT_SIZE=<bytes> EXPECT_SHA256=<hex> \
+#     ./scripts/bootstrap_region_mirror.sh
+# Without the .ok marker recovery ignores the snapshot and the target
+# boots EMPTY (prod region-b sat at 0 replicas for 5 days, then booted
+# empty, after the 1 Nov 2026 HTTP pull skipped these steps).
 set -euo pipefail
 
 NS="${NS:-prod}"
 SOURCE="${SOURCE:-nebuladb}"
 TARGET="${TARGET:-nebuladb-region-b}"
 DATA_DIR="${DATA_DIR:-/var/lib/nebuladb}"
-CHUNK_MB="${CHUNK_MB:-128}"
+# 32 MiB: `kubectl exec` streams of 128 MiB came back short on ~1 in 4
+# chunks and one chunk failed 8/8 tries (1 Nov 2026); short reads scale
+# with chunk size.
+CHUNK_MB="${CHUNK_MB:-32}"
+MAX_TRIES="${MAX_TRIES:-20}"
 WORKDIR="${WORKDIR:-/tmp/nebula-mirror-$$}"
+FINALIZE_ONLY="${FINALIZE_ONLY:-0}"
 
 need() { command -v "$1" >/dev/null || { echo "need $1" >&2; exit 1; }; }
 need kubectl
@@ -49,10 +65,16 @@ tgt_pod=$(kubectl -n "$NS" get pod \
 echo "✓ source pod $src_pod"
 [ -n "$tgt_pod" ] && echo "✓ target pod $tgt_pod (will scale to 0)"
 
-LIVE=$(kubectl -n "$NS" exec "$src_pod" -c server -- \
-  sh -c "ls -1 ${DATA_DIR}/snapshots/*.nsnap 2>/dev/null | grep -v mirror-freeze | sort | tail -1")
-[ -n "$LIVE" ] || { echo "no .nsnap on source" >&2; exit 1; }
-SNAP_BASE=$(basename "$LIVE")
+if [ "$FINALIZE_ONLY" = 1 ]; then
+  : "${SNAP_BASE:?FINALIZE_ONLY needs SNAP_BASE}" "${EXPECT_SIZE:?FINALIZE_ONLY needs EXPECT_SIZE}" \
+    "${EXPECT_SHA256:?FINALIZE_ONLY needs EXPECT_SHA256}"
+  echo "── finalise only: $SNAP_BASE (no transfer)"
+else
+  LIVE=$(kubectl -n "$NS" exec "$src_pod" -c server -- \
+    sh -c "ls -1 ${DATA_DIR}/snapshots/*.nsnap 2>/dev/null | grep -v mirror-freeze | sort | tail -1")
+  [ -n "$LIVE" ] || { echo "no .nsnap on source" >&2; exit 1; }
+  SNAP_BASE=$(basename "$LIVE")
+fi
 TIP=$(kubectl -n "$NS" exec "$src_pod" -c server -- wget -qO- http://127.0.0.1:8080/healthz/wal-tip)
 echo "✓ live snapshot $SNAP_BASE"
 echo "✓ wal tip $TIP"
@@ -65,12 +87,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "── freeze live snapshot on source (stable bytes for transfer)"
-kubectl -n "$NS" exec "$src_pod" -c server -- \
-  sh -c "rm -f '$FREEZE' && cp -f -- '$LIVE' '$FREEZE' && ls -lh '$FREEZE'"
-SNAP=$FREEZE
-SIZE=$(kubectl -n "$NS" exec "$src_pod" -c server -- stat -c%s "$SNAP")
-echo "✓ freeze size=$SIZE"
+if [ "$FINALIZE_ONLY" = 1 ]; then
+  SIZE=$EXPECT_SIZE
+  SRC_HASH=$EXPECT_SHA256
+else
+  echo "── freeze live snapshot on source (stable bytes for transfer)"
+  kubectl -n "$NS" exec "$src_pod" -c server -- \
+    sh -c "rm -f '$FREEZE' && cp -f -- '$LIVE' '$FREEZE' && ls -lh '$FREEZE'"
+  SNAP=$FREEZE
+  SIZE=$(kubectl -n "$NS" exec "$src_pod" -c server -- stat -c%s "$SNAP")
+  echo "✓ freeze size=$SIZE"
+fi
 
 echo "── scale target to 0"
 kubectl -n "$NS" scale "deploy/${TARGET}" --replicas=0
@@ -115,6 +142,13 @@ fi
 # Wipe ALL local state, including the replica WAL (records mirrored from
 # other regions) and saved cross-region cursors: a stale cursor would
 # override the seed below and resume from the wrong place.
+if [ "$FINALIZE_ONLY" = 1 ]; then
+  # Keep the copied snapshot; drop everything else (stale .ok markers,
+  # WAL/replica WAL and cursors from any boot that ran without it).
+  kubectl -n "$NS" exec "$HELPER" -- sh -c \
+    "test -f /data/snapshots/${SNAP_BASE} && find /data/snapshots -type f ! -name '${SNAP_BASE}' -delete && rm -rf /data/wal /data/replica-wal /data/cross-region-*.cursor /data/follower.cursor && mkdir -p /data/wal" \
+    || { echo "✗ /data/snapshots/${SNAP_BASE} missing on target" >&2; exit 1; }
+else
 kubectl -n "$NS" exec "$HELPER" -- sh -c 'rm -rf /data/snapshots /data/wal /data/replica-wal /data/cross-region-*.cursor /data/follower.cursor; mkdir -p /data/snapshots /data/wal'
 
 echo "── sha256 freeze (may take several minutes)"
@@ -149,7 +183,7 @@ while [ "$OFFSET" -lt "$TOTAL" ]; do
     PART=$(wc -c <"${WORKDIR}/part.$i" | tr -d ' ')
     [ "$PART" -eq "$N" ] && break
     echo "  retry $tries got=$PART expect=$N"
-    [ "$tries" -ge 8 ] && { echo "✗ give up on chunk $i" >&2; exit 1; }
+    [ "$tries" -ge "$MAX_TRIES" ] && { echo "✗ give up on chunk $i" >&2; exit 1; }
     sleep 2
   done
   set +e
@@ -166,8 +200,8 @@ while [ "$OFFSET" -lt "$TOTAL" ]; do
   OFFSET=$((OFFSET + N))
   i=$((i + 1))
 done
+fi # FINALIZE_ONLY
 
-kubectl -n "$NS" exec "$HELPER" -- touch "/data/snapshots/${SNAP_BASE}.ok"
 DST=$(kubectl -n "$NS" exec "$HELPER" -- stat -c%s "/data/snapshots/${SNAP_BASE}")
 echo "src=$SIZE dst=$DST"
 [ "$SIZE" = "$DST" ] || { echo "✗ size mismatch" >&2; exit 1; }
@@ -176,6 +210,9 @@ echo "── sha256 dest"
 DST_HASH=$(kubectl -n "$NS" exec "$HELPER" -- sha256sum "/data/snapshots/${SNAP_BASE}" | awk '{print $1}')
 echo "src=$SRC_HASH dst=$DST_HASH"
 [ "$SRC_HASH" = "$DST_HASH" ] || { echo "✗ sha256 mismatch — refusing to start target" >&2; exit 1; }
+# Bless only after size + hash match: the .ok marker is the commit point
+# recovery trusts, so a corrupt copy must never get one.
+kubectl -n "$NS" exec "$HELPER" -- touch "/data/snapshots/${SNAP_BASE}.ok"
 
 # Seed the resume cursor from the SNAPSHOT's WAL seq (start of that
 # segment), not the live tip: the tip is later than the snapshot, so
