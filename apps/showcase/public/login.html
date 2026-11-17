@@ -228,6 +228,15 @@
       .err.show {
         display: block;
       }
+      .sponsor {
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-family: var(--mono);
+        text-align: center;
+      }
+      .sponsor a {
+        color: inherit;
+      }
       .meta {
         margin-top: 16px;
         color: var(--muted);
@@ -297,6 +306,7 @@
         <p class="meta" id="meta">Loading sign-in options…</p>
       </section>
     </main>
+    <footer class="sponsor">Sponsored by <a href="https://www.workstation.co.uk/en" target="_blank" rel="noopener noreferrer">Workstation</a></footer>
     <script>
       (function () {
         var params = new URLSearchParams(window.location.search);

@@ -706,6 +706,9 @@ function StatusBar({ health, err }: { health: Health | null; err: string | null 
             )}
           </>
         )}
+        <a className="metachip shrink-0 ml-auto hover:underline" href="https://www.workstation.co.uk/en" target="_blank" rel="noopener noreferrer">
+          Sponsored by Workstation
+        </a>
       </div>
     </footer>
   );
