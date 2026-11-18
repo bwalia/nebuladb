@@ -1,59 +1,61 @@
 /**
- * Stock Pulse — from the Source Supplies discovery call.
+ * Stock Autopilot — discovery-call pain #2 (stock control).
  *
- * Dave's pain: no live stock in Merlin, but popular (~95% repeat) lines must
- * never run short. He was pasting Merlin averages into ChatGPT to draft POs.
+ * Dave: "our stock control is always an issue… when we run out of those
+ * popular items is when there's always that frustration", Merlin has no
+ * live stock, and he has been pasting three months of averages into
+ * ChatGPT to draft POs. "It's cleverer than just looking at an average of
+ * 3 months… if Christmas is a busier period or quieter period."
  *
- * Demo: pull recent order volume → flag core movers that look short → draft a
- * supplier PO from a 3-month average. Nothing is ordered until a person confirms.
+ * Jordan reads every month of despatches from NebulaDB (`ss_demand`),
+ * estimates today's stock, forecasts with seasonality + growth, cleans
+ * one-offs, spots new-contract step-ups, sets safety stock from its own
+ * error, and drafts one PO per supplier. A 12-month backtest proves it
+ * against the 3-month-average method. Nothing is sent to a supplier.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ApiError } from "../api";
 import { ErrorBanner, Panel, Spinner } from "../components";
-import { UnderTheHood } from "../components/UnderTheHood";
 import { ArchitecturePanel } from "../components/RagArchitecture";
 import { PipelineTrace, type PipelineStep } from "../rag/PipelineTrace";
-import { lit, runSql } from "../rag/sql";
-import { B, ORDER_MONTHS, exhaustiveLimit } from "./data/common";
-import { ORDER_DOCS } from "./data/accounts";
+import { runSql } from "../rag/sql";
+import { exhaustiveLimit } from "./data/common";
+import { BUCKET, DEMAND_DOCS, DEMAND_MONTHS } from "./data/demand";
 import { PRODUCT_BY_SKU } from "./data/products";
-import { Chips, DemoNote, SeedChip, metaOf, num, str, useSeeds } from "./common";
+import { backtest, draftPos, plan, shortfallCost, ukDay, type Backtest, type Risk, type SkuInput, type SkuPlan } from "./stockPilot";
+import { BenefitStrip, Kpi, Pill, Sparkline } from "./autopilotUi";
+import { DemoNote, SeedChip, gbp, metaOf, num, str, useSeeds } from "./common";
 
-const ORDERS_LIMIT = exhaustiveLimit(ORDER_DOCS.length);
-const RECENT = ORDER_MONTHS.slice(-3);
+/** LIMIT caps rows returned as well as the candidate pool: 16 lines × 24 months must all come back. */
+const LIMIT = Math.max(exhaustiveLimit(DEMAND_DOCS.length), DEMAND_DOCS.length);
+const TODAY = "2026-10-31";
+const RISK: Record<Risk, { tone: "bad" | "warn" | "ok" | "accent"; label: string }> = {
+  urgent: { tone: "bad", label: "Will run out" },
+  watch: { tone: "warn", label: "Reorder now" },
+  ok: { tone: "ok", label: "Healthy" },
+  overstock: { tone: "accent", label: "Overstocked" },
+};
+const ORDER: Record<Risk, number> = { urgent: 0, watch: 1, ok: 2, overstock: 3 };
 
-interface PulseRow {
-  sku: string;
-  name: string;
-  packs3m: number;
-  avgMonth: number;
-  inStock: boolean;
-  leadDays: number;
-  suggested: number;
-  reason: string;
-  severity: "ok" | "watch" | "urgent";
+interface Result {
+  plans: SkuPlan[];
+  tests: Map<string, Backtest>;
+  specials: { skus: number; orders: number };
 }
 
-const SCENARIOS = [
-  { label: "Paper & washroom cores", hint: "toilet roll jumbo recycled towels soap" },
-  { label: "Floor chemical cores", hint: "floor cleaner concentrate washroom degreaser" },
-  { label: "Whole catalogue pulse", hint: "cleaning supplies stock reorder" },
-];
-
 export function StockPulseTab() {
-  const seed = useSeeds(["products", "orders"]);
-  const [scenario, setScenario] = useState(SCENARIOS[0].label);
-  const [hint, setHint] = useState(SCENARIOS[0].hint);
+  const seed = useSeeds(["products", "demand"]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [steps, setSteps] = useState<PipelineStep[]>([]);
-  const [rows, setRows] = useState<PulseRow[]>([]);
-  const [poDraft, setPoDraft] = useState<string | null>(null);
+  const [res, setRes] = useState<Result | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [approved, setApproved] = useState<Record<string, boolean>>({});
 
   const run = async () => {
     setBusy(true);
     setErr(null);
-    setPoDraft(null);
+    setApproved({});
     const trace: PipelineStep[] = [];
     const push = (s: PipelineStep) => {
       trace.push(s);
@@ -65,184 +67,251 @@ export function StockPulseTab() {
       setSteps([...trace]);
     };
     try {
-      const months = RECENT.map((m) => lit(m)).join(", ");
-      const sql =
-        `SELECT * FROM ${B.orders}\n WHERE semantic_match(text, ${lit(hint)})` +
-        `\n   AND month IN (${months})\n LIMIT ${ORDERS_LIMIT}`;
-      const i = push({
-        label: "3-month order lines (Merlin export)",
-        detail: sql,
-        status: "running",
-      });
-      const res = await runSql(sql);
-      done(i, { rowsOut: res.rows.length, ms: res.tookMs });
+      const dSql = `SELECT * FROM ${BUCKET}\n WHERE semantic_match(text, 'monthly despatches core line')\n   AND kind = 'demand'\n   AND core = TRUE\n LIMIT ${LIMIT}`;
+      let i = push({ label: "24 months of despatches for core lines (Merlin sales export)", detail: dSql, status: "running" });
+      const dr = await runSql(dSql);
+      done(i, { rowsOut: dr.rows.length, ms: dr.tookMs });
 
-      const bySku = new Map<string, number>();
-      for (const r of res.rows) {
-        const m = metaOf(r);
+      const sSql = `SELECT * FROM ${BUCKET}\n WHERE semantic_match(text, 'estimated stock on hand supplier lead time')\n   AND kind = 'stock'\n LIMIT ${LIMIT}`;
+      i = push({ label: "Estimated stock position (last count + goods in − despatches)", detail: sSql, status: "running" });
+      const sr = await runSql(sSql);
+      done(i, { rowsOut: sr.rows.length, ms: sr.tookMs });
+
+      const oSql = `SELECT * FROM ${BUCKET}\n WHERE semantic_match(text, 'special order for one customer')\n   AND kind = 'demand'\n   AND core = FALSE\n LIMIT ${LIMIT}`;
+      i = push({ label: "“Yes company” specials — kept out of core POs", detail: oSql, status: "running" });
+      const or = await runSql(oSql);
+      done(i, { rowsOut: or.rows.length, ms: or.tookMs });
+
+      const bySku = new Map<string, { month: string; packs: number; share: number }[]>();
+      for (const row of dr.rows) {
+        const m = metaOf(row);
         const sku = str(m.sku);
-        if (!sku) continue;
-        bySku.set(sku, (bySku.get(sku) ?? 0) + num(m.qty));
+        bySku.set(sku, [...(bySku.get(sku) ?? []), { month: str(m.month), packs: num(m.packs), share: num(m.top_order_share) }]);
       }
-
-      const pulse: PulseRow[] = [...bySku.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 24)
-        .map(([sku, packs]) => {
-          const avg = Math.max(1, Math.ceil(packs / RECENT.length));
-          const p = PRODUCT_BY_SKU[sku];
-          const inStock = p?.in_stock !== false;
-          const lead = p?.lead_days ?? 5;
-          let severity: PulseRow["severity"] = "ok";
-          let reason = "Healthy against recent demand";
-          let suggested = 0;
-          if (!inStock) {
-            severity = "urgent";
-            reason = "Out of stock while still selling — classic “yes company” gap";
-            suggested = Math.ceil(avg * 1.5);
-          } else if (avg >= 8 && lead > 7) {
-            severity = "watch";
-            reason = "Popular line with a long lead time";
-            suggested = Math.ceil(avg * 1.2);
-          } else if (avg >= 12) {
-            severity = "watch";
-            reason = "High-velocity core SKU — never leave this short";
-            suggested = Math.ceil(avg);
-          }
-          return {
-            sku,
-            name: p?.name ?? sku,
-            packs3m: packs,
-            avgMonth: avg,
-            inStock,
-            leadDays: lead,
-            suggested,
-            reason,
-            severity,
-          };
-        });
-      setRows(pulse);
-
-      const lines = pulse.filter((r) => r.suggested > 0);
+      const inputs: SkuInput[] = sr.rows.map((row) => {
+        const m = metaOf(row);
+        const sku = str(m.sku);
+        const hist = (bySku.get(sku) ?? []).sort((a, b) => a.month.localeCompare(b.month));
+        return {
+          sku,
+          name: PRODUCT_BY_SKU[sku]?.name ?? sku,
+          months: hist.map((h) => h.month),
+          packs: hist.map((h) => h.packs),
+          topShare: hist.map((h) => h.share),
+          supplier: str(m.supplier),
+          lead_days: num(m.lead_days),
+          moq: num(m.moq, 1),
+          unit_cost: num(m.unit_cost),
+          on_hand: num(m.on_hand),
+          on_order: num(m.on_order),
+          eta: m.eta ? str(m.eta) : null,
+        };
+      });
+      const full = inputs.filter((x) => x.packs.length === DEMAND_MONTHS.length);
+      const plans = full.map((x) => plan(x, TODAY)).sort((a, b) => ORDER[a.risk] - ORDER[b.risk] || (a.stockoutDate ?? "9").localeCompare(b.stockoutDate ?? "9"));
       push({
-        label: "Draft supplier PO from averages",
-        detail: `${lines.length} lines · months ${RECENT.join(", ")} · no live Merlin stock`,
-        rowsIn: pulse.length,
-        rowsOut: lines.length,
+        label: "Forecast: clean one-offs → step-ups → seasonality × growth → safety stock",
+        detail: "level = mean(last 3 deseasonalised) · (1+g)^(h/12) · season[month]; safety = 1.65 · σ · forecast · √((lead + 30) / 30)",
+        rowsIn: full.length,
+        rowsOut: plans.filter((p) => p.orderQty > 0).length,
         status: "ok",
       });
-
-      if (lines.length) {
-        setPoDraft(
-          [
-            "SOURCE SUPPLIES — DRAFT PURCHASE ORDER (demo)",
-            `Based on ${RECENT[0]}–${RECENT[RECENT.length - 1]} sales averages. Not sent.`,
-            "",
-            ...lines.map(
-              (l) =>
-                `${l.sku.padEnd(8)} × ${String(l.suggested).padStart(3)}   ${l.name}  [${l.severity}] ${l.reason}`
-            ),
-            "",
-            "A person confirms before this reaches a supplier. Jordan AI would open this in Merlin via MCP.",
-          ].join("\n")
-        );
-      }
+      const tests = new Map(full.map((x) => [x.sku, backtest(x)]));
+      push({ label: "Backtest both methods on the last 12 months", detail: "each month: order up to the forecast, then replay what actually shipped", rowsIn: full.length * 12, status: "ok" });
+      const specials = new Set(or.rows.map((r) => str(metaOf(r).sku)));
+      setRes({ plans, tests, specials: { skus: specials.size, orders: or.rows.length } });
+      setSelected(plans[0]?.input.sku ?? null);
     } catch (e) {
-      setErr(e instanceof ApiError ? `${e.status}: ${e.body || e.code}` : (e as Error).message);
-      if (trace.length) {
-        trace[trace.length - 1] = { ...trace[trace.length - 1], status: "error" };
-        setSteps([...trace]);
-      }
+      setErr(e instanceof ApiError ? e.message : (e as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
-  const urgent = rows.filter((r) => r.severity === "urgent").length;
-  const watch = rows.filter((r) => r.severity === "watch").length;
+  const pos = useMemo(() => (res ? draftPos(res.plans, TODAY) : []), [res]);
+  const totals = useMemo(() => {
+    if (!res) return null;
+    const n = { s: 0, p: 0, v: 0 };
+    const j = { s: 0, p: 0, v: 0 };
+    for (const b of res.tests.values()) {
+      n.s += b.naive.stockoutMonths;
+      n.p += b.naive.shortPacks;
+      n.v += b.naive.avgStockValue;
+      j.s += b.jordan.stockoutMonths;
+      j.p += b.jordan.shortPacks;
+      j.v += b.jordan.avgStockValue;
+    }
+    return { n, j, nc: shortfallCost(n.p), jc: shortfallCost(j.p) };
+  }, [res]);
+  const sel = res?.plans.find((p) => p.input.sku === selected) ?? null;
+  const cut = totals ? Math.round((1 - totals.j.s / Math.max(1, totals.n.s)) * 100) : 60;
 
   return (
     <div className="space-y-4">
-      <DemoNote extra="Mirrors the stock-control + ChatGPT average-order workflow from the Source Supplies discovery call." />
+      <DemoNote extra="Demo volumes, suppliers and stock. Merlin has no live stock, so on-hand is an estimate Jordan maintains. No PO is sent." />
+      <BenefitStrip
+        headline={`${cut}% fewer stock-outs`}
+        sub={totals ? `and ${gbp(totals.n.v - totals.j.v).replace(".00", "")} less cash sitting in stock on average` : "on the lines that must never run out"}
+        rows={[
+          { label: "Months a core line ran short (last 12)", before: totals ? `${totals.n.s}` : "—", after: totals ? `${totals.j.s}` : "—" },
+          { label: "Re-deliveries from short stock", before: totals ? `${totals.nc.redeliveries}` : "—", after: totals ? `${totals.jc.redeliveries}` : "—" },
+          { label: "Cost of shortfalls (vans + lost margin)", before: totals ? gbp(totals.nc.pounds).replace(".00", "") : "—", after: totals ? gbp(totals.jc.pounds).replace(".00", "") : "—" },
+          { label: "Drafting the POs", before: "half a day of averages + ChatGPT", after: "every night, 1 click to approve" },
+        ]}
+        quote="It’s cleverer than just looking at an average of 3 months… if Christmas is a busier period or quieter period"
+      />
       <ArchitecturePanel id="ss_stock" />
-      <Panel
-        title="Stock Pulse"
-        subtitle="Popular lines first — draft a PO from recent demand without waiting on Merlin reports."
-        action={<SeedChip seed={seed} />}
-      >
-        <Chips
-          items={SCENARIOS}
-          active={scenario}
-          onPick={(s) => {
-            setScenario(s.label);
-            setHint(s.hint);
-          }}
-        />
-        <label className="block mb-3">
-          <span className="block text-xs font-medium mb-1">Focus (plain English)</span>
-          <input className="input w-full" value={hint} onChange={(e) => setHint(e.target.value)} />
-        </label>
-        <button type="button" className="btn" disabled={busy || !seed.ready} onClick={() => void run()}>
-          {busy ? <Spinner /> : null}
-          {busy ? "Scanning…" : "Run stock pulse"}
-        </button>
-        {rows.length > 0 && (
-          <p className="mt-2 text-xs text-gray-500 dark:text-muted">
-            {urgent} urgent · {watch} watch · {rows.length} SKUs ranked by 3-month volume
-          </p>
-        )}
+      <Panel title="Stock Autopilot" subtitle={`Nightly check · ${ukDay(TODAY)} 2026 · 16 core lines (~95% of volume)`} action={<SeedChip seed={seed} />}>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" className="btn" onClick={run} disabled={busy || !seed.ready} data-tour="run">
+            {busy ? <Spinner label="Forecasting…" /> : "▶ Run tonight’s stock check"}
+          </button>
+          <span className="text-xs text-gray-500 dark:text-muted">Grey = 24 months shipped · blue dashed = Jordan’s forecast · dotted = 3-month average · amber dot = one-off ignored</span>
+        </div>
+        <ErrorBanner err={err} />
       </Panel>
-
-      <ErrorBanner err={err} />
       {steps.length > 0 && <PipelineTrace steps={steps} />}
 
-      {rows.length > 0 && (
-        <Panel title="Core movers" subtitle="≈95% of Source volume is repeat — this list is that core">
-          <div className="overflow-x-auto -mx-1">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs uppercase tracking-wider text-gray-500 dark:text-muted border-b border-gray-200 dark:border-edge">
-                  <th className="py-2 pr-3">SKU</th>
-                  <th className="py-2 pr-3">Product</th>
-                  <th className="py-2 pr-3">3 mo</th>
-                  <th className="py-2 pr-3">Avg / mo</th>
-                  <th className="py-2 pr-3">Stock</th>
-                  <th className="py-2 pr-3">Suggest</th>
-                  <th className="py-2">Why</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.sku} className="border-b border-gray-100 dark:border-edge/60">
-                    <td className="py-2 pr-3 font-mono text-xs">{r.sku}</td>
-                    <td className="py-2 pr-3">{r.name}</td>
-                    <td className="py-2 pr-3 font-mono">{r.packs3m}</td>
-                    <td className="py-2 pr-3 font-mono">{r.avgMonth}</td>
-                    <td className="py-2 pr-3">
-                      <span className={`dot ${r.inStock ? "dot-ok" : "dot-bad"}`} />{" "}
-                      {r.inStock ? `${r.leadDays}d lead` : "out"}
-                    </td>
-                    <td className="py-2 pr-3 font-mono">{r.suggested || "—"}</td>
-                    <td className="py-2 text-xs text-gray-600 dark:text-muted">
-                      <span className={r.severity === "urgent" ? "text-bad" : r.severity === "watch" ? "text-warn" : ""}>
-                        {r.reason}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {res && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2" data-tour="kpis">
+            <Kpi label="Core lines checked" value={res.plans.length} />
+            <Kpi label="Will run out" value={res.plans.filter((p) => p.risk === "urgent").length} tone="bad" hint="before a normal order lands" />
+            <Kpi label="Below reorder point" value={res.plans.filter((p) => p.risk === "watch").length} tone="warn" />
+            <Kpi label="Supplier POs drafted" value={pos.length} hint={gbp(pos.reduce((a, p) => a + p.total, 0)).replace(".00", "")} />
+            <Kpi label="Specials kept out" value={res.specials.skus} hint={`${res.specials.orders} one-customer orders`} />
           </div>
-        </Panel>
-      )}
 
-      {poDraft && (
-        <Panel title="Draft purchase order" subtitle="Ready for a human to confirm into Merlin">
-          <pre className="code-input !p-3 text-xs whitespace-pre-wrap">{poDraft}</pre>
-        </Panel>
-      )}
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_21rem]">
+            <Panel title="Core lines" subtitle="Sorted by risk · click a line for Jordan’s reasoning">
+              <div className="overflow-x-auto -mx-1">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-[11px] uppercase tracking-wider text-gray-500 dark:text-muted border-b border-gray-200 dark:border-edge">
+                      <th className="py-1.5 pr-2">Line</th>
+                      <th className="py-1.5 pr-2">24 months + forecast</th>
+                      <th className="py-1.5 pr-2 text-right">On hand</th>
+                      <th className="py-1.5 pr-2">Runs out</th>
+                      <th className="py-1.5 pr-2 text-right">Order</th>
+                      <th className="py-1.5 pr-2 text-right text-gray-400 dark:text-faint whitespace-nowrap">3-mo avg</th>
+                      <th className="py-1.5">Risk</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {res.plans.map((p) => (
+                      <tr
+                        key={p.input.sku}
+                        onClick={() => setSelected(p.input.sku)}
+                        data-tour={`row-${p.input.sku}`}
+                        className={`border-b border-gray-100 dark:border-edge/60 cursor-pointer ${selected === p.input.sku ? "bg-accent/10" : "hover:bg-gray-50 dark:hover:bg-carbon-800"}`}
+                      >
+                        <td className="py-1.5 pr-2">
+                          <div className="font-mono">{p.input.sku}</div>
+                          <div className="text-[11px] text-gray-500 dark:text-muted truncate max-w-[12rem]">{p.input.name}</div>
+                        </td>
+                        <td className="py-1.5 pr-2">
+                          <Sparkline history={p.input.packs} forecast={p.fc.values} naive={p.fc.naive} marks={p.fc.cleaned.outliers.map((o) => o.index)} width={180} height={36} />
+                        </td>
+                        <td className="py-1.5 pr-2 text-right tabular-nums">
+                          {p.input.on_hand.toLocaleString("en-GB")}
+                          <div className="text-[11px] text-gray-500 dark:text-faint">{p.daysCover} days</div>
+                        </td>
+                        <td className="py-1.5 pr-2 whitespace-nowrap">{p.stockoutDate ? ukDay(p.stockoutDate) : "—"}</td>
+                        <td className="py-1.5 pr-2 text-right tabular-nums font-semibold">{p.orderQty ? p.orderQty.toLocaleString("en-GB") : "—"}</td>
+                        <td className="py-1.5 pr-2 text-right tabular-nums text-gray-400 dark:text-faint">{p.naiveOrderQty ? p.naiveOrderQty.toLocaleString("en-GB") : "—"}</td>
+                        <td className="py-1.5">
+                          <div className="flex flex-wrap gap-1">
+                            <Pill tone={RISK[p.risk].tone}>{RISK[p.risk].label}</Pill>
+                            {p.fc.stepUp && <Pill tone="accent">new contract</Pill>}
+                            {p.fc.cleaned.outliers.length > 0 && <Pill tone="warn">one-off ignored</Pill>}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Panel>
 
-      <UnderTheHood filter={["/api/v1/query", "ss_orders", "ss_products"]} />
+            <div className="space-y-4">
+              <Panel title={sel ? `Why · ${sel.input.sku}` : "Why"} subtitle={sel?.input.name}>
+                {sel && (
+                  <div className="space-y-2" data-tour="why">
+                    <Sparkline history={sel.input.packs} forecast={sel.fc.values} naive={sel.fc.naive} marks={sel.fc.cleaned.outliers.map((o) => o.index)} width={340} height={90} />
+                    <ul className="space-y-1 text-xs text-gray-700 dark:text-muted">
+                      {sel.why.map((w) => (
+                        <li key={w}>· {w}</li>
+                      ))}
+                    </ul>
+                    {res.tests.get(sel.input.sku) && (
+                      <p className="text-[11px] text-gray-500 dark:text-faint">
+                        Last 12 months for this line: 3-month average ran short in {res.tests.get(sel.input.sku)!.naive.stockoutMonths} months, Jordan in{" "}
+                        {res.tests.get(sel.input.sku)!.jordan.stockoutMonths}.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </Panel>
+              <Panel title="Draft supplier POs" subtitle="One per supplier · MOQ-rounded · a buyer approves">
+                <div className="space-y-2" data-tour="pos">
+                  {pos.map((po) => (
+                    <div key={po.supplier} className={`rounded-md border p-2 text-xs ${po.urgent ? "border-bad/40" : "border-gray-200 dark:border-edge"}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-gray-900 dark:text-ink">{po.supplier}</span>
+                        {po.urgent && <Pill tone="bad">urgent</Pill>}
+                      </div>
+                      <ul className="mt-1 text-gray-600 dark:text-muted">
+                        {po.lines.map((l) => (
+                          <li key={l.sku} className="flex justify-between gap-2">
+                            <span className="truncate">
+                              {l.qty.toLocaleString("en-GB")} × {l.sku}
+                            </span>
+                            <span className="tabular-nums">{gbp(l.value)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="mt-1 flex items-center justify-between">
+                        <span className="text-gray-500 dark:text-faint">
+                          {gbp(po.total)} · deliver by {ukDay(po.deliverBy)}
+                        </span>
+                        <button
+                          type="button"
+                          className={approved[po.supplier] ? "btn-secondary text-[11px] !py-0.5" : "btn text-[11px] !py-0.5 !px-2"}
+                          onClick={() => setApproved((a) => ({ ...a, [po.supplier]: true }))}
+                          disabled={approved[po.supplier]}
+                        >
+                          {approved[po.supplier] ? "✓ Draft PO in Merlin" : "Approve"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            </div>
+          </div>
+
+          {totals && (
+            <Panel title="Proof: the last 12 months replayed" subtitle="Each month both methods order up to their forecast; then what actually shipped is replayed">
+              <div className="grid gap-3 md:grid-cols-2" data-tour="backtest">
+                {[
+                  { name: "Today: 3-month average + 10% buffer", t: totals.n, c: totals.nc, tone: "bad" as const },
+                  { name: "Jordan: seasonal forecast + safety stock", t: totals.j, c: totals.jc, tone: "ok" as const },
+                ].map((m) => (
+                  <div key={m.name} className={`rounded-lg border p-3 ${m.tone === "ok" ? "border-ok/40 bg-ok/5" : "border-gray-200 dark:border-edge"}`}>
+                    <div className="text-xs font-medium text-gray-900 dark:text-ink">{m.name}</div>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <Kpi label="Months short" value={m.t.s} tone={m.tone} />
+                      <Kpi label="Packs short" value={m.t.p.toLocaleString("en-GB")} tone={m.tone} />
+                      <Kpi label="Re-deliveries" value={m.c.redeliveries} hint={`${gbp(m.c.pounds).replace(".00", "")} vans + margin`} />
+                      <Kpi label="Avg stock held" value={gbp(m.t.v).replace(".00", "")} hint="cash tied up" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
+        </>
+      )}
     </div>
   );
 }

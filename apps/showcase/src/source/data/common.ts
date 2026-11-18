@@ -23,6 +23,10 @@ export const B = {
   washroom: "ss_washroom_jobs",
   tender: "ss_tender_kb",
   drafts: "ss_order_drafts",
+  retailInbox: "ss_retail_inbox",
+  retailRules: "ss_retail_rules",
+  demand: "ss_demand",
+  reportSchedules: "ss_report_schedules",
 } as const;
 
 /**

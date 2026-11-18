@@ -6,3 +6,6 @@ tsconfig.tsbuildinfo
 .env
 .env.local
 .env.*.local
+
+# Tour recorder scratch (tours/record-source-top3.mjs)
+.tour-work/

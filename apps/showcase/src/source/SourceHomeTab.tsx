@@ -36,24 +36,24 @@ const APPS = [
   },
   {
     tab: "ssstock",
-    name: "Stock Pulse",
-    problem: "No live Merlin stock — popular lines still must never run short; averages used to draft POs.",
+    name: "Stock Autopilot",
+    problem: "No live Merlin stock and popular lines still run out; POs drafted from pasted 3-month averages.",
     who: "Warehouse and buying",
-    saves: "Hours each month of ChatGPT paste-and-average",
+    saves: "~60% fewer stock-outs with less cash in stock (12-month backtest)",
   },
   {
     tab: "ssreports",
-    name: "Customer Report Desk",
-    problem: "Customer spend questions wait days for Merlin custom reports.",
+    name: "Jordan Report Studio",
+    problem: "Customer reports wait weeks for Merlin custom-report tickets or someone who writes SQL.",
     who: "Account managers and ops",
-    saves: "Days of vendor back-and-forth per report",
+    saves: "Weeks → seconds per report; monthly reports run themselves",
   },
   {
     tab: "ssretail",
-    name: "Retail POD Desk",
-    problem: "Nationwide retail portal orders need Merlin entry plus two PODs attached back (~£20k/yr).",
+    name: "Retail POD Autopilot",
+    problem: "~600 retail portal orders a month keyed into Merlin, then two PODs found and uploaded for each.",
     who: "Order desk",
-    saves: "~£20k/year dual-POD staff time (discovery estimate)",
+    saves: "~£20k/year; ~87% of deliveries need no person",
   },
   {
     tab: "ssemail",
@@ -78,11 +78,55 @@ const APPS = [
   },
 ];
 
+const TOP3 = [
+  {
+    tab: "ssretail",
+    rank: 1,
+    name: "Retail POD Autopilot",
+    pain: "“This is the biggest pain” — portal orders re-keyed into Merlin, two PODs per delivery uploaded by hand.",
+    win: "≈ £20k a year back · exceptions only",
+    video: "/tours/source-supplies/retail-pod-autopilot.mp4",
+  },
+  {
+    tab: "ssstock",
+    rank: 2,
+    name: "Stock Autopilot",
+    pain: "“Our stock control is always an issue” — popular lines run out; POs from pasted averages.",
+    win: "~60% fewer stock-outs, less cash tied up",
+    video: "/tours/source-supplies/stock-autopilot.mp4",
+  },
+  {
+    tab: "ssreports",
+    rank: 3,
+    name: "Jordan Report Studio",
+    pain: "“Third attempt… three or four days apart” — customer reports stuck behind Merlin and SQL.",
+    win: "Weeks → seconds, scheduled monthly",
+    video: "/tours/source-supplies/report-studio.mp4",
+  },
+];
+
 export function SourceHomeTab({ onNavigate }: { onNavigate: (tab: string) => void }) {
-  const seed = useSeeds(["products", "sds", "guides", "accounts", "orders", "washroom", "tender"]);
+  const seed = useSeeds(["products", "sds", "guides", "accounts", "orders", "washroom", "tender", "retail", "demand"]);
   return (
     <div className="space-y-4">
       <DemoNote extra="Time savings are demo estimates." />
+      <Panel title="The top 3 from the discovery call" subtitle="Dave’s own order: the retail portal + PODs, stock, then reports. Each has a narrated video tour.">
+        <div className="grid gap-3 lg:grid-cols-3">
+          {TOP3.map((t) => (
+            <div key={t.tab} className="rounded-lg border border-gray-200 dark:border-edge p-3 space-y-2">
+              <video src={t.video} controls preload="metadata" className="w-full rounded-md border border-gray-200 dark:border-edge bg-black aspect-video" />
+              <div className="flex items-baseline gap-2">
+                <span className="font-display text-accent">#{t.rank}</span>
+                <button type="button" onClick={() => onNavigate(t.tab)} className="font-semibold text-gray-900 dark:text-ink hover:text-accent text-left">
+                  {t.name} →
+                </button>
+              </div>
+              <p className="text-xs text-gray-600 dark:text-muted">{t.pain}</p>
+              <p className="text-xs font-medium text-ok">{t.win}</p>
+            </div>
+          ))}
+        </div>
+      </Panel>
       <Panel
         title="AI for Source Supplies"
         subtitle="Everyday jobs at a UK B2B cleaning and hygiene supplier — including stock, Merlin reports, retail PODs and email orders from the discovery call — on NebulaDB SQL, grounded chat and MCP agents."
