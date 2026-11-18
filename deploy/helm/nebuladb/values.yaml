@@ -280,6 +280,11 @@ showcase:
     # Public origin for --redirect-url (no trailing slash). Required
     # when enabled; usually the ingress host for this environment.
     redirectUrl: ""
+    # true: derive the OAuth callback from the request host instead of
+    # redirectUrl, so extra ingress hosts (customer demo sites such as
+    # sourcesupplies.nebuladb.net) each sign in on their own domain.
+    # Register https://<host>/oauth2/callback for every host in Google.
+    hostRedirect: false
     # "*" = any Google account (know who viewed). Restrict with a
     # domain list, e.g. "example.com,other.org".
     emailDomains: "*"

@@ -20,7 +20,7 @@ import { ArchitecturePanel } from "../components/RagArchitecture";
 import { PipelineTrace, type PipelineStep } from "../rag/PipelineTrace";
 import { runSql } from "../rag/sql";
 import { exhaustiveLimit } from "./data/common";
-import { BUCKET, DEMAND_DOCS, DEMAND_MONTHS } from "./data/demand";
+import { BUCKET, CORE, DEMAND, DEMAND_DOCS, DEMAND_MONTHS, SUPPLIERS, unitCost } from "./data/demand";
 import { PRODUCT_BY_SKU } from "./data/products";
 import { backtest, draftPos, plan, shortfallCost, ukDay, type Backtest, type Risk, type SkuInput, type SkuPlan } from "./stockPilot";
 import { BenefitStrip, Kpi, Pill, Sparkline } from "./autopilotUi";
@@ -36,6 +36,24 @@ const RISK: Record<Risk, { tone: "bad" | "warn" | "ok" | "accent"; label: string
   overstock: { tone: "accent", label: "Overstocked" },
 };
 const ORDER: Record<Risk, number> = { urgent: 0, watch: 1, ok: 2, overstock: 3 };
+
+/** The 12-month backtest is deterministic, so the benefit strip can show it before the first run. */
+function bundledTotals() {
+  const n = { s: 0, p: 0, v: 0 };
+  const j = { s: 0, p: 0, v: 0 };
+  for (const c of CORE) {
+    const rows = DEMAND.filter((r) => r.sku === c.sku);
+    const sup = SUPPLIERS[c.supplier];
+    const b = backtest({
+      sku: c.sku, months: rows.map((r) => r.month), packs: rows.map((r) => r.packs), topShare: rows.map((r) => r.top_order_share),
+      name: c.sku, supplier: sup.name, lead_days: sup.lead_days, moq: c.moq, unit_cost: unitCost(c.sku), on_hand: 0, on_order: 0, eta: null,
+    });
+    n.s += b.naive.stockoutMonths; n.p += b.naive.shortPacks; n.v += b.naive.avgStockValue;
+    j.s += b.jordan.stockoutMonths; j.p += b.jordan.shortPacks; j.v += b.jordan.avgStockValue;
+  }
+  return { n, j, nc: shortfallCost(n.p), jc: shortfallCost(j.p) };
+}
+const PREVIEW = bundledTotals();
 
 interface Result {
   plans: SkuPlan[];
@@ -130,7 +148,7 @@ export function StockPulseTab() {
 
   const pos = useMemo(() => (res ? draftPos(res.plans, TODAY) : []), [res]);
   const totals = useMemo(() => {
-    if (!res) return null;
+    if (!res) return PREVIEW;
     const n = { s: 0, p: 0, v: 0 };
     const j = { s: 0, p: 0, v: 0 };
     for (const b of res.tests.values()) {

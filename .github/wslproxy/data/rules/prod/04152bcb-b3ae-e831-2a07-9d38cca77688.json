@@ -31,9 +31,10 @@
     "prod"
   ],
   "servers": [
-    "host:int-nebuladb.nebuladb.net",
-    "host:test-showcase.nebuladb.net",
     "host:acc-showcase.nebuladb.net",
-    "host:showcase.nebuladb.net"
+    "host:int-nebuladb.nebuladb.net",
+    "host:showcase.nebuladb.net",
+    "host:sourcesupplies.nebuladb.net",
+    "host:test-showcase.nebuladb.net"
   ]
 }

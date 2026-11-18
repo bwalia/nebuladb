@@ -140,7 +140,15 @@ spec:
             - --upstream=static://202
             - --email-domain={{ .Values.showcase.googleAuth.emailDomains }}
             {{- if $google }}
+            {{- if .Values.showcase.googleAuth.hostRedirect }}
+            # Host-relative: oauth2-proxy builds https://<request host>/oauth2/callback
+            # (https because --cookie-secure), so every host on this ingress
+            # (showcase + customer sites) signs in on its own domain. Each
+            # host's callback must be listed in the Google OAuth client.
+            - --redirect-url=/oauth2/callback
+            {{- else }}
             - --redirect-url={{ .Values.showcase.googleAuth.redirectUrl }}/oauth2/callback
+            {{- end }}
             {{- else }}
             # Password-only: the provider is never used (/login hides the
             # Google button) but oauth2-proxy refuses to start without one.
