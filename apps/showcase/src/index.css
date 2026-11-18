@@ -128,3 +128,12 @@
     animation: none !important;
   }
 }
+
+/* Source Supplies customer site (src/source/site): the same demo screens
+   as the showcase, but sized for customers reading on a laptop or a
+   projector. Scoped to .ss-site, so the combined showcase is unchanged. */
+.ss-site main .text-\[10px\] { font-size: 12px; }
+.ss-site main .text-\[11px\] { font-size: 13px; }
+.ss-site main .text-xs { font-size: 14px; line-height: 1.45; }
+.ss-site main .text-sm { font-size: 15.5px; line-height: 1.55; }
+.ss-site main .card h3 { font-size: 1.15rem; }

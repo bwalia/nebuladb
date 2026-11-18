@@ -15,6 +15,36 @@ sidebar (`apps/showcase/src/source/`). The agents live in `examples/nebula-agent
 > excluding VAT. The model never places an order, sends an email or books a visit: it drafts, and
 > a person confirms.
 
+## Customer site: sourcesupplies.nebuladb.net
+
+A separate, customer-facing site for Source Supplies — share this link with the customer; keep
+`showcase.nebuladb.net` (everything combined) for our own testing. Same image and pods as the
+showcase: `src/main.tsx` renders `src/source/site/SourceSite.tsx` instead of `<App/>` when the host
+is `sourcesupplies.*` (`src/tenant.ts`; locally add `?site=sourcesupplies`, `?site=showcase` to go
+back).
+
+- Only the Source Supplies demos and Labs (pinned to the Source pack, picker hidden), grouped as
+  Your top 3 · Orders & operations · Sales & compliance · Explore.
+- Search in the header (every demo's name, problem, outcome and keywords) and a filter on the home
+  page; a Video tours page; every demo page leads with the problem, what Jordan does, the win and a
+  ▶ Watch button. Larger type for the embedded demo screens (scoped `.ss-site` CSS).
+- Narrated tours for all 11 demos, recorded inside this shell, with posters:
+  `public/tours/source-supplies/*.mp4` + `posters/*.jpg`; the catalogue is
+  `src/source/site/catalog.ts`. Re-record: `apps/showcase/tours/record-source-top3.mjs`.
+- Sign-in is the same as the showcase (Google + email/password); `login.html` brands itself per
+  host. Prod sets `showcase.googleAuth.hostRedirect: true`, so oauth2-proxy uses the request host
+  for its callback. **The Google OAuth client must list
+  `https://sourcesupplies.nebuladb.net/oauth2/callback`** (email/password works without it).
+
+Infra (no database restart): `values-prod.yaml` ingress host; `deploy-k3s.yml` showcase-only mode
+adds missing customer hosts to the live ingress and swaps the OAuth arg in the same rolling update;
+edge vhost `deploy/edge/wslproxy-server-sourcesupplies.json` + `.github/wslproxy/…/host:sourcesupplies.nebuladb.net.json`
+and the shared prod rule; `register-edge-vhost.yml` ring `sourcesupplies` creates the wslproxy server
+and the Cloudflare CNAME (→ `lon1.pop0.uk`).
+
+To add another customer site: a host in `tenant.ts` + a shell, the ingress host, `CUSTOMER_HOSTS`
+in `deploy-k3s.yml`, an edge server JSON + rule entry + ring, and its Google callback.
+
 ## Run it
 
 ```bash

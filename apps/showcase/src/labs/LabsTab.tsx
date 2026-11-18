@@ -43,19 +43,21 @@ function storedPack(): string {
   }
 }
 
-function readState(): LabState {
-  const s = parseLabHash(window.location.hash, storedPack()) ?? { lab: null, pack: storedPack() };
+function readState(lockPack?: string): LabState {
+  const s = parseLabHash(window.location.hash, lockPack ?? storedPack()) ?? { lab: null, pack: lockPack ?? storedPack() };
+  if (lockPack) s.pack = lockPack;
   if (s.lab && !(s.lab in COMPONENTS)) s.lab = null;
   return s;
 }
 
-export function LabsTab() {
-  const [state, setState] = useState<LabState>(readState);
+/** `lockPack` pins one business's data and hides the pack picker (customer sites). */
+export function LabsTab({ lockPack }: { lockPack?: string } = {}) {
+  const [state, setState] = useState<LabState>(() => readState(lockPack));
   const env = useLabEnv();
 
   useEffect(() => {
     const on = () => {
-      if (window.location.hash.startsWith("#/labs")) setState(readState());
+      if (window.location.hash.startsWith("#/labs")) setState(readState(lockPack));
     };
     window.addEventListener("hashchange", on);
     if (!window.location.hash.startsWith("#/labs")) history.replaceState(null, "", labHash(state));
@@ -83,7 +85,7 @@ export function LabsTab() {
   }, []);
 
   const pack = getPack(state.pack);
-  if (!state.lab) return <LabsHome pack={pack.id} onPack={(id) => update({ pack: id })} />;
+  if (!state.lab) return <LabsHome pack={pack.id} onPack={(id) => update({ pack: id })} locked={Boolean(lockPack)} />;
   return <LabView key={`${state.lab}-${pack.id}`} lab={state.lab} state={state} update={update} env={env} />;
 }
 
@@ -109,7 +111,7 @@ const CONCEPTS: { id: Concept | "all"; label: string }[] = [
   { id: "scale", label: "Scale" },
 ];
 
-function LabsHome({ pack, onPack }: { pack: string; onPack: (id: string) => void }) {
+function LabsHome({ pack, onPack, locked = false }: { pack: string; onPack: (id: string) => void; locked?: boolean }) {
   const [concept, setConcept] = useState<Concept | "all">("all");
   const [quick, setQuick] = useState(false);
   const p = getPack(pack);
@@ -121,8 +123,9 @@ function LabsHome({ pack, onPack }: { pack: string; onPack: (id: string) => void
       <div className="card space-y-4">
         <p className="max-w-3xl text-sm text-gray-600 dark:text-muted">
           Eight short experiments, each on a real business's (invented) data and a real NebulaDB. Each lab says how it works, what its result
-          doesn't show, and gives you a challenge. Pick a business — every lab works with every one.
+          doesn't show, and gives you a challenge.{locked ? "" : " Pick a business — every lab works with every one."}
         </p>
+        {!locked && (
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {PACKS.map((x) => (
             <button
@@ -140,6 +143,7 @@ function LabsHome({ pack, onPack }: { pack: string; onPack: (id: string) => void
             </button>
           ))}
         </div>
+        )}
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="eyebrow mr-1">Start here</span>
           {START_PATH.map((id, i) => (
@@ -162,7 +166,7 @@ function LabsHome({ pack, onPack }: { pack: string; onPack: (id: string) => void
         <label className="ml-auto inline-flex items-center gap-2 text-xs text-gray-500 dark:text-muted">
           <input type="checkbox" checked={quick} onChange={(e) => setQuick(e.target.checked)} /> 2-minute labs only
         </label>
-        <PackPicker value={p.id} onChange={onPack} />
+        {!locked && <PackPicker value={p.id} onChange={onPack} />}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

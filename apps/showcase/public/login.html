@@ -330,6 +330,14 @@
           return "/oauth2/start?rd=" + encodeURIComponent(rd);
         }
 
+        // Customer demo sites share this login page; brand it per host.
+        if (/^([a-z]+-)?sourcesupplies\./.test(location.hostname)) {
+          document.title = "Sign in — Source Supplies × Jordan AI";
+          var h = document.querySelector(".brand h1");
+          var sub = document.querySelector(".brand p");
+          if (h) h.textContent = "Source Supplies × Jordan AI";
+          if (sub) sub.textContent = "Your AI demos, on dummy data";
+        }
         fetch("/login-config.json", { credentials: "same-origin", cache: "no-store" })
           .then(function (r) {
             return r.ok ? r.json() : { google: true, password: false, mode: "google" };

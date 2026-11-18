@@ -17,6 +17,7 @@ import { PipelineTrace, type PipelineStep } from "../rag/PipelineTrace";
 import { lit, runSql, similarity } from "../rag/sql";
 import { B, exhaustiveLimit } from "./data/common";
 import { PRODUCT_DOCS } from "./data/products";
+import { guessCategory } from "./reorder";
 import { Chips, DemoNote, SeedChip, gbp, metaOf, overlap, productOf, str, useSeeds } from "./common";
 import type { Product } from "./data/products";
 
@@ -122,19 +123,23 @@ export function EmailOrderTab() {
 
       const lines: DraftLine[] = [];
       for (const p of parsed) {
+        // Route to the catalogue category first, pull the whole category,
+        // then rank mostly on words in common: robust with any embedder,
+        // and a real embedder sharpens the meaning part.
+        const cat = guessCategory(p.phrase);
         const sql =
           `SELECT * FROM ${B.products}\n WHERE semantic_match(text, ${lit(p.phrase)})` +
-          `\n   AND in_stock = ${lit(true)}\n LIMIT ${Math.min(8, PRODUCTS_LIMIT)}`;
-        const i = push({ label: `Match “${p.phrase}”`, detail: sql, status: "running" });
+          `\n   AND in_stock = ${lit(true)}${cat ? `\n   AND category = ${lit(cat)}` : ""}\n LIMIT ${Math.max(PRODUCTS_LIMIT, PRODUCT_DOCS.length)}`;
+        const i = push({ label: `Match “${p.phrase}”${cat ? ` (${cat})` : ""}`, detail: sql, status: "running" });
         const res = await runSql(sql);
         const ranked = res.rows
           .map((r) => {
             const prod = productOf(r);
-            const sim = similarity(r.score);
-            const words = overlap(p.phrase, str(metaOf(r).text) || prod.name);
+            const words = overlap(p.phrase.replace(/-/g, " "), `${prod.name} ${str(metaOf(r).text)}`.replace(/-/g, " "));
+            const sim = 0.7 * words + 0.3 * similarity(r.score);
             return { prod, sim, words };
           })
-          .sort((a, b) => b.sim + b.words * 0.05 - (a.sim + a.words * 0.05));
+          .sort((a, b) => b.sim - a.sim);
         const best = ranked[0];
         done(i, { rowsOut: res.rows.length, ms: res.tookMs });
         lines.push({

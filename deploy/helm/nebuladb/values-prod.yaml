@@ -112,6 +112,14 @@ server:
         paths:
           - path: /
             pathType: Prefix
+      # Customer demo site: same showcase pods, the app picks the Source
+      # Supplies shell by host (apps/showcase/src/tenant.ts). Keep in sync
+      # with CUSTOMER_HOSTS in .github/workflows/deploy-k3s.yml and
+      # deploy/edge/wslproxy-server-sourcesupplies.json.
+      - host: sourcesupplies.nebuladb.net
+        paths:
+          - path: /
+            pathType: Prefix
     tls:
       - hosts:
           - showcase.nebuladb.net
@@ -144,6 +152,10 @@ showcase:
   googleAuth:
     enabled: true
     redirectUrl: "https://showcase.nebuladb.net"
+    # Per-host callback for showcase + sourcesupplies. Google OAuth client
+    # redirect URIs: https://showcase.nebuladb.net/oauth2/callback and
+    # https://sourcesupplies.nebuladb.net/oauth2/callback
+    hostRedirect: true
 
 # Claude agents example suite (MCP → NebulaDB), exposed at /examples.
 examples:
