@@ -1,9 +1,11 @@
 # Source Supplies AI showcase
 
-Six RAG apps and one agent team built for one business: Source Supplies Ltd, a UK B2B supplier of
+RAG apps and one agent team built for one business: Source Supplies Ltd, a UK B2B supplier of
 sustainable commercial cleaning and hygiene products, cleaning machines and washroom services.
-The apps live in the showcase under **Source Supplies** in the sidebar
-(`apps/showcase/src/source/`). The agents live in `examples/nebula-agents` (`--team source`).
+Four extra apps (Stock Pulse, Customer Report Desk, Retail POD Desk, Email Order Intake) map to
+pain points from the Source Supplies discovery call (Merlin stock/reports, nationwide retail dual
+PODs, emailed orders → Merlin). The apps live in the showcase under **Source Supplies** in the
+sidebar (`apps/showcase/src/source/`). The agents live in `examples/nebula-agents` (`--team source`).
 
 > **Demo data only.** Every product, SKU, price, stock level, customer, site, order, ticket, tender
 > answer and safety data sheet is invented. The safety data sheets are for fictional products, carry
@@ -22,7 +24,7 @@ cargo run --release -p nebula-server     # :8080
 cd apps/showcase && npm ci && npm run dev  # http://localhost:5173 → Source Supplies
 ```
 
-Open **Source Supplies home** (or any of the six tabs). Each tab seeds the buckets it reads on first
+Open **Source Supplies home** (or any Source Supplies tab). Each tab seeds the buckets it reads on first
 open with the existing `ensureSeeded` helper (versioned, batched upserts keyed by id); opening it
 again writes 0 documents, which the seed chip shows ("… demo docs ready (0 written)").
 
@@ -68,7 +70,7 @@ that `LIMIT × 4` covers the bucket (`exhaustiveLimit()` in `data/common.ts`): 3
 for orders, 48 for SDS sections. Every literal goes through `lit()`, so `site = 'St Mary''s Primary'`
 is safe. One `semantic_match(text, …)` per query; no `OR`, subqueries or CTEs.
 
-## The six apps
+## The apps
 
 ### A. Green Product Finder (`ssfinder`)
 
@@ -183,6 +185,30 @@ trimmed in code to the word limit and export as Markdown. Topics with strong dem
 sustainability and carbon (EV deliveries inside the M25, solar-powered site, B Corp, ISO 14001),
 health and safety (ISO 45001, COSHH support and videos), quality (ISO 9001), delivery and service
 levels, social value, and product training. Invented numbers are marked "(demo figure)".
+
+### G. Stock Pulse (`ssstock`)
+
+Discovery-call theme: no live Merlin stock; Dave was pasting averages into ChatGPT to draft POs.
+Scan `ss_orders` for the last three months, rank popular SKUs, flag out-of-stock or high-velocity
+lines, and draft a supplier PO from `ceil(avg packs)`. A person confirms before any supplier send.
+
+### H. Customer Report Desk (`ssreports`)
+
+Discovery-call theme: Merlin custom reports take days. Pick an account + period, roll up
+`ss_orders` spend by site/SKU in the browser, then ask Jordan a grounded question
+(“What did Ashby buy last quarter?”) without a vendor ticket.
+
+### I. Retail POD Desk (`ssretail`)
+
+Discovery-call theme: nationwide retail portal (~30 small orders/day) → Merlin → courier → attach
+**two** PODs (Merlin scan + courier photo) back to the portal (~£20k/yr staff time). Demo retailer
+is fictional **ValueMax Stores** on a Service Portal–style board; actions are confirmed by a person.
+
+### J. Email Order Intake (`ssemail`)
+
+Discovery-call theme: ~90% of orders hit the website; the rest arrive by email and are re-keyed.
+Paste an email → parse qty lines → `semantic_match` on `ss_products` → draft Merlin sales order.
+Weak matches stay with a human; nothing writes to Merlin until confirmed.
 
 ## Agent team
 

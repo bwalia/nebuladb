@@ -1,5 +1,5 @@
 /**
- * Landing page for the Source Supplies section: the six apps as cards,
+ * Landing page for the Source Supplies section: the apps as cards,
  * and the agent team. Opening it seeds every ss_* bucket (idempotent).
  */
 import { Panel } from "../components";
@@ -35,6 +35,34 @@ const APPS = [
     saves: "About 10 minutes per site per month",
   },
   {
+    tab: "ssstock",
+    name: "Stock Pulse",
+    problem: "No live Merlin stock — popular lines still must never run short; averages used to draft POs.",
+    who: "Warehouse and buying",
+    saves: "Hours each month of ChatGPT paste-and-average",
+  },
+  {
+    tab: "ssreports",
+    name: "Customer Report Desk",
+    problem: "Customer spend questions wait days for Merlin custom reports.",
+    who: "Account managers and ops",
+    saves: "Days of vendor back-and-forth per report",
+  },
+  {
+    tab: "ssretail",
+    name: "Retail POD Desk",
+    problem: "Nationwide retail portal orders need Merlin entry plus two PODs attached back (~£20k/yr).",
+    who: "Order desk",
+    saves: "~£20k/year dual-POD staff time (discovery estimate)",
+  },
+  {
+    tab: "ssemail",
+    name: "Email Order Intake",
+    problem: "The ~10% of orders still emailed must be re-keyed into Merlin by hand.",
+    who: "Order desk",
+    saves: "Re-keying time on every emailed PO",
+  },
+  {
     tab: "sswashroom",
     name: "Washroom Service Desk",
     problem: "Washroom issues need the right priority, a missed-visit check and a quick reply.",
@@ -57,7 +85,7 @@ export function SourceHomeTab({ onNavigate }: { onNavigate: (tab: string) => voi
       <DemoNote extra="Time savings are demo estimates." />
       <Panel
         title="AI for Source Supplies"
-        subtitle="Six everyday jobs at a UK B2B cleaning and hygiene supplier, each built on NebulaDB SQL, grounded chat and MCP agents."
+        subtitle="Everyday jobs at a UK B2B cleaning and hygiene supplier — including stock, Merlin reports, retail PODs and email orders from the discovery call — on NebulaDB SQL, grounded chat and MCP agents."
         action={<SeedChip seed={seed} />}
       >
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -82,7 +110,7 @@ export function SourceHomeTab({ onNavigate }: { onNavigate: (tab: string) => voi
           ))}
         </div>
       </Panel>
-      <Panel title="Agent team" subtitle="The same story with Claude choosing the tool calls over MCP">
+      <Panel title="Agent team" subtitle="The same story with Claude choosing the tool calls over MCP — Jordan AI middleware to Merlin">
         <p className="text-sm text-gray-700 dark:text-muted">
           Seven agents (product, safety, order, washroom, sustainability, account assistant and a supervisor) each get only the NebulaDB
           tools they need. The order agent can only write drafts to <code>ss_order_drafts</code>; nothing places an order. See{" "}

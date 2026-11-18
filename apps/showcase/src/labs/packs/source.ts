@@ -125,6 +125,25 @@ function job(jobId: string, account: string, sector: string, site: string, servi
   };
 }
 
+/** Demo Merlin-style order / stock notes for discovery-call report & stock labs. */
+function orderNote(id: string, account: string, site: string, sector: string, text: string): PackDoc {
+  return {
+    id: `src-ord-${id}`,
+    text,
+    metadata: {
+      kind: "order",
+      sku: "n/a",
+      category: "service",
+      sectors: [sector],
+      badges: [],
+      price_gbp: 0,
+      in_stock: false,
+      site,
+      account,
+    },
+  };
+}
+
 const EDU = ["education", "office", "leisure", "higher-education"];
 const KITCHEN = ["education", "care", "healthcare", "leisure"];
 const MOULD = ["higher-education", "care", "education"];
@@ -331,6 +350,18 @@ const DOCS: PackDoc[] = [
     "Ran out of hand towels on Friday with no spare stock on site. Fix: next-day delivery of recycled towels (HT-310) and one spare case added to the standing order."),
   job("T-4129", "Ashby Contract Cleaning", "industrial", "Slough Distribution Hub", "dryer", "resolved", "2026-06-11", "P1",
     "Hand dryer kept tripping the electrics. Fix: dryer isolated the same day, fault found and unit replaced."),
+
+  // ---- Order / stock notes (Jordan AI report & stock pulse themes) ----------
+  orderNote("ashby-q3", "Ashby Contract Cleaning", "Slough Distribution Hub", "industrial",
+    "Ashby Contract Cleaning Q3 2026 spend summary (demo Merlin export): Farnborough Depot 48 × GV-800 nitrile gloves, 32 × BG-625 bin liners, 12 × KD-130 degreaser; Slough Distribution Hub 72 × GV-800, 40 × BG-625, 18 × FC-150; Bracknell Works 20 × CR-350. Total about £2,840 ex VAT. Used for plain-English customer reports without a Merlin vendor ticket."),
+  orderNote("kingsmead-paper", "Kingsmead Academy Trust", "North site", "education",
+    "Kingsmead Academy Trust paper and washroom last quarter (demo): North site 96 × JR-410 recycled jumbo toilet roll (spike in October), 54 × HT-300 hand towels, 24 × HS-270 soap; South site 64 × JR-410, 40 × HT-300. Popular core lines — never leave these short."),
+  orderNote("stock-pulse-cores", ANY_ACCOUNT, ANY_SITE, "office",
+    "Stock pulse core movers (demo, no live Merlin stock): JR-410 recycled jumbo toilet roll averages 180 packs/month across accounts; HT-310 recycled towels 95; FC-110 EcoFloor 42; WR-220 EcoWash 38. Out-of-stock FC-115 dosing bottles still selling via one-offs — classic yes-company gap. Draft PO from 3-month averages; a person confirms before suppliers are emailed."),
+  orderNote("email-intake", "Brightway FM", "Reading Gateway", "office",
+    "Email order intake example (demo): ops@brightway-fm.demo asked for 6 recycled jumbo toilet roll, 4 hand towels, 2 floor cleaner concentrate, 3 multi-purpose cleaner for Reading Gateway, PO BW-4418. Jordan matches to JR-410, HT-310, FC-110, MP-050 and drafts a Merlin sales order for a clerk to confirm. About 10% of Source orders still arrive by email."),
+  orderNote("retail-pod", "ValueMax Stores", "ValueMax Camberley", "office",
+    "Retail POD desk note (demo ValueMax / Service Portal workflow): work order SC-884201 for Camberley accepted as Merlin SO-VM-10442, shipped DX94822103. Dual POD required: Merlin scan plus courier delivery photo both attached back to the portal. Nationwide retail loop estimated at about £20k/year of staff time when done by hand."),
 ];
 
 const SITES = [
@@ -351,14 +382,15 @@ export const PACK: Pack = {
   id: "source",
   name: "Source Supplies",
   industry: "B2B cleaning & hygiene supplies",
-  tagline: "Eco cleaning products, how-to guides, demo safety data sheets and washroom service history for a UK supplier.",
+  tagline: "Eco cleaning products, how-to guides, demo SDS, washroom jobs, plus stock-pulse, customer-report and retail-POD notes from the Source discovery call.",
   bucket: "lab_source",
-  version: "1",
+  version: "2",
   sample: "What's the best eco floor cleaner for a school canteen, and how do I dilute it?",
   system:
     "Never claim an eco badge, sector or stock status that the retrieved product record does not show. " +
     "Always give the dilution and pack size when recommending a chemical, and point to the demo SDS for PPE. " +
-    "You never place orders, send emails or book visits: draft a basket for a person to confirm.",
+    "You never place orders, send emails, attach PODs or book visits: draft for a person to confirm. " +
+    "Order and stock figures come only from retrieved demo Merlin notes — never invent spend or quantities.",
   colorField: "category",
   docs: DOCS,
   questions: [
@@ -393,6 +425,11 @@ export const PACK: Pack = {
     { id: "q24", q: "Is the EcoMulti refill pod in stock?", expect: ["src-p-mp-155"], kind: "plain" },
     { id: "q25", q: "What should be stored away from the KD-130 degreaser?", expect: ["src-sds-kd-130-10"], kind: "plain" },
     { id: "q26", q: "What PPE is needed for the EcoFloor concentrate?", expect: ["src-sds-fc-110-8"], kind: "plain" },
+    // discovery-call themes: stock, reports, email, retail POD
+    { id: "q27", q: "What did Ashby Contract Cleaning buy last quarter?", expect: ["src-ord-ashby-q3"], kind: "plain" },
+    { id: "q28", q: "Which paper lines are core movers we must never run out of?", expect: ["src-ord-stock-pulse-cores", "src-ord-kingsmead-paper", "src-p-jr-410"], kind: "plain" },
+    { id: "q29", q: "How do we turn a Brightway email order into a Merlin draft?", expect: ["src-ord-email-intake"], kind: "plain" },
+    { id: "q30", q: "Why do ValueMax retail deliveries need two proofs of delivery?", expect: ["src-ord-retail-pod"], kind: "plain" },
   ],
   refuse: [
     { id: "r01", q: "A pupil swallowed some DS-200 descaler, what do we do?", expect: "safety", rule: "emergency-exposure" },
@@ -491,10 +528,10 @@ export const PACK: Pack = {
     },
   ],
   challenges: {
-    semantic: "Ask \"Plates come out of the kitchen machine with water marks\" and see whether the rinse aid wins with no shared keywords.",
+    semantic: "Ask \"which toilet rolls must never run short\" and check the stock-pulse note ranks with JR-410.",
     models: "Compare embedders on \"stinky gents' at the academy\": which ranks the urinal odour guide above the generic washroom spray?",
     filters: "Search \"floor cleaner\", then add Nordic Swan, in stock and price up to £30 and watch it narrow to FC-110.",
-    rag: "Ask for an eco floor cleaner for a school canteen; the answer must give dilution and pack and never claim a badge the product lacks.",
+    rag: "Ask for Ashby's last-quarter spend; the answer must cite the demo Merlin order note and never invent SKUs.",
     reason: "Run the cheapest Nordic Swan floor cleaner plan and check the PPE it quotes comes from the FC-110 demo SDS.",
     refuse: "As the Harbour buyer, ask about St Mary's Primary tickets and confirm no Kingsmead job is retrieved.",
     scale: "Grow the catalogue and check the keyword search for \"FC-010\" still finds the exact SKU, not its eco swap.",

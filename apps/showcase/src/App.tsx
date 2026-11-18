@@ -45,6 +45,10 @@ import { FinderTab } from "./source/FinderTab";
 import { SafetyTab } from "./source/SafetyTab";
 import { ProblemSolverTab } from "./source/ProblemSolverTab";
 import { ReorderTab } from "./source/ReorderTab";
+import { StockPulseTab } from "./source/StockPulseTab";
+import { ReportDeskTab } from "./source/ReportDeskTab";
+import { ServiceChannelTab } from "./source/ServiceChannelTab";
+import { EmailOrderTab } from "./source/EmailOrderTab";
 import { WashroomTab } from "./source/WashroomTab";
 import { TenderTab } from "./source/TenderTab";
 import { UseCaseDemo, type UseCaseSpec } from "./usecases/UseCaseDemo";
@@ -89,6 +93,10 @@ type TabId =
   | "sssafety"
   | "sssolver"
   | "ssreorder"
+  | "ssstock"
+  | "ssreports"
+  | "ssretail"
+  | "ssemail"
   | "sswashroom"
   | "sstender"
   | IndustryTabId
@@ -151,11 +159,15 @@ const NAV: NavItem[] = [
   { id: "policy", label: "Policy Desk", hint: "HR / security / finance handbook Q&A with citations", icon: "▤", group: "apps" },
   { id: "rfp", label: "RFP Responder", hint: "Buyer questions → capabilities + past proposals → cited drafts", icon: "❐", group: "apps" },
   { id: "onboarding", label: "Onboarding", hint: "Day-one checklist + role-filtered handbook concierge", icon: "⚑", group: "apps" },
-  { id: "sshome", label: "Source Supplies home", hint: "Six AI apps and an agent team for a UK B2B cleaning and hygiene supplier (demo data)", icon: "⌂", group: "source" },
+  { id: "sshome", label: "Source Supplies home", hint: "AI apps and an agent team for a UK B2B cleaning and hygiene supplier (demo data)", icon: "⌂", group: "source" },
   { id: "ssfinder", label: "Green Product Finder", hint: "What should I use? Meaning + eco filters in one SQL query, greener swaps priced at your volume", icon: "❀", group: "source" },
   { id: "sssafety", label: "COSHH & Safety Data", hint: "Safety data sheet answers with section citations; emergency, mixing and not-in-the-SDS rules in code", icon: "⚠", group: "source" },
   { id: "sssolver", label: "Cleaning Problem Solver", hint: "Tough job → the right guide by surface and sector → method, kit with stock, draft Quick Order", icon: "✦", group: "source" },
   { id: "ssreorder", label: "Smart Reorder", hint: "Multi-site reorder: order history → forecast → swaps → delivery-day check → draft basket", icon: "↻", group: "source" },
+  { id: "ssstock", label: "Stock Pulse", hint: "Popular SKUs from recent demand → draft supplier PO from 3-month averages (no live Merlin stock)", icon: "▣", group: "source" },
+  { id: "ssreports", label: "Customer Report Desk", hint: "Plain-English “what did they buy?” from order history — no multi-day Merlin report ticket", icon: "▥", group: "source" },
+  { id: "ssretail", label: "Retail POD Desk", hint: "Nationwide retail portal → Merlin → dual POD attach (Merlin scan + courier photo) ~£20k/yr loop", icon: "🚚", group: "source" },
+  { id: "ssemail", label: "Email Order Intake", hint: "Customer email → match catalogue → draft Merlin sales order; person confirms", icon: "✉", group: "source" },
   { id: "sswashroom", label: "Washroom Service Desk", hint: "Source Washroom issues → nearest past jobs vote, missed-visit check, cited reply, quote helper", icon: "⌖", group: "source" },
   { id: "sstender", label: "Tender Responder", hint: "School, NHS and council questions → evidence per question, coverage score, cited drafts, Markdown export", icon: "❐", group: "source" },
   { id: "entity", label: "Entity Resolve", hint: "CRM dedupe via semantic neighbours + merge/review scores", icon: "⊕", group: "use" },
@@ -427,6 +439,10 @@ export function App() {
               {tab === "sssafety" && <SafetyTab />}
               {tab === "sssolver" && <ProblemSolverTab />}
               {tab === "ssreorder" && <ReorderTab />}
+              {tab === "ssstock" && <StockPulseTab />}
+              {tab === "ssreports" && <ReportDeskTab />}
+              {tab === "ssretail" && <ServiceChannelTab />}
+              {tab === "ssemail" && <EmailOrderTab />}
               {tab === "sswashroom" && <WashroomTab />}
               {tab === "sstender" && <TenderTab />}
               {tab in INDUSTRY_SPECS && (
