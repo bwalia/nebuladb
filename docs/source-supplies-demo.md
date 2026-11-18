@@ -2,9 +2,9 @@
 
 RAG apps and one agent team built for one business: Source Supplies Ltd, a UK B2B supplier of
 sustainable commercial cleaning and hygiene products, cleaning machines and washroom services.
-Four extra apps (Stock Pulse, Customer Report Desk, Retail POD Desk, Email Order Intake) map to
-pain points from the Source Supplies discovery call (Merlin stock/reports, nationwide retail dual
-PODs, emailed orders → Merlin). The apps live in the showcase under **Source Supplies** in the
+Four extra apps map to pain points from the Source Supplies discovery call; the top 3 (Retail POD
+Autopilot, Stock Autopilot, Jordan Report Studio) are full automations with narrated video tours, and
+Email Order Intake covers emailed orders → Merlin. The apps live in the showcase under **Source Supplies** in the
 sidebar (`apps/showcase/src/source/`). The agents live in `examples/nebula-agents` (`--team source`).
 
 > **Demo data only.** Every product, SKU, price, stock level, customer, site, order, ticket, tender
@@ -53,6 +53,10 @@ deterministic "words in common" signal where a ranking would otherwise be noise.
 | `ss_washroom_jobs` | 82 | a planned visit or a resolved ticket | `kind`, `account_id`, `site`, `service`, `status`, `visit_date`, `priority` |
 | `ss_tender_kb` | 60 | a capability or past tender answer | `kind`, `topic`, `cert`, `sector`, `won` |
 | `ss_order_drafts` | — | a draft basket (apps and agents write here) | `account_id`, `site`, `status = 'draft'`, `created_by` |
+| `ss_retail_inbox` | 72 | a portal order, Merlin delivery ticket or courier POD email | `kind`, `po`, `consignment`, `store_no`, `postcode`, `despatched`, `status` |
+| `ss_retail_rules` | — | a learned correction (app writes) | `kind` (`address_alias` / `item_alias`), `store_no`, `postcode`, `code`, `sku` |
+| `ss_demand` | 413 | a SKU-month of despatches, or a stock position | `kind`, `sku`, `month`, `packs`, `core`, `top_order_share`, `supplier`, `lead_days`, `moq` |
+| `ss_report_schedules` | — | a scheduled customer report (app writes) | `account_id`, `cadence`, `next_run` |
 
 Data files: `apps/showcase/src/source/data/*.ts`, each exporting its docs and `SEED_VERSION`.
 `consistency.test.ts` checks that every SKU in orders, guides, SDS and swaps exists, that every
@@ -186,23 +190,97 @@ sustainability and carbon (EV deliveries inside the M25, solar-powered site, B C
 health and safety (ISO 45001, COSHH support and videos), quality (ISO 9001), delivery and service
 levels, social value, and product training. Invented numbers are marked "(demo figure)".
 
-### G. Stock Pulse (`ssstock`)
+### Top 3 from the discovery call
 
-Discovery-call theme: no live Merlin stock; Dave was pasting averages into ChatGPT to draft POs.
-Scan `ss_orders` for the last three months, rank popular SKUs, flag out-of-stock or high-velocity
-lines, and draft a supplier PO from `ceil(avg packs)`. A person confirms before any supplier send.
+Dave's own ranking near the end of the call: the national-retailer portal + PODs, stock, then
+customer reports. Each one is a full app with a tested engine (pure TypeScript, `node --test`), real
+NebulaDB queries shown step by step, a "today vs with Jordan" benefit strip, and a narrated video tour
+(`public/tours/source-supplies/*.mp4`, embedded on the Source Supplies home page).
 
-### H. Customer Report Desk (`ssreports`)
+| # | App | Engine | Tests | Video |
+|---|---|---|---|---|
+| 1 | Retail POD Autopilot (`ssretail`) | `source/retailPilot.ts` | `retailPilot.test.ts` | `retail-pod-autopilot.mp4` |
+| 2 | Stock Autopilot (`ssstock`) | `source/stockPilot.ts` | `stockPilot.test.ts` | `stock-autopilot.mp4` |
+| 3 | Jordan Report Studio (`ssreports`) | `source/reportStudio.ts` | `reportStudio.test.ts` | `report-studio.mp4` |
 
-Discovery-call theme: Merlin custom reports take days. Pick an account + period, roll up
-`ss_orders` spend by site/SKU in the browser, then ask Jordan a grounded question
-(“What did Ashby buy last quarter?”) without a vendor ticket.
+All three in one file: `source-supplies-top3.mp4`. Re-record with `apps/showcase/tours/record-source-top3.mjs`
+(Playwright + macOS `say` en-GB voice + ffmpeg; instructions in the file header).
 
-### I. Retail POD Desk (`ssretail`)
+### G. Retail POD Autopilot (`ssretail`) — top-3 #1
 
-Discovery-call theme: nationwide retail portal (~30 small orders/day) → Merlin → courier → attach
-**two** PODs (Merlin scan + courier photo) back to the portal (~£20k/yr staff time). Demo retailer
-is fictional **ValueMax Stores** on a Service Portal–style board; actions are confirmed by a person.
+Discovery call: ~30 small orders a day (~600 a month) from a national retailer's own facilities portal,
+keyed into Merlin by hand; then for every delivery the Merlin scan POD *and* the courier photo POD are
+found and uploaded back to the portal. "That whole process… it's probably costing 20 grand a year."
+Demo retailer "ValueMax Stores" and courier "ParcelLine" are fictional.
+
+Buckets: `ss_retail_inbox` (one demo Friday: 13 portal orders, 30 Merlin delivery tickets, 29 courier
+POD emails — `kind` = `portal_order` / `merlin_despatch` / `courier_pod`) and `ss_retail_rules`
+(corrections people make; created on first lesson).
+
+```sql
+SELECT * FROM ss_retail_inbox WHERE semantic_match(text, 'retail portal work order')
+   AND kind = 'portal_order' LIMIT 72
+SELECT * FROM ss_retail_inbox WHERE semantic_match(text, 'Merlin delivery ticket scanned POD')
+   AND kind = 'merlin_despatch' AND despatched = '2026-10-28' LIMIT 72
+SELECT * FROM ss_products WHERE semantic_match(text, 'Blue roll centrefeed 2ply x6')
+   AND category = 'paper' LIMIT 39          -- unknown retailer item code → catalogue
+```
+
+1. **Intake**: retailer item codes → Source SKUs (known map, then learned aliases, then catalogue
+   match ≥ 0.6 marked "confirm once"); duplicate PO re-sends are dropped.
+2. **Two PODs per delivery**: match courier POD by PO → consignment → fuzzy (0.55·consignment edit
+   distance incl. transpositions + 0.30·postcode incl. learned aliases + 0.15·date, ≥ 0.70). Checks:
+   delivered, signed, postcode, owed lines. Outcome: attached, attached + follow-up, exception with a
+   one-line action, or waiting.
+3. **Learning**: "Same store — attach & remember" / "Confirm & remember" upsert a rule into
+   `ss_retail_rules`; the next run uses it (the Leeds address exception disappears).
+
+Demo day result: 26/30 straight-through (87%), 3 exceptions, 1 waiting; ≈ £21.9k a year at 14 manual
+minutes per order vs 0.5 min spot-check / 4 min per exception, £14/h, 600 orders a month (demo figures
+tuned to Dave's estimate).
+
+### H. Stock Autopilot (`ssstock`) — top-3 #2
+
+Discovery call: no live stock in Merlin, popular lines (~95% repeat) still run out, and Dave was
+pasting three months of averages into ChatGPT to draft POs — "it's cleverer than just looking at an
+average of 3 months… if Christmas is a busier period or quieter period".
+
+Bucket `ss_demand`: 24 months (Nov 2024 – Oct 2026) of company-wide despatches for 16 core lines
+(with `top_order_share`, the share from the single largest order), 3 "yes company" special lines, and
+an estimated stock position per core line (last count + goods in − despatches), supplier, lead time, MOQ.
+
+```sql
+SELECT * FROM ss_demand WHERE semantic_match(text, 'monthly despatches core line')
+   AND kind = 'demand' AND core = TRUE LIMIT 413
+SELECT * FROM ss_demand WHERE semantic_match(text, 'estimated stock on hand supplier lead time')
+   AND kind = 'stock' LIMIT 413
+```
+
+Engine (`stockPilot.ts`): one-off cleaning (> 1.4× expected and > 35% from one order), new-contract
+step-ups from year-on-year ratios, seasonal index from a 12-month window, YoY growth, safety stock
+= 1.65 · σ · forecast · √((lead + 30)/30) with σ ≥ 6%, a daily walk-forward to the stock-out date,
+MOQ-rounded order-up-to, one draft PO per supplier. The 12-month backtest replays both methods:
+stock-out months 43 → 17, short packs 2,598 → 1,027, average stock held £9.3k → £6.2k.
+
+> `LIMIT` caps rows returned as well as the candidate pool, so these queries use
+> `max(exhaustiveLimit(n), n)` — every one of the 384 history rows must come back.
+
+### I. Jordan Report Studio (`ssreports`) — top-3 #3
+
+Discovery call: Merlin custom reports need SQL or a vendor ticket ("third attempt… three or four days
+apart"); "can you just send me the report for [customer] for the last 3 months combined".
+
+Plain English → typed plan shown as chips (customer, period, grouping, category, top N, measure,
+comparison period) → one query → figures computed in code → bars, insights (top share, change vs
+previous period, biggest mover, site × SKU spikes ≥ 50%, greener swaps with CO2e), Excel CSV, customer
+email draft, and a monthly schedule written to `ss_report_schedules` (last Friday). Follow-ups
+("now just paper, by month", "top 5 products") refine the previous plan.
+
+```sql
+SELECT * FROM ss_orders WHERE semantic_match(text, 'order lines Ashby Contract Cleaning')
+   AND account_id = 'ASHBY'
+   AND month IN ('2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10') LIMIT 215
+```
 
 ### J. Email Order Intake (`ssemail`)
 

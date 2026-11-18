@@ -1,0 +1,482 @@
+#!/usr/bin/env node
+/**
+ * Narrated UI tours of the three Source Supplies "top 3" apps.
+ *
+ * Drives the real showcase (Vite dev server + nebula-server) with
+ * Playwright, records the screen, narrates each segment with macOS `say`
+ * (en-GB voice), overlays captions and title cards, then muxes with ffmpeg
+ * into public/tours/source-supplies/*.mp4.
+ *
+ *   NEBULA_TARGET=http://127.0.0.1:8080 npx vite        # showcase on :5173
+ *   ./target/release/nebula-server                      # NebulaDB on :8080
+ *   PLAYWRIGHT_DIR=/path/with/playwright node tours/record-source-top3.mjs [retail|stock|reports]
+ *
+ * Needs: macOS `say`, ffmpeg/ffprobe, Playwright (+ a Chromium; set CHROME to a binary to reuse one).
+ */
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync, existsSync, readdirSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const OUT = path.resolve(here, "../public/tours/source-supplies");
+const WORK = process.env.TOUR_WORK || path.resolve(here, "../.tour-work");
+const BASE = process.env.SHOWCASE_URL || "http://localhost:5173";
+const VOICE = process.env.TOUR_VOICE || "Daniel";
+const RATE = process.env.TOUR_RATE || "178";
+const W = 1440;
+const H = 900;
+
+const req = createRequire(path.join(process.env.PLAYWRIGHT_DIR || here, "noop.js"));
+const { chromium } = req("playwright");
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ------------------------------ overlay ------------------------------ */
+const OVERLAY = `
+(() => {
+  const css = \`
+  #tour-cap{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);max-width:1100px;z-index:99999;
+    background:rgba(8,10,14,.92);color:#fff;border:1px solid rgba(76,141,255,.55);border-radius:14px;padding:12px 20px;
+    font:500 19px/1.4 Poppins,Helvetica,Arial,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.5);transition:opacity .3s;opacity:0}
+  #tour-cap b{color:#3FB950;font-weight:600}
+  #tour-card{position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(1200px 600px at 30% 20%,#13233f,#05070b);color:#EDEDEE;transition:opacity .5s;opacity:0;pointer-events:none}
+  #tour-card .k{font:600 14px/1 "JetBrains Mono",monospace;letter-spacing:.25em;color:#4C8DFF;text-transform:uppercase}
+  #tour-card h1{font:700 56px/1.1 Unbounded,Poppins,sans-serif;margin:18px 0 14px}
+  #tour-card p{font:400 22px/1.5 Poppins,sans-serif;color:#b9bcc4;max-width:900px;margin:0 auto}
+  #tour-card .stat{display:inline-block;margin:28px 14px 0;padding:14px 22px;border:1px solid #2a3a55;border-radius:14px;background:rgba(63,185,80,.08)}
+  #tour-card .stat div:first-child{font:700 34px/1.1 Unbounded,sans-serif;color:#3FB950}
+  #tour-card .stat div:last-child{font:400 15px/1.3 Poppins,sans-serif;color:#9aa0aa;margin-top:6px}
+  .tour-hl{outline:3px solid #4C8DFF !important;outline-offset:4px;border-radius:10px;transition:outline-color .3s}\`;
+  const boot = () => {
+    if (document.getElementById("tour-cap")) return;
+    const s = document.createElement("style"); s.textContent = css; document.head.appendChild(s);
+    const c = document.createElement("div"); c.id = "tour-cap"; document.body.appendChild(c);
+    const k = document.createElement("div"); k.id = "tour-card"; document.body.appendChild(k);
+  };
+  window.__tour = {
+    cap(html){ boot(); const c=document.getElementById("tour-cap"); if(!html){c.style.opacity=0;return;} c.innerHTML=html; c.style.opacity=1; },
+    card(html){ boot(); const k=document.getElementById("tour-card"); if(!html){k.style.opacity=0;return;} k.innerHTML='<div style="text-align:center;padding:40px">'+html+'</div>'; k.style.opacity=1; },
+    hl(sel){ document.querySelectorAll(".tour-hl").forEach(e=>e.classList.remove("tour-hl")); if(!sel) return; const e=document.querySelector(sel); if(e){ e.classList.add("tour-hl"); } },
+  };
+  if (document.readyState !== "loading") boot(); else document.addEventListener("DOMContentLoaded", boot);
+})();`;
+
+function card({ kicker, title, sub, stats = [] }) {
+  return (
+    `<div class="k">${kicker}</div><h1>${title}</h1><p>${sub}</p>` +
+    stats.map(([v, l]) => `<div class="stat"><div>${v}</div><div>${l}</div></div>`).join("")
+  );
+}
+
+/* ------------------------------ helpers ------------------------------ */
+function makeHelpers(page) {
+  const scrollTo = async (sel, block = "center") => {
+    await page.locator(sel).first().evaluate((e, b) => e.scrollIntoView({ behavior: "smooth", block: b }), block);
+    await sleep(700);
+  };
+  return {
+    page,
+    scrollTo,
+    cap: (html) => page.evaluate((h) => window.__tour.cap(h), html),
+    card: (html) => page.evaluate((h) => window.__tour.card(h), html),
+    hl: (sel) => page.evaluate((s) => window.__tour.hl(s), sel),
+    click: async (sel) => {
+      await scrollTo(sel);
+      const box = await page.locator(sel).first().boundingBox();
+      if (box) await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 12 });
+      await sleep(250);
+      await page.locator(sel).first().click();
+    },
+    type: async (sel, text) => {
+      await scrollTo(sel);
+      await page.locator(sel).first().fill("");
+      await page.locator(sel).first().type(text, { delay: 35 });
+    },
+    waitRun: () => page.waitForSelector('[data-tour="run"]:not([disabled])', { timeout: 60000 }),
+    top: () => page.evaluate(() => document.querySelector("main")?.scrollTo({ top: 0, behavior: "smooth" })),
+  };
+}
+
+/* ------------------------------ tours ------------------------------ */
+const TOURS = {
+  retail: {
+    file: "retail-pod-autopilot",
+    tab: "ssretail",
+    setup: async (h) => {
+      await h.waitRun();
+      await h.page.locator("button", { hasText: "Reset learned rules" }).click();
+      await sleep(400);
+    },
+    segments: [
+      {
+        say: "This is the problem Dave called the biggest pain. A national retailer sends about six hundred small orders a month through its own portal. Each one is keyed into Merlin by hand. Then, for every delivery, someone hunts down two proofs of delivery and uploads both. Dave put the cost at around twenty thousand pounds a year.",
+        act: async (h) =>
+          h.card(card({ kicker: "Source Supplies × Jordan AI · Top 3 · #1", title: "Retail POD Autopilot", sub: "Retail portal orders → Merlin → courier → two proofs of delivery back to the portal. Automated end to end, with people only on exceptions." })),
+      },
+      {
+        say: "Here's the business case up front. Fourteen minutes of manual work per order today. With Jordan, about one minute, because people only touch the exceptions.",
+        cap: "Today: <b>14 min</b> per order by hand → with Jordan: <b>≈1 min</b>",
+        act: async (h) => {
+          await h.card(null);
+          await h.hl('[data-tour="benefit"]');
+        },
+      },
+      {
+        say: "Let's run Friday's batch. Jordan reads the shared mailbox in NebulaDB: today's portal work orders, the Merlin delivery tickets, and the courier's proof of delivery emails. Every step is a real query you can see. No black box.",
+        cap: "One click runs the day — every step is a real, visible NebulaDB query",
+        act: async (h) => {
+          await h.hl(null);
+          await h.click('[data-tour="run"]');
+          await sleep(2500);
+          await h.scrollTo('[data-tour="kpis"]', "end");
+        },
+      },
+      {
+        say: "First, intake. Thirteen portal orders. Known retailer item codes map straight to Source products, and Merlin sales orders are drafted. A re-sent duplicate is caught and skipped, so nothing is keyed twice.",
+        cap: "Portal orders → <b>Merlin drafts</b> · duplicate PO caught automatically",
+        act: async (h) => h.scrollTo('[data-tour="intake-review"]', "center"),
+      },
+      {
+        say: "Two lines use item codes Jordan has never seen. It finds the closest product in the catalogue, and a person confirms it once. From then on, that code maps by itself.",
+        cap: "New item code? Jordan suggests the product — <b>confirm once, remembered forever</b>",
+        act: async (h) => {
+          await h.hl('[data-tour="intake-review"]');
+          await sleep(2500);
+          await h.click('[data-tour="intake-review"] button');
+          await sleep(900);
+          await h.click('[data-tour="intake-review"] button');
+          await h.hl(null);
+        },
+      },
+      {
+        say: "Now proof of delivery. Thirty deliveries, each needing the Merlin scan and the courier photo. Twenty six are matched, checked and attached with nobody touching them. That's eighty seven percent straight through.",
+        cap: "<b>26 of 30</b> deliveries: both PODs matched, checked and attached — no person",
+        act: async (h) => {
+          await h.scrollTo('[data-tour="kpis"]', "start");
+          await h.hl('[data-tour="kpis"]');
+          await sleep(3500);
+          await h.hl(null);
+          await h.click('[data-tour="filter-attached"]');
+        },
+      },
+      {
+        say: "This one is clever. The courier's email had no P O number, and two digits of the consignment were swapped. Jordan still matched it, using the near identical consignment, the store postcode, and the delivery date.",
+        cap: "No PO, mistyped consignment → <b>still matched</b> (consignment + postcode + date)",
+        act: async (h) => {
+          const fuzzy = h.page.locator('tr[data-tour^="pod-"]', { hasText: "AI fuzzy" }).first();
+          await fuzzy.evaluate((e) => e.scrollIntoView({ behavior: "smooth", block: "center" }));
+          await sleep(600);
+          await fuzzy.click();
+          await sleep(500);
+          await h.hl('[data-tour="attach-pack"]');
+        },
+      },
+      {
+        say: "Three deliveries need a person, and each one says exactly why. Here, the courier used a different postcode for the Leeds store. One click confirms it's the same store.",
+        cap: "Exceptions explain themselves — <b>one click</b> to resolve",
+        act: async (h) => {
+          await h.hl(null);
+          await h.click('[data-tour="filter-exception"]');
+          await sleep(500);
+          const leeds = h.page.locator('tr[data-tour="pod-exception"]', { hasText: "Leeds White Rose" }).first();
+          await leeds.click();
+          await sleep(600);
+          await h.hl('[data-tour="attach-pack"]');
+        },
+      },
+      {
+        say: "And Jordan remembers. The staff don't even know they're training it.",
+        cap: "Every correction becomes a rule — <b>staff train Jordan just by working</b>",
+        act: async (h) => {
+          await h.hl(null);
+          await h.click('[data-tour="teach-address"]');
+        },
+      },
+      {
+        say: "Run the batch again, and that exception has gone. The longer the team works with it, the fewer exceptions there are.",
+        cap: "Re-run: the Leeds exception is gone — <b>fewer exceptions every week</b>",
+        act: async (h) => {
+          await h.click('[data-tour="run"]');
+          await sleep(4000);
+          await h.scrollTo('[data-tour="kpis"]', "start");
+          await h.hl('[data-tour="kpis"]');
+        },
+      },
+      {
+        say: "The result: around twenty two thousand pounds a year back, and close to a full person's time freed up for growth, without hiring. That is the business value of A I automation.",
+        act: async (h) => {
+          await h.hl(null);
+          await h.cap(null);
+          await h.card(card({ kicker: "Business benefit", title: "≈ £22k a year back", sub: "Retail orders keyed and proven automatically. People handle only the exceptions, and every fix teaches Jordan.", stats: [["14 → 1 min", "per retail order"], ["87%+", "straight-through"], ["≈ 0.9 FTE", "freed for growth"]] }));
+        },
+      },
+    ],
+  },
+
+  stock: {
+    file: "stock-autopilot",
+    tab: "ssstock",
+    setup: async (h) => h.waitRun(),
+    segments: [
+      {
+        say: "Problem number two: stock control. Merlin doesn't hold live stock, and the popular lines, the ones that make up ninety five percent of the business, still run out. Dave has been pasting three months of sales into Chat G P T to work out an average.",
+        act: async (h) =>
+          h.card(card({ kicker: "Source Supplies × Jordan AI · Top 3 · #2", title: "Stock Autopilot", sub: "A nightly forecast with seasonality, growth, one-off cleaning and safety stock, then supplier POs ready to approve." })),
+      },
+      {
+        say: "Jordan does this every night, and does it properly. The headline: sixty percent fewer stock outs, and less cash tied up in the warehouse.",
+        cap: "<b>60% fewer stock-outs</b> — and less cash sitting in stock",
+        act: async (h) => {
+          await h.card(null);
+          await h.hl('[data-tour="benefit"]');
+        },
+      },
+      {
+        say: "Jordan reads twenty four months of despatches from NebulaDB, plus an estimated stock position: the last count, plus goods in, minus what went out. Special orders for single customers are kept out of the core forecast.",
+        cap: "24 months of Merlin despatches + estimated stock — <b>specials kept out</b>",
+        act: async (h) => {
+          await h.hl(null);
+          await h.click('[data-tour="run"]');
+          await sleep(2500);
+          await h.scrollTo('[data-tour="kpis"]', "start");
+        },
+      },
+      {
+        say: "Sixteen core lines checked. Three will run out before a normal order could arrive, and five supplier purchase orders are already drafted.",
+        cap: "<b>3 lines</b> will run out before a normal order lands · <b>5 POs</b> drafted",
+        act: async (h) => {
+          await h.hl('[data-tour="kpis"]');
+          await sleep(4000);
+          await h.hl(null);
+        },
+      },
+      {
+        say: "Take recycled jumbo toilet roll. A plain average says about nine hundred and forty a month. But Jordan spotted a step up in September, a new contract, and November is usually busier. So it forecasts nearly twelve hundred, and warns that stock runs out on the tenth of November.",
+        cap: "Average says 939 · Jordan: <b>new contract + November peak → 1,173</b>, runs out 10 Nov",
+        act: async (h) => {
+          await h.click('[data-tour="row-JR-410"]');
+          await h.hl('[data-tour="why"]');
+        },
+      },
+      {
+        say: "Now the opposite case. Heavy duty sacks had a huge October, but almost half of it came from one event order. Jordan treats it as a one off, so we don't end up with a warehouse full of sacks.",
+        cap: "One big event order? <b>Ignored as a one-off</b> — no overstock",
+        act: async (h) => {
+          await h.hl(null);
+          await h.click('[data-tour="row-BG-625"]');
+          await sleep(300);
+          await h.scrollTo('[data-tour="why"]', "center");
+          await h.hl('[data-tour="why"]');
+        },
+      },
+      {
+        say: "Purchase orders are grouped by supplier, rounded to minimum order quantities, with the urgent ones first. A buyer approves with one click.",
+        cap: "One PO per supplier · MOQ-rounded · <b>one-click approve</b>",
+        act: async (h) => {
+          await h.hl(null);
+          await h.scrollTo('[data-tour="pos"]', "center");
+          await h.hl('[data-tour="pos"]');
+          await sleep(2500);
+          await h.page.locator('[data-tour="pos"] button', { hasText: "Approve" }).first().click();
+        },
+      },
+      {
+        say: "And here's the proof. We replayed the last twelve months both ways. The three month average ran short forty three times. Jordan, seventeen. That's over three hundred fewer re-deliveries, about fifteen thousand pounds saved, and three thousand pounds less stock sitting on the shelves.",
+        cap: "12 months replayed: stock-outs <b>43 → 17</b> · re-deliveries <b>520 → 206</b>",
+        act: async (h) => {
+          await h.hl(null);
+          await h.scrollTo('[data-tour="backtest"]', "center");
+          await h.hl('[data-tour="backtest"]');
+        },
+      },
+      {
+        say: "Fewer let downs for customers, fewer extra van runs, and a buyer who spends minutes on this, not half a day.",
+        act: async (h) => {
+          await h.hl(null);
+          await h.cap(null);
+          await h.card(card({ kicker: "Business benefit", title: "Never run out of the lines that matter", sub: "Seasonal forecasts, new-contract step-ups and one-offs handled every night, with POs ready to approve.", stats: [["−60%", "stock-out months"], ["≈ £15k", "shortfall cost avoided / yr"], ["−£3k", "average stock held"]] }));
+        },
+      },
+    ],
+  },
+
+  reports: {
+    file: "report-studio",
+    tab: "ssreports",
+    setup: async (h) => h.waitRun(),
+    segments: [
+      {
+        say: "Problem three: customer reports. Big customers want regular reports, but a new Merlin report means a support ticket, or someone who writes S Q L. Dave's last one took three attempts, days apart.",
+        act: async (h) =>
+          h.card(card({ kicker: "Source Supplies × Jordan AI · Top 3 · #3", title: "Jordan Report Studio", sub: "Ask for any customer report in plain English. Jordan writes the query, checks the figures and schedules it." })),
+      },
+      {
+        say: "With Jordan, anyone in the office just asks.",
+        cap: "From a <b>4-week Merlin ticket</b> to <b>seconds</b>",
+        act: async (h) => {
+          await h.card(null);
+          await h.hl('[data-tour="benefit"]');
+        },
+      },
+      {
+        say: "Here's Dave's own example: the report for a contract cleaner, for the last three months combined.",
+        cap: "“Send me the report for Ashby Contract Cleaning for the last 3 months combined”",
+        act: async (h) => {
+          await h.hl(null);
+          await h.type('[data-tour="ask"]', "Send me the report for Ashby Contract Cleaning for the last 3 months combined");
+          await h.click('[data-tour="run"]');
+        },
+      },
+      {
+        say: "Jordan shows what it understood: the customer, the period, the grouping, and what to compare against. Then it writes the S Q L itself. One query against NebulaDB, back in milliseconds.",
+        cap: "Jordan shows what it understood — then <b>writes the SQL itself</b>",
+        act: async (h) => {
+          await h.scrollTo('[data-tour="understood"]', "start");
+          await h.hl('[data-tour="understood"]');
+        },
+      },
+      {
+        say: "The report is ready straight away. Spend, the change on the previous quarter, orders, sites and product lines. Every figure is calculated from the data, never made up by a model.",
+        cap: "Every figure calculated from the data — <b>never invented</b>",
+        act: async (h) => {
+          await h.hl(null);
+          await h.scrollTo('[data-tour="kpis"]', "start");
+          await h.hl('[data-tour="kpis"]');
+        },
+      },
+      {
+        say: "Jordan also adds what an account manager would want to know: the biggest line, the biggest mover, and greener swaps that would cut this customer's carbon. That's a sales conversation, ready to go.",
+        cap: "Insights included: biggest mover · <b>greener swaps = a sales conversation</b>",
+        act: async (h) => {
+          await h.hl(null);
+          await h.scrollTo('[data-tour="insights"]', "center");
+          await h.hl('[data-tour="insights"]');
+        },
+      },
+      {
+        say: "Now a different customer, by site.",
+        cap: "“What did Kingsmead buy in the last 3 months, by site?”",
+        act: async (h) => {
+          await h.hl(null);
+          await h.type('[data-tour="ask"]', "What did Kingsmead buy in the last 3 months, by site?");
+          await h.click('[data-tour="run"]');
+        },
+      },
+      {
+        say: "It flags a spike. One school site took nearly twice as much toilet roll as usual. Worth a call.",
+        cap: "Spikes flagged automatically — <b>worth a call</b>",
+        act: async (h) => {
+          await h.scrollTo('[data-tour="insights"]', "center");
+          await h.hl('[data-tour="insights"]');
+        },
+      },
+      {
+        say: "Follow ups just work. Now just paper, by month. No new ticket.",
+        cap: "Follow-up: “Now just paper, by month” — <b>no new ticket</b>",
+        act: async (h) => {
+          await h.hl(null);
+          await h.type('[data-tour="ask"]', "Now just paper, by month");
+          await h.click('[data-tour="run"]');
+          await sleep(1200);
+          await h.scrollTo('[data-tour="kpis"]', "start");
+        },
+      },
+      {
+        say: "Export it to Excel, draft the customer email, and schedule it to go out on the last Friday of every month, automatically.",
+        cap: "Excel · email draft · <b>scheduled for the last Friday of every month</b>",
+        act: async (h) => {
+          await h.click('[data-tour="email"]');
+          await sleep(600);
+          await h.click('[data-tour="schedule"]');
+          await sleep(800);
+          await h.scrollTo('[data-tour="email-draft"]', "center");
+          await h.hl('[data-tour="email-draft"]');
+          await sleep(2500);
+          await h.scrollTo('[data-tour="schedules"]', "center");
+          await h.hl('[data-tour="schedules"]');
+        },
+      },
+      {
+        say: "From weeks of waiting, to seconds. That's hours back every week, and a better service for your biggest customers.",
+        act: async (h) => {
+          await h.hl(null);
+          await h.cap(null);
+          await h.card(card({ kicker: "Business benefit", title: "Customer reports in seconds", sub: "No SQL, no vendor tickets. Anyone asks in plain English, follow-ups refine, and monthly reports send themselves.", stats: [["4 weeks → secs", "per new report"], ["0", "SQL written by staff"], ["Monthly", "reports run unattended"]] }));
+        },
+      },
+    ],
+  },
+};
+
+/* ------------------------------ recorder ------------------------------ */
+function tts(text, file) {
+  execFileSync("say", ["-v", VOICE, "-r", RATE, "-o", file, text]);
+  const d = execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file]).toString();
+  return Math.round(Number(d) * 1000);
+}
+
+async function record(key) {
+  const t = TOURS[key];
+  const dir = path.join(WORK, key);
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const segs = t.segments.map((s, i) => {
+    const f = path.join(dir, `seg${i}.aiff`);
+    return { ...s, audio: f, ms: tts(s.say, f) };
+  });
+
+  const browser = await chromium.launch({ executablePath: process.env.CHROME || undefined });
+  const ctx = await browser.newContext({ viewport: { width: W, height: H }, colorScheme: "dark", recordVideo: { dir, size: { width: W, height: H } } });
+  await ctx.addInitScript(OVERLAY);
+  const page = await ctx.newPage();
+  const t0 = Date.now();
+  await page.goto(`${BASE}/#/tab/${t.tab}`);
+  const h = makeHelpers(page);
+  await page.evaluate(() => window.__tour.card('<div style="height:10px"></div>'));
+  await t.setup(h);
+  const starts = [];
+  for (const s of segs) {
+    const start = Date.now() - t0;
+    starts.push(start);
+    await h.cap(s.cap ?? null);
+    await Promise.all([s.act(h).catch((e) => console.warn(`  [${key}] action warning: ${e.message.split("\n")[0]}`)), sleep(s.ms + 450)]);
+  }
+  await sleep(1200);
+  const total = Date.now() - t0;
+  await page.close();
+  const video = await page.video().path();
+  await ctx.close();
+  await browser.close();
+
+  const trim = Math.max(0, starts[0] - 200);
+  const args = ["-y", "-ss", (trim / 1000).toFixed(3), "-i", video];
+  segs.forEach((s) => args.push("-i", s.audio));
+  const mix = segs.map((_, i) => `[${i + 1}:a]adelay=${starts[i] - trim}|${starts[i] - trim}[a${i}]`).join(";");
+  const filter = `${mix};${segs.map((_, i) => `[a${i}]`).join("")}amix=inputs=${segs.length}:normalize=0,volume=1.6[aout];[0:v]scale=1280:-2,fps=25[vout]`;
+  mkdirSync(OUT, { recursive: true });
+  const out = path.join(OUT, `${t.file}.mp4`);
+  args.push(
+    "-filter_complex", filter, "-map", "[vout]", "-map", "[aout]",
+    "-t", ((total - trim) / 1000).toFixed(3),
+    "-c:v", "libx264", "-preset", "slow", "-crf", "27", "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out
+  );
+  execFileSync("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+  console.log(`✓ ${key}: ${out} (${((total - trim) / 1000).toFixed(1)} s)`);
+  return out;
+}
+
+const keys = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(TOURS);
+const outs = [];
+for (const k of keys) outs.push(await record(k));
+if (keys.length === Object.keys(TOURS).length) {
+  const list = path.join(WORK, "concat.txt");
+  writeFileSync(list, outs.map((o) => `file '${o}'`).join("\n"));
+  const all = path.join(OUT, "source-supplies-top3.mp4");
+  execFileSync("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-movflags", "+faststart", all], { stdio: "ignore" });
+  console.log(`✓ combined: ${all}`);
+}
+if (existsSync(WORK) && !process.env.TOUR_KEEP) for (const d of readdirSync(WORK)) rmSync(path.join(WORK, d), { recursive: true, force: true });

@@ -1,252 +1,275 @@
 /**
- * Customer Report Desk — from the Source Supplies discovery call.
+ * Jordan Report Studio — discovery-call pain #3 (customer reports).
  *
- * Dave: Merlin has the data but custom reports take days (and cost) from the
- * vendor. Buyers ask “what did Ashby buy last quarter?” in plain English.
+ * Dave: big customers "like to ask for reports"; Merlin custom reports
+ * need SQL or a vendor ticket ("third attempt… three or four days apart");
+ * "can you just send me the report for [customer] for the last 3 months
+ * combined". Balinder: "No SQL. We want to get rid of that."
  *
- * Demo: pick an account + period → SQL over ss_orders → tabulated spend and
- * a short grounded summary. Replaces the “email Merlin at half five” loop.
+ * Plain English → a visible report plan → one NebulaDB SQL query →
+ * figures computed in code (never by a model) → chart, insights, CSV for
+ * Excel, a customer email draft, and a monthly schedule. Follow-ups refine
+ * the last report ("now just paper, by month").
  */
-import { useCallback, useState } from "react";
-import { ApiError } from "../api";
+import { useState } from "react";
+import { api, ApiError } from "../api";
 import { ErrorBanner, Panel, Spinner } from "../components";
-import { UnderTheHood } from "../components/UnderTheHood";
 import { ArchitecturePanel } from "../components/RagArchitecture";
 import { PipelineTrace, type PipelineStep } from "../rag/PipelineTrace";
-import { GroundedChat, type ContextDoc } from "../rag/GroundedChat";
-import { lit, runSql } from "../rag/sql";
-import { B, ORDER_MONTHS, exhaustiveLimit } from "./data/common";
-import { ACCOUNTS, ORDER_DOCS } from "./data/accounts";
-import { PRODUCT_BY_SKU } from "./data/products";
-import { Chips, DemoNote, SeedChip, gbp, metaOf, num, str, ukMonth, useSeeds } from "./common";
+import { runSql } from "../rag/sql";
+import { B } from "./data/common";
+import { ACCOUNTS } from "./data/accounts";
+import { buildReport, emailDraft, nextLastFriday, parseRequest, planSql, toCsv, type OrderRow, type Report, type ReportPlan } from "./reportStudio";
+import { Bars, BenefitStrip, Kpi, Pill, download } from "./autopilotUi";
+import { Chips, DemoNote, SeedChip, gbp, metaOf, num, str, ukDate, ukMonth, useSeeds } from "./common";
 
-const ORDERS_LIMIT = exhaustiveLimit(ORDER_DOCS.length);
-
-const PERIODS = [
-  { label: "Last 3 months", months: ORDER_MONTHS.slice(-3) },
-  { label: "Last 6 months", months: [...ORDER_MONTHS] },
-  { label: "Latest month only", months: ORDER_MONTHS.slice(-1) },
+const TODAY = "2026-10-31";
+const ASKS = [
+  { label: "Dave’s example", q: "Send me the report for Ashby Contract Cleaning for the last 3 months combined" },
+  { label: "By site", q: "What did Kingsmead buy in the last 3 months, by site?" },
+  { label: "Follow-up: paper by month", q: "Now just paper, by month" },
+  { label: "Follow-up: top 5", q: "Top 5 products" },
+  { label: "Care homes", q: "Harbour Care Homes spend since June by site" },
 ];
 
-const SCENARIOS = [
-  { label: "Ashby spend", account: "ASHBY", period: "Last 3 months", q: "What did Ashby Contract Cleaning buy in the last quarter, by site?" },
-  { label: "Kingsmead paper", account: "KINGSMEAD", period: "Last 3 months", q: "How much recycled paper and washroom did Kingsmead take?" },
-  { label: "Harbour care", account: "HARBOUR", period: "Last 6 months", q: "Summarise Harbour Care Homes orders for the half year." },
-];
+const took = (ms: number) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 
-interface LineAgg {
-  sku: string;
-  name: string;
-  site: string;
-  qty: number;
-  spend: number;
+interface Turn {
+  q: string;
+  understood: string[];
+  ms: number;
 }
 
-const SYSTEM =
-  "You are Jordan AI for Source Supplies, answering a customer-spend question for an internal sales or account person. " +
-  "Use ONLY the order summary documents provided, citing them as [n]. Quote GBP excluding VAT. " +
-  "Use UK English. Do not invent SKUs, quantities or sites. If something is missing, say so.";
+interface Schedule {
+  id: string;
+  title: string;
+  next: string;
+}
 
 export function ReportDeskTab() {
   const seed = useSeeds(["products", "accounts", "orders"]);
-  const [account, setAccount] = useState(SCENARIOS[0].account);
-  const [periodLabel, setPeriodLabel] = useState(SCENARIOS[0].period);
-  const [q, setQ] = useState(SCENARIOS[0].q);
-  const [scenario, setScenario] = useState(SCENARIOS[0].label);
+  const [q, setQ] = useState(ASKS[0].q);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [steps, setSteps] = useState<PipelineStep[]>([]);
-  const [lines, setLines] = useState<LineAgg[]>([]);
-  const [docs, setDocs] = useState<ContextDoc[]>([]);
-  const [runId, setRunId] = useState(0);
+  const [plan, setPlan] = useState<ReportPlan | null>(null);
+  const [report, setReport] = useState<Report | null>(null);
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [email, setEmail] = useState<string | null>(null);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
 
-  const period = PERIODS.find((p) => p.label === periodLabel) ?? PERIODS[0];
-  const accountName = ACCOUNTS.find((a) => a.id === account)?.name ?? account;
-
-  const run = async () => {
-    setBusy(true);
+  const ask = async (text: string) => {
     setErr(null);
-    setDocs([]);
-    setLines([]);
-    const trace: PipelineStep[] = [];
-    const push = (s: PipelineStep) => {
-      trace.push(s);
-      setSteps([...trace]);
-      return trace.length - 1;
-    };
-    const done = (i: number, patch: Partial<PipelineStep>) => {
-      trace[i] = { ...trace[i], ...patch, status: "ok" };
-      setSteps([...trace]);
-    };
+    setEmail(null);
+    const parsed = parseRequest(text, ACCOUNTS, plan);
+    if (!parsed.plan) {
+      setErr(parsed.missing);
+      return;
+    }
+    setBusy(true);
+    const started = performance.now();
+    const p = parsed.plan;
+    const sql = planSql(p);
+    const trace: PipelineStep[] = [
+      { label: "Understand the request (deterministic parser, no model)", detail: parsed.understood.join(" · "), status: "ok" },
+      { label: "One NebulaDB query — Jordan writes the SQL", detail: sql, status: "running" },
+    ];
+    setSteps([...trace]);
     try {
-      const months = period.months.map((m) => lit(m)).join(", ");
-      const sql =
-        `SELECT * FROM ${B.orders}\n WHERE semantic_match(text, ${lit(q || "customer order spend")})` +
-        `\n   AND account_id = ${lit(account)}\n   AND month IN (${months})\n LIMIT ${ORDERS_LIMIT}`;
-      const i = push({ label: `Orders for ${accountName}`, detail: sql, status: "running" });
-      const res = await runSql(sql);
-      done(i, { rowsOut: res.rows.length, ms: res.tookMs });
-
-      const agg = new Map<string, LineAgg>();
-      for (const r of res.rows) {
-        const m = metaOf(r);
-        const sku = str(m.sku);
-        const site = str(m.site);
-        const qty = num(m.qty);
-        const key = `${site}|${sku}`;
-        const p = PRODUCT_BY_SKU[sku];
-        const spend = qty * (p?.price_gbp ?? 0);
-        const prev = agg.get(key);
-        if (prev) {
-          prev.qty += qty;
-          prev.spend += spend;
-        } else {
-          agg.set(key, { sku, name: p?.name ?? sku, site, qty, spend });
-        }
-      }
-      const sorted = [...agg.values()].sort((a, b) => b.spend - a.spend);
-      setLines(sorted);
-
-      const total = sorted.reduce((s, l) => s + l.spend, 0);
-      const bySite = new Map<string, number>();
-      for (const l of sorted) bySite.set(l.site, (bySite.get(l.site) ?? 0) + l.spend);
-
-      const ctx: ContextDoc[] = [
-        {
-          id: "summary",
-          label: "Summary",
-          text:
-            `Account ${accountName} (${account}). Period ${period.months.map(ukMonth).join(", ")}. ` +
-            `${sorted.length} SKU-site lines. Total spend ${gbp(total)} ex VAT. ` +
-            `Sites: ${[...bySite.entries()].map(([s, v]) => `${s} ${gbp(v)}`).join("; ")}.`,
-          metadata: { kind: "summary" },
-        },
-        ...sorted.slice(0, 40).map((l, idx) => ({
-          id: `line-${idx}`,
-          label: `${l.sku} @ ${l.site}`,
-          text: `${l.site}: ${l.qty} × ${l.sku} ${l.name} = ${gbp(l.spend)} ex VAT.`,
-          metadata: { sku: l.sku, site: l.site, qty: l.qty, spend: l.spend },
-        })),
-      ];
-      setDocs(ctx);
-      push({
-        label: "Roll up spend by site and SKU",
-        detail: `Total ${gbp(total)} · ${bySite.size} sites · no Merlin report ticket needed`,
-        rowsIn: res.rows.length,
-        rowsOut: sorted.length,
+      const r = await runSql(sql);
+      trace[1] = { ...trace[1], status: "ok", rowsOut: r.rows.length, ms: r.tookMs };
+      const rows: OrderRow[] = r.rows.map((row) => {
+        const m = metaOf(row);
+        return { site: str(m.site), sku: str(m.sku), month: str(m.month), qty: num(m.qty), po_ref: str(m.po_ref) };
+      });
+      const rep = buildReport(p, rows);
+      trace.push({
+        label: "Roll up in code: totals, groups, comparison, spikes, greener swaps",
+        detail: "figures computed from rows — never generated by a model",
+        rowsIn: rows.length,
+        rowsOut: rep.groups.length,
         status: "ok",
       });
-      setRunId((n) => n + 1);
+      setSteps([...trace]);
+      setPlan(p);
+      setReport(rep);
+      setTurns((t) => [{ q: text, understood: parsed.understood, ms: Math.round(performance.now() - started) }, ...t].slice(0, 6));
     } catch (e) {
-      setErr(e instanceof ApiError ? `${e.status}: ${e.body || e.code}` : (e as Error).message);
-      if (trace.length) {
-        trace[trace.length - 1] = { ...trace[trace.length - 1], status: "error" };
-        setSteps([...trace]);
-      }
+      setErr(e instanceof ApiError ? e.message : (e as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
-  const getContext = useCallback(async () => docs, [docs]);
-  const total = lines.reduce((s, l) => s + l.spend, 0);
+  const schedule = async () => {
+    if (!report) return;
+    const p = report.plan;
+    const id = `ss-sched-${p.accountId}-${p.groupBy}-${p.category ?? "all"}`;
+    const title = `${p.accountName} · ${p.periodLabel.toLowerCase()} · by ${p.groupBy}${p.category ? ` · ${p.category}` : ""}`;
+    const next = nextLastFriday(TODAY);
+    await api.upsertDoc(B.reportSchedules, id, `Scheduled report: ${title}. Runs on the last Friday of each month and emails the customer contact.`, {
+      kind: "report_schedule",
+      account_id: p.accountId,
+      plan: JSON.stringify(p),
+      cadence: "monthly-last-friday",
+      next_run: next,
+    });
+    setSchedules((s) => [{ id, title, next }, ...s.filter((x) => x.id !== id)]);
+  };
+
+  const fmt = (v: number) => (report?.plan.measure === "qty" ? `${v.toLocaleString("en-GB")} packs` : gbp(v));
+  const t = report?.totals;
 
   return (
     <div className="space-y-4">
-      <DemoNote extra="Plain-English customer spend without waiting days for a Merlin custom report." />
+      <DemoNote extra="Accounts and orders are invented. Figures come from SQL rows, never from a model." />
+      <BenefitStrip
+        headline="Days → seconds"
+        sub="for any customer report, by anyone in the office"
+        rows={[
+          { label: "A new custom report", before: "Merlin ticket, 3 attempts, ~4 weeks", after: turns[0] ? took(turns[0].ms) : "seconds" },
+          { label: "Who can run it", before: "someone who writes SQL", after: "anyone, in plain English" },
+          { label: "Changing it (“just paper”)", before: "another ticket", after: "one follow-up sentence" },
+          { label: "Monthly customer reports", before: "rebuilt by hand", after: "scheduled, sent last Friday" },
+        ]}
+        quote="I'm trying to get someone just to build a real simple report… third attempt… three or four days apart"
+      />
       <ArchitecturePanel id="ss_reports" />
-      <Panel
-        title="Customer Report Desk"
-        subtitle="Ask what a trade account bought — Jordan answers from order history, not a vendor ticket."
-        action={<SeedChip seed={seed} />}
-      >
+
+      <Panel title="Ask Jordan for a report" subtitle="Customer, period, grouping, category, top N — follow-ups refine the last report" action={<SeedChip seed={seed} />}>
         <Chips
-          items={SCENARIOS}
-          active={scenario}
-          onPick={(s) => {
-            setScenario(s.label);
-            setAccount(s.account);
-            setPeriodLabel(s.period);
-            setQ(s.q);
+          items={ASKS}
+          onPick={(a) => {
+            setQ(a.q);
+            void ask(a.q);
           }}
         />
-        <div className="flex flex-wrap gap-3 items-end mb-3">
-          <label className="text-xs">
-            <span className="block font-medium mb-1">Account</span>
-            <select className="input" value={account} onChange={(e) => setAccount(e.target.value)}>
-              {ACCOUNTS.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs">
-            <span className="block font-medium mb-1">Period</span>
-            <select className="input" value={periodLabel} onChange={(e) => setPeriodLabel(e.target.value)}>
-              {PERIODS.map((p) => (
-                <option key={p.label} value={p.label}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <label className="block mb-3">
-          <span className="block text-xs font-medium mb-1">Question</span>
-          <textarea className="code-input w-full h-16" value={q} onChange={(e) => setQ(e.target.value)} />
-        </label>
-        <button type="button" className="btn" disabled={busy || !seed.ready} onClick={() => void run()}>
-          {busy ? <Spinner /> : null}
-          {busy ? "Building…" : "Build report"}
-        </button>
+        <form
+          className="flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void ask(q);
+          }}
+        >
+          <input className="input flex-1" value={q} onChange={(e) => setQ(e.target.value)} data-tour="ask" aria-label="Report request" />
+          <button type="submit" className="btn" disabled={busy || !seed.ready} data-tour="run">
+            {busy ? <Spinner label="Building…" /> : "Build report"}
+          </button>
+        </form>
+        {turns[0] && (
+          <div className="flex flex-wrap gap-1.5" data-tour="understood">
+            <span className="eyebrow self-center mr-1">Jordan understood</span>
+            {turns[0].understood.map((u) => (
+              <Pill key={u} tone="accent">
+                {u}
+              </Pill>
+            ))}
+          </div>
+        )}
+        <ErrorBanner err={err} />
       </Panel>
 
-      <ErrorBanner err={err} />
       {steps.length > 0 && <PipelineTrace steps={steps} />}
 
-      {lines.length > 0 && (
-        <Panel title={`${accountName} · ${periodLabel}`} subtitle={`Total ${gbp(total)} ex VAT · ${lines.length} lines`}>
-          <div className="overflow-x-auto -mx-1 max-h-80 overflow-y-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs uppercase tracking-wider text-gray-500 dark:text-muted border-b border-gray-200 dark:border-edge sticky top-0 bg-white dark:bg-carbon-950">
-                  <th className="py-2 pr-3">Site</th>
-                  <th className="py-2 pr-3">SKU</th>
-                  <th className="py-2 pr-3">Product</th>
-                  <th className="py-2 pr-3">Qty</th>
-                  <th className="py-2">Spend</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lines.slice(0, 60).map((l) => (
-                  <tr key={`${l.site}-${l.sku}`} className="border-b border-gray-100 dark:border-edge/60">
-                    <td className="py-1.5 pr-3">{l.site}</td>
-                    <td className="py-1.5 pr-3 font-mono text-xs">{l.sku}</td>
-                    <td className="py-1.5 pr-3">{l.name}</td>
-                    <td className="py-1.5 pr-3 font-mono">{l.qty}</td>
-                    <td className="py-1.5 font-mono">{gbp(l.spend)}</td>
-                  </tr>
+      {report && t && (
+        <>
+          <Panel
+            title={`${report.plan.accountName} — ${report.plan.periodLabel}`}
+            subtitle={`${ukMonth(report.plan.months[0])} – ${ukMonth(report.plan.months[report.plan.months.length - 1])}${report.plan.category ? ` · ${report.plan.category} only` : ""} · by ${report.plan.groupBy} · ready in ${took(turns[0]?.ms ?? 0)}`}
+            action={
+              <div className="flex flex-wrap gap-1.5">
+                <button type="button" className="btn-secondary text-xs" onClick={() => download(`${report.plan.accountId}-${report.plan.months[0]}-report.csv`, toCsv(report))} data-tour="csv">
+                  ⬇ Excel (CSV)
+                </button>
+                <button type="button" className="btn-secondary text-xs" onClick={() => setEmail(emailDraft(report))} data-tour="email">
+                  ✉ Email draft
+                </button>
+                <button type="button" className="btn text-xs" onClick={schedule} data-tour="schedule">
+                  ⏱ Every month
+                </button>
+              </div>
+            }
+          >
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2" data-tour="kpis">
+              <Kpi label="Spend ex VAT" value={gbp(t.spend).replace(/\.\d\d$/, "")} />
+              <Kpi
+                label="vs previous period"
+                value={t.deltaPct === null ? "—" : `${t.deltaPct >= 0 ? "+" : ""}${t.deltaPct}%`}
+                tone={t.deltaPct === null ? undefined : t.deltaPct >= 0 ? "ok" : "warn"}
+                hint={t.prevSpend ? gbp(t.prevSpend).replace(/\.\d\d$/, "") : "no earlier data"}
+              />
+              <Kpi label="Orders" value={t.orders} />
+              <Kpi label="Sites" value={t.sites} />
+              <Kpi label="Product lines" value={t.skus} />
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2 mt-3">
+              <div>
+                <div className="eyebrow mb-2">By {report.plan.groupBy}</div>
+                <Bars
+                  rows={report.groups.slice(0, 12).map((g) => ({
+                    label: g.label,
+                    value: report.plan.measure === "qty" ? g.qty : g.spend,
+                    sub: g.prevSpend && report.plan.groupBy !== "month" ? `${g.spend >= g.prevSpend ? "▲" : "▼"}${Math.abs(Math.round(((g.spend - g.prevSpend) / g.prevSpend) * 100))}%` : undefined,
+                  }))}
+                  format={fmt}
+                />
+              </div>
+              <div>
+                <div className="eyebrow mb-2">Insights Jordan found</div>
+                <ul className="space-y-1.5 text-sm text-gray-700 dark:text-muted" data-tour="insights">
+                  {report.insights.map((i) => (
+                    <li key={i} className={i.startsWith("Spike") ? "text-warn" : i.startsWith("Greener") ? "text-ok" : ""}>
+                      • {i}
+                    </li>
+                  ))}
+                </ul>
+                {report.plan.groupBy !== "month" && (
+                  <>
+                    <div className="eyebrow mt-3 mb-2">Month by month</div>
+                    <Bars rows={report.byMonth.map((m) => ({ label: ukMonth(m.month), value: m.value }))} format={fmt} />
+                  </>
+                )}
+              </div>
+            </div>
+          </Panel>
+
+          {email && (
+            <Panel title="Customer email (draft)" subtitle="A person reviews and sends — CSV attached">
+              <pre className="whitespace-pre-wrap text-xs font-mono text-gray-700 dark:text-muted" data-tour="email-draft">
+                {email}
+              </pre>
+            </Panel>
+          )}
+        </>
+      )}
+
+      {(schedules.length > 0 || turns.length > 1) && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {schedules.length > 0 && (
+            <Panel title="Scheduled reports" subtitle={`Saved to ${B.reportSchedules} · runs unattended`}>
+              <ul className="space-y-1 text-xs" data-tour="schedules">
+                {schedules.map((s) => (
+                  <li key={s.id} className="flex justify-between gap-2">
+                    <span>{s.title}</span>
+                    <span className="text-gray-500 dark:text-muted whitespace-nowrap">next {ukDate(s.next)}</span>
+                  </li>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
+              </ul>
+            </Panel>
+          )}
+          {turns.length > 1 && (
+            <Panel title="This conversation" subtitle="Each follow-up refined the report before it">
+              <ol className="space-y-1 text-xs text-gray-600 dark:text-muted">
+                {[...turns].reverse().map((tn, i) => (
+                  <li key={i}>
+                    {i + 1}. “{tn.q}” <span className="text-gray-400 dark:text-faint">({took(tn.ms)})</span>
+                  </li>
+                ))}
+              </ol>
+            </Panel>
+          )}
+        </div>
       )}
-
-      {docs.length > 0 && (
-        <GroundedChat
-          title="Jordan AI summary"
-          subtitle="Grounded on the order roll-up above — no Merlin report ticket"
-          system={SYSTEM}
-          getContext={getContext}
-          resetKey={String(runId)}
-          suggestions={[q, "Which site spent the most?", "Top three SKUs by spend?"]}
-          placeholder="Ask about this report…"
-        />
-      )}
-
-      <UnderTheHood filter={["/api/v1/query", "/api/v1/ai/rag", "ss_orders"]} />
     </div>
   );
 }

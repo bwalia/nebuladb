@@ -10,6 +10,8 @@ import { BUCKET as GUIDES_BUCKET, GUIDE_DOCS, SEED_VERSION as GUIDES_V } from ".
 import { ACCOUNTS_BUCKET, ACCOUNT_DOCS, ORDERS_BUCKET, ORDER_DOCS, SEED_VERSION as ACCOUNTS_V } from "./accounts.ts";
 import { BUCKET as WASHROOM_BUCKET, JOB_DOCS, SEED_VERSION as WASHROOM_V } from "./washroom.ts";
 import { BUCKET as TENDER_BUCKET, TENDER_DOCS, SEED_VERSION as TENDER_V } from "./tender.ts";
+import { BUCKET as RETAIL_BUCKET, RETAIL_DOCS, SEED_VERSION as RETAIL_V } from "./retail.ts";
+import { BUCKET as DEMAND_BUCKET, DEMAND_DOCS, SEED_VERSION as DEMAND_V } from "./demand.ts";
 
 export interface SeedSet {
   bucket: string;
@@ -26,6 +28,8 @@ export const SEEDS = {
   orders: { bucket: ORDERS_BUCKET, docs: ORDER_DOCS, version: ACCOUNTS_V, noun: "order lines" },
   washroom: { bucket: WASHROOM_BUCKET, docs: JOB_DOCS, version: WASHROOM_V, noun: "washroom jobs" },
   tender: { bucket: TENDER_BUCKET, docs: TENDER_DOCS, version: TENDER_V, noun: "tender KB entries" },
+  retail: { bucket: RETAIL_BUCKET, docs: RETAIL_DOCS, version: RETAIL_V, noun: "retail inbox items" },
+  demand: { bucket: DEMAND_BUCKET, docs: DEMAND_DOCS, version: DEMAND_V, noun: "demand and stock records" },
 } satisfies Record<string, SeedSet>;
 
 export type SeedKey = keyof typeof SEEDS;
