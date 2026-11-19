@@ -105,6 +105,18 @@ spec:
                   name: {{ include "nebuladb.showcase.authSecretName" . }}
                   key: {{ .Values.showcase.opsapiAuth.sessionSecretKey }}
             {{- end }}
+            {{- if .Values.showcase.slackAlerts.enabled }}
+            - name: SHOWCASE_SLACK_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.showcase.slackAlerts.secretName }}
+                  key: {{ .Values.showcase.slackAlerts.secretKey }}
+                  optional: true
+            - name: SHOWCASE_ALERT_IGNORE
+              value: {{ .Values.showcase.slackAlerts.ignore | quote }}
+            - name: SHOWCASE_ENGAGEMENT_URL
+              value: {{ .Values.showcase.slackAlerts.engagementUrl | quote }}
+            {{- end }}
             {{- if or .Values.showcase.auth.enabled $oauth }}
             # optional: password form works when these keys exist in Vault
             # even if basic auth is disabled (Google + email/password).

@@ -151,6 +151,9 @@ showcase:
       enabled: true
   # Login with OpsAPI. Staged: flip to true once the OpsAPI workspaces
   # below exist with members (until then nobody would be let in).
+  slackAlerts:
+    enabled: true
+    engagementUrl: "https://showcase.nebuladb.net/#/tab/engagement"
   opsapiAuth:
     enabled: false
     identityUrl: "https://identity.demo.opsapi.org"

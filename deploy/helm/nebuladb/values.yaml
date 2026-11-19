@@ -279,6 +279,19 @@ showcase:
   # SSO) for every host on the showcase ingress; access per host by OpsAPI
   # workspace. Takes precedence over googleAuth/sessionLogin when enabled.
   # OpsAPI must list each host's https origin in its trusted frontends.
+  # Slack alerts from visitor analytics (apps/showcase/njs/analytics.js):
+  # a post when someone opens a customer demo site and when they finish a
+  # video. The webhook URL is read from secretName/secretKey (optional: no
+  # secret, no alerts). The deploy workflow copies the SLACK_WEBHOOK_URL
+  # Actions secret into it.
+  slackAlerts:
+    enabled: false
+    secretName: nebuladb-showcase-alerts
+    secretKey: SLACK_WEBHOOK_URL
+    # Comma-separated emails or @domains whose visits never alert.
+    ignore: ""
+    # Linked from each alert.
+    engagementUrl: ""
   opsapiAuth:
     enabled: false
     # Browser-facing OpsAPI (hosted /auth/signin, /auth/signout).

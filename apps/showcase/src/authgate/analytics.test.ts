@@ -44,3 +44,28 @@ test("unknown event types are rejected and long strings are capped", () => {
   assert.equal(d.metadata.value.length, 300);
   assert.equal(analytics.buildDoc({ type: "click", label: "Run" }, ctx({ user: "" })).metadata.user, "anonymous");
 });
+
+test("Slack: a visit and a finished video alert; other events and the internal site don't", () => {
+  const visit = analytics.buildDoc(
+    { type: "page_view", site: "sourcesupplies", title: "Home", lang: "en-GB" },
+    ctx({ ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 Chrome/131.0 Safari/537.36" })
+  );
+  const text = analytics.alertText(visit, true, "https://showcase.nebuladb.net/#/tab/engagement");
+  assert.match(text, /^:wave: \*dave@example\.com\* opened sourcesupplies\.nebuladb\.net/);
+  assert.match(text, /GB · IP 203\.0\.113\.7 · Chrome on Mac · en-GB/);
+  assert.match(text, /<https:\/\/showcase\.nebuladb\.net\/#\/tab\/engagement\|Engagement>$/);
+  assert.equal(analytics.alertText(visit, false, ""), "", "only the first page of a session alerts");
+
+  const done = analytics.buildDoc({ type: "video_complete", site: "sourcesupplies", video: "Retail <POD> & co", seconds: 130 }, ctx());
+  assert.equal(analytics.alertText(done, false, ""), ":clapper: *dave@example.com* finished *Retail &lt;POD&gt; &amp; co* (2:10 watched)");
+
+  assert.equal(analytics.alertText(analytics.buildDoc({ type: "click", site: "sourcesupplies", label: "Run" }, ctx()), false, ""), "");
+  assert.equal(analytics.alertText(analytics.buildDoc({ type: "page_view", site: "showcase" }, ctx()), true, ""), "");
+});
+
+test("Slack ignore list matches emails and @domains", () => {
+  assert.equal(analytics.ignoredUser("Me@Team.example", "@team.example"), true);
+  assert.equal(analytics.ignoredUser("dave@source.example", "@team.example, ops@x.example"), false);
+  assert.equal(analytics.ignoredUser("ops@x.example", "@team.example, ops@x.example"), true);
+  assert.equal(analytics.ignoredUser("anyone", ""), false);
+});

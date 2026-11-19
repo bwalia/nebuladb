@@ -31,6 +31,8 @@ export interface TrackProps {
   seconds?: number;
   label?: string;
   value?: string;
+  /** First page of this browser session (drives the "opened the site" alert). */
+  first?: boolean;
 }
 
 const ENDPOINT = "/a/event";
@@ -202,13 +204,22 @@ export function startAutoCapture(videoTitle: (src: string) => string | undefined
   };
 
   let lastPage = "";
+  let startedOnce = false;
   const onPage = () => {
     // Let the route's effect set document.title first.
     setTimeout(() => {
       const key = location.hash;
       if (key === lastPage) return;
       lastPage = key;
-      track("page_view");
+      let first = false;
+      try {
+        first = !sessionStorage.getItem("ss-a-started");
+        sessionStorage.setItem("ss-a-started", "1");
+      } catch {
+        first = !startedOnce;
+      }
+      startedOnce = true;
+      track("page_view", first ? { first } : {});
     }, 50);
   };
 

@@ -94,7 +94,8 @@ COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY njs/opsapi-auth.js njs/analytics.js /etc/nginx/njs/
 RUN { printf '%s\n' 'load_module modules/ngx_http_js_module.so;' \
         'env OPSAPI_IDENTITY_URL;' 'env OPSAPI_API_URL;' \
-        'env SHOWCASE_SESSION_SECRET;' 'env SHOWCASE_OPSAPI_ACCESS;'; \
+        'env SHOWCASE_SESSION_SECRET;' 'env SHOWCASE_OPSAPI_ACCESS;' \
+        'env SHOWCASE_SLACK_WEBHOOK;' 'env SHOWCASE_ALERT_IGNORE;' 'env SHOWCASE_ENGAGEMENT_URL;'; \
       cat /etc/nginx/nginx.conf; } > /tmp/nginx.conf && mv /tmp/nginx.conf /etc/nginx/nginx.conf
 # Sourced by the nginx entrypoint before envsubst; must be executable.
 COPY --chmod=755 docker-entrypoint.d/15-showcase-auth.envsh /docker-entrypoint.d/
