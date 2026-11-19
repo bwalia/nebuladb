@@ -304,6 +304,7 @@
         <a id="basic" class="submit hidden" href="/">Continue to sign in</a>
 
         <p class="meta" id="meta">Loading sign-in options…</p>
+        <p class="meta" id="privacy" hidden>We record which demos and videos you view, with your IP address and country, so we can follow up on what interests you.</p>
       </section>
     </main>
     <footer class="sponsor">Sponsored by <a href="https://www.workstation.co.uk/en" target="_blank" rel="noopener noreferrer">Workstation</a></footer>
@@ -423,5 +424,8 @@
 
       })();
     </script>
-  </body>
+      <script>
+      if (/^([a-z]+-)?sourcesupplies\./.test(location.hostname)) document.getElementById("privacy").hidden = false;
+    </script>
+</body>
 </html>

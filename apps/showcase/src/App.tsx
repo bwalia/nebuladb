@@ -14,6 +14,7 @@ import { SearchTab } from "./tabs/SearchTab";
 import { RagTab } from "./tabs/RagTab";
 import { HybridTab } from "./tabs/HybridTab";
 import { AdminTab } from "./tabs/AdminTab";
+import { EngagementTab } from "./tabs/EngagementTab";
 import { MetricsTab } from "./tabs/MetricsTab";
 import { ExecutiveTab } from "./tabs/ExecutiveTab";
 import { McpTab } from "./tabs/McpTab";
@@ -65,6 +66,7 @@ import { voiceOfCustomerSpec } from "./usecases/specs/voiceOfCustomer";
 
 type TabId =
   | "labs"
+  | "engagement"
   | "visaagent"
   | "jiraagent"
   | "executive"
@@ -188,6 +190,7 @@ const NAV: NavItem[] = [
   { id: "rebalance", label: "Rebalance", hint: "Zero-downtime node swap", icon: "⇄", group: "cluster" },
   { id: "cockpit", label: "Cockpit", hint: "Mission Control — live cluster, XDCR, integrity and ops controls", icon: "🛰", group: "ops" },
   { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },
+  { id: "engagement", label: "Engagement", hint: "Who visited the customer demo sites: country, IP, videos watched, what they tried", icon: "◉", group: "ops" },
   { id: "admin", label: "Admin", hint: "Buckets, EXPLAIN, audit, slow queries", icon: "⚙", group: "ops" },
 ];
 
@@ -455,6 +458,7 @@ export function App() {
               {tab === "cluster" && <ClusterTab />}
               {tab === "rebalance" && <RebalanceTab />}
               {tab === "metrics" && <MetricsTab />}
+              {tab === "engagement" && <EngagementTab />}
               {tab === "admin" && <AdminTab />}
             </div>
           </div>

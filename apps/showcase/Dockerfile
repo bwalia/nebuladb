@@ -91,7 +91,7 @@ COPY nginx.conf /etc/nginx/templates/default.conf.template
 # Login with OpsAPI (njs): the handlers, the njs module, and the env vars
 # they read (nginx drops environment variables from workers unless the main
 # config declares them with `env`).
-COPY njs/opsapi-auth.js /etc/nginx/njs/opsapi-auth.js
+COPY njs/opsapi-auth.js njs/analytics.js /etc/nginx/njs/
 RUN { printf '%s\n' 'load_module modules/ngx_http_js_module.so;' \
         'env OPSAPI_IDENTITY_URL;' 'env OPSAPI_API_URL;' \
         'env SHOWCASE_SESSION_SECRET;' 'env SHOWCASE_OPSAPI_ACCESS;'; \
