@@ -322,8 +322,9 @@ jobs:
               # -o /dev/null with --max-redirs 0: a vhost stuck in a redirect
               # loop returns 301 forever, which must read as a failure rather
               # than a pass. Only a terminal status counts.
-              code=$(curl -sS -o /tmp/body -m 10 --max-redirs 0 -w '%{http_code}' "https://${HOST}/" || echo 000)
-              echo "[$i] https://${HOST}/ -> $code"
+              out=$(curl -sS -o /tmp/body -m 10 --max-redirs 0 -w '%{http_code} %{redirect_url}' "https://${HOST}/" || echo 000)
+              code=${out%% *}; loc=${out#* }
+              echo "[$i] https://${HOST}/ -> $code ${loc}"
               if grep -qi 'Host not configured' /tmp/body 2>/dev/null; then
                 sleep 10; continue
               fi
@@ -332,6 +333,13 @@ jobs:
               if [ "$code" = "200" ] || [ "$code" = "401" ] || [ "$code" = "403" ] || [ "$code" = "404" ]; then
                 echo "✅ ${HOST} live through the edge (HTTP ${code})"; ok=1; break
               fi
+              # The showcase sites send signed-out visitors to their own
+              # sign-in page: a redirect to /login on the same host is the
+              # app answering, not a stale backend.
+              case "$loc" in
+                "https://${HOST}/login"*|"http://${HOST}/login"*)
+                  echo "✅ ${HOST} live through the edge (HTTP ${code} -> sign-in)"; ok=1; break ;;
+              esac
               if [ "$code" = "301" ] || [ "$code" = "302" ]; then
                 echo "   redirect — edge rule may still point at a stale backend"
               fi
