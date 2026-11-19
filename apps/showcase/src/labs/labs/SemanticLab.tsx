@@ -1,3 +1,4 @@
+import { isCustomerSite } from "../../tenant";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Hit, type HitExplain } from "../../api";
 import { ErrorBanner } from "../../components";
@@ -151,9 +152,11 @@ export function SemanticLab({ pack, state, update }: LabProps) {
                       <div className="mt-1.5">
                         <Bar value={h.score / top} label={h.score.toFixed(3)} tone={good ? "ok" : "accent"} />
                       </div>
-                      <div className="mt-1 text-[10px] font-mono text-gray-400 dark:text-faint truncate" title={h.why}>
-                        why: {h.why || "—"}
-                      </div>
+                      {!isCustomerSite() && (
+                        <div className="mt-1 text-[10px] font-mono text-gray-400 dark:text-faint truncate" title={h.why}>
+                          why: {h.why || "—"}
+                        </div>
+                      )}
                     </li>
                   );
                 })}

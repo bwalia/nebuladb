@@ -1,3 +1,4 @@
+import { isCustomerSite } from "../tenant";
 /**
  * App D — Smart Reorder for multi-site cleaners.
  *
@@ -282,7 +283,7 @@ export function ReorderTab() {
 
   return (
     <div className="space-y-4">
-      <ArchitecturePanel id="ss_reorder" />
+      {!isCustomerSite() && <ArchitecturePanel id="ss_reorder" />}
       <DemoNote extra={`Demo calendar: today is ${ukDate(DEMO_TODAY)}.`} />
       <Panel title="Smart Reorder" subtitle="Pick a site or type what you want. We draft next month's basket from what the site really used." action={<SeedChip seed={seed} />}>
         <Chips

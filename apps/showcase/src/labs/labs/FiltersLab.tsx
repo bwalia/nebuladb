@@ -1,3 +1,4 @@
+import { isCustomerSite } from "../../tenant";
 import { useEffect, useMemo, useState } from "react";
 import { api, type SqlResponse } from "../../api";
 import { ErrorBanner } from "../../components";
@@ -77,9 +78,11 @@ export function FiltersLab({ pack, state, update }: LabProps) {
             </button>
           )}
         </div>
-        <pre className="rounded-md border border-gray-200 dark:border-edge bg-gray-50 dark:bg-carbon-950 p-3 text-[12px] font-mono whitespace-pre-wrap text-gray-700 dark:text-ink">
-          {sql}
-        </pre>
+        {!isCustomerSite() && (
+          <pre className="rounded-md border border-gray-200 dark:border-edge bg-gray-50 dark:bg-carbon-950 p-3 text-[12px] font-mono whitespace-pre-wrap text-gray-700 dark:text-ink">
+            {sql}
+          </pre>
+        )}
       </div>
       <ErrorBanner err={err} />
 
@@ -88,7 +91,7 @@ export function FiltersLab({ pack, state, update }: LabProps) {
           <div className="card space-y-2">
             <div className="flex items-baseline justify-between">
               <div className="font-semibold text-sm text-black dark:text-ink">{returned.length} rows</div>
-              <span className="font-mono text-[11px] text-gray-500 dark:text-muted">{res.took_ms} ms</span>
+              {!isCustomerSite() && <span className="font-mono text-[11px] text-gray-500 dark:text-muted">{res.took_ms} ms</span>}
             </div>
             {returned.length === 0 && (
               <p className="text-sm text-gray-500 dark:text-muted">
@@ -130,7 +133,7 @@ export function FiltersLab({ pack, state, update }: LabProps) {
                 </p>
               )}
             </div>
-            {res.explain && (
+            {res.explain && !isCustomerSite() && (
               <div className="card space-y-2">
                 <div className="eyebrow">Plan (EXPLAIN ANALYZE)</div>
                 <PipelineTrace
