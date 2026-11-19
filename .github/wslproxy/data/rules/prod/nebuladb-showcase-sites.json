@@ -22,13 +22,7 @@
       "path": "/",
       "path_key": "starts_with",
       "basic_auth": {
-        "enabled": true,
-        "realm": "Jordan AI demos - enter username and PIN",
-        "users": [],
-        "exempt_paths": [
-          "/livez",
-          "/healthz"
-        ]
+        "enabled": false
       }
     }
   },
@@ -38,16 +32,11 @@
   "rules_tags": [
     "nebuladb",
     "prod",
-    "showcase",
-    "pin"
+    "showcase"
   ],
   "servers": [
     "host:showcase.nebuladb.net",
     "host:sourcesupplies.nebuladb.net"
   ],
-  "_basic_auth_from_secrets": {
-    "username": "EDGE_SHOWCASE_PIN_USER",
-    "password_sha256": "EDGE_SHOWCASE_PIN_SHA256"
-  },
-  "_comment": "PIN gate for the showcase + customer demo sites. users[] is filled at import time from the GitHub secrets named in _basic_auth_from_secrets (this repo is public; never commit the hash). Fails closed if empty."
+  "_comment": "Showcase + customer demo sites. Edge basic_auth is OFF: sign-in is handled by the app (one login page). Kept as its own rule so per-site edge settings can be added later."
 }
