@@ -4,6 +4,8 @@
  * LLM) with the exact query text, row counts and wall time. These are
  * measured from the calls the app made, not illustrative.
  */
+import { isCustomerSite } from "../tenant";
+
 export interface PipelineStep {
   label: string;
   /** SQL text, request summary or scoring formula. */
@@ -15,7 +17,8 @@ export interface PipelineStep {
 }
 
 export function PipelineTrace({ steps }: { steps: PipelineStep[] }) {
-  if (steps.length === 0) return null;
+  // Customer sites show outcomes, not the engine room.
+  if (steps.length === 0 || isCustomerSite()) return null;
   return (
     <ol className="space-y-1.5">
       {steps.map((s, i) => (

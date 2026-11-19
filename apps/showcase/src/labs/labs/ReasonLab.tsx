@@ -1,3 +1,4 @@
+import { isCustomerSite } from "../../tenant";
 import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { ErrorBanner } from "../../components";
@@ -175,7 +176,7 @@ export function ReasonLab({ pack, state, update, env }: LabProps) {
         )}
       </div>
       <ErrorBanner err={err} />
-      {planNote && <p className="text-xs text-gray-500 dark:text-muted">{planNote}</p>}
+      {planNote && !isCustomerSite() && <p className="text-xs text-gray-500 dark:text-muted">{planNote}</p>}
 
       {runs.length > 0 && (
         <ol className="space-y-3">
@@ -184,15 +185,17 @@ export function ReasonLab({ pack, state, update, env }: LabProps) {
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <span className={`dot ${r.status === "ok" ? "dot-ok" : r.status === "error" ? "dot-bad" : r.status === "running" ? "dot-warn animate-pulseok" : "dot-idle"}`} />
                 <span className="font-mono text-gray-400 dark:text-faint">S{i + 1}</span>
-                <span className="font-medium text-black dark:text-ink">{r.step.kind === "sql" ? "SQL" : "Search"}</span>
+                <span className="font-medium text-black dark:text-ink">{isCustomerSite() ? "Look up" : r.step.kind === "sql" ? "SQL" : "Search"}</span>
                 <span className="text-gray-500 dark:text-muted">{r.step.why}</span>
                 <span className="ml-auto font-mono text-[11px] text-gray-500 dark:text-muted">
                   {r.rows ? `${r.rows.length} rows · ` : ""}
                   {r.ms !== undefined ? `${r.ms} ms` : ""}
                 </span>
-                <button className="text-[11px] text-accent hover:underline" onClick={() => setEdit(edit === i ? null : i)} disabled={busy}>
-                  {edit === i ? "Cancel" : "Edit"}
-                </button>
+                {!isCustomerSite() && (
+                  <button className="text-[11px] text-accent hover:underline" onClick={() => setEdit(edit === i ? null : i)} disabled={busy}>
+                    {edit === i ? "Cancel" : "Edit"}
+                  </button>
+                )}
               </div>
               {edit === i ? (
                 <StepEditor
@@ -206,7 +209,7 @@ export function ReasonLab({ pack, state, update, env }: LabProps) {
                       .finally(() => setBusy(false));
                   }}
                 />
-              ) : (
+              ) : isCustomerSite() ? null : (
                 <pre className="rounded-md bg-gray-50 dark:bg-carbon-950 p-2 text-[11px] font-mono whitespace-pre-wrap text-gray-700 dark:text-ink">
                   {r.step.kind === "sql" ? r.step.sql : `hybrid search: "${r.step.query}" (top ${r.step.k})`}
                 </pre>

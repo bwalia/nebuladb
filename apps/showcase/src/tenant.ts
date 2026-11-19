@@ -25,3 +25,14 @@ export function currentSite(loc: Pick<Location, "hostname" | "search"> = window.
   }
   return (param ?? stored) === "sourcesupplies" ? "sourcesupplies" : "showcase";
 }
+
+let customer: boolean | undefined;
+/**
+ * True on a customer demo site. Those pages hide the engineering detail
+ * (SQL text, EXPLAIN plans, prompts, step timings, scoring debug) that the
+ * internal showcase shows; the results and business outcome stay.
+ */
+export function isCustomerSite(): boolean {
+  if (customer === undefined) customer = typeof window !== "undefined" && currentSite() !== "showcase";
+  return customer;
+}
