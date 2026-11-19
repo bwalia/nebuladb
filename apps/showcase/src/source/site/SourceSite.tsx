@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getTheme, toggleTheme } from "../../theme";
 import { fetchShowcaseUser, showcaseSignOutUrl, type ShowcaseUser } from "../../auth";
+import { startAutoCapture } from "../../analytics";
 import { LabsTab } from "../../labs/LabsTab";
 import { ServiceChannelTab } from "../ServiceChannelTab";
 import { StockPulseTab } from "../StockPulseTab";
@@ -59,6 +60,13 @@ export function SourceSite() {
   const [playing, setPlaying] = useState<Video | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const mainRef = useRef<HTMLElement>(null);
+
+  // Visitor analytics (customer sites only): pages, video progress, clicks, demo inputs.
+  useEffect(() => {
+    const titles = new Map<string, string>();
+    for (const v of [COMBINED, ...DEMOS.map((d) => d.video)]) if (v) titles.set(v.src, v.title);
+    return startAutoCapture((src) => titles.get(src));
+  }, []);
 
   useEffect(() => {
     const on = () => {
