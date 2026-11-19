@@ -327,6 +327,20 @@ jobs:
             --namespace "$TARGET_ENV" --create-namespace \
             --timeout 10m
 
+      # Slack alerts from showcase visitor analytics read their webhook from
+      # this Secret (optional in the chart: no Secret, no alerts). Copied from
+      # the SLACK_WEBHOOK_URL Actions secret; never printed or committed.
+      - name: Showcase Slack alert secret
+        if: ${{ github.event.inputs.DEPLOYMENT_TYPE == 'showcase-only' || github.event.inputs.TARGET_ENV == 'prod' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then echo "SLACK_WEBHOOK_URL not set: showcase alerts stay off"; exit 0; fi
+          kubectl -n "$TARGET_ENV" create secret generic nebuladb-showcase-alerts \
+            --from-literal=SLACK_WEBHOOK_URL="$SLACK_WEBHOOK_URL" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          echo "nebuladb-showcase-alerts secret applied"
+
       - name: Showcase-only image swap
         if: ${{ github.event.inputs.DEPLOYMENT_TYPE == 'showcase-only' }}
         # Touches nothing but the showcase Deployment's image. One replica

@@ -105,6 +105,78 @@ function buildDoc(e, ctx) {
   return { id: `${m.ts}-${ctx.rand}`, text: text.slice(0, 600), metadata: m };
 }
 
+/* ------------------------------ Slack alerts ------------------------------ */
+
+function envOf(name) {
+  const v = process.env[name];
+  return v === undefined || v === null ? "" : String(v).trim();
+}
+function slackEsc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function flagOf(c) {
+  return /^[A-Z]{2}$/.test(c) ? String.fromCodePoint(0x1f1a5 + c.charCodeAt(0), 0x1f1a5 + c.charCodeAt(1)) : "";
+}
+function deviceOf(ua) {
+  ua = ua || "";
+  const os = /iPhone|iPad/.test(ua) ? "iOS" : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "";
+  const br = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "";
+  return [br, os].filter(Boolean).join(" on ");
+}
+function mmss(sec) {
+  const t = Math.round(sec || 0);
+  return `${Math.floor(t / 60)}:${("0" + (t % 60)).slice(-2)}`;
+}
+/** Exported for tests: is this user on the never-alert list? */
+function ignoredUser(user, list) {
+  const u = String(user || "").toLowerCase();
+  return String(list || "")
+    .toLowerCase()
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .some((x) => (x[0] === "@" ? u.endsWith(x) : u === x));
+}
+
+/**
+ * Exported for tests: the Slack message for this event, or "" for none.
+ * Alerts only for customer sites: a visit (first page of a browser
+ * session) and a finished video.
+ */
+function alertText(doc, first, link) {
+  const m = doc.metadata;
+  if (m.site !== "sourcesupplies") return "";
+  const who = `*${slackEsc(m.user)}*`;
+  const more = link ? `  <${link}|Engagement>` : "";
+  if (m.type === "page_view" && first) {
+    const from = [
+      m.country ? `${flagOf(m.country)} ${m.country}${m.country_source === "browser" ? " (browser settings)" : ""}` : "",
+      m.ip ? `IP ${m.ip}` : "",
+      deviceOf(m.ua),
+      m.lang || "",
+    ]
+      .filter(Boolean)
+      .map(slackEsc)
+      .join(" · ");
+    return `:wave: ${who} opened ${slackEsc(m.host)}${from ? `\n${from}` : ""}${more}`;
+  }
+  if (m.type === "video_complete") {
+    return `:clapper: ${who} finished *${slackEsc(m.video || "a video")}* (${mmss(m.seconds)} watched)${more}`;
+  }
+  return "";
+}
+
+async function slack(r, text) {
+  const hook = envOf("SHOWCASE_SLACK_WEBHOOK");
+  if (!hook || !text) return;
+  try {
+    const res = await ngx.fetch(hook, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    if (!res.ok) r.warn(`analytics: slack ${res.status}`);
+  } catch (err) {
+    r.warn(`analytics: slack failed: ${err}`);
+  }
+}
+
 async function event(r) {
   if (r.method !== "POST") {
     r.return(405);
@@ -130,13 +202,15 @@ async function event(r) {
     r.return(400);
     return;
   }
-  try {
-    const res = await r.subrequest("/_a/write", { method: "POST", body: JSON.stringify(doc) });
-    if (res.status >= 300) r.warn(`analytics: write ${res.status}`);
-  } catch (err) {
-    r.warn(`analytics: write failed: ${err}`);
-  }
+  const write = r
+    .subrequest("/_a/write", { method: "POST", body: JSON.stringify(doc) })
+    .then((res) => {
+      if (res.status >= 300) r.warn(`analytics: write ${res.status}`);
+    })
+    .catch((err) => r.warn(`analytics: write failed: ${err}`));
+  const text = ignoredUser(doc.metadata.user, envOf("SHOWCASE_ALERT_IGNORE")) ? "" : alertText(doc, e.first === true, envOf("SHOWCASE_ENGAGEMENT_URL"));
+  await Promise.all([write, slack(r, text)]);
   r.return(204);
 }
 
-export default { event, buildDoc };
+export default { event, buildDoc, alertText, ignoredUser };
