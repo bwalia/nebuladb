@@ -10,6 +10,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getTheme, toggleTheme } from "../../theme";
+import { fetchShowcaseUser, showcaseSignOutUrl, type ShowcaseUser } from "../../auth";
 import { LabsTab } from "../../labs/LabsTab";
 import { ServiceChannelTab } from "../ServiceChannelTab";
 import { StockPulseTab } from "../StockPulseTab";
@@ -107,6 +108,24 @@ function Logo() {
   );
 }
 
+function SignedIn() {
+  const [user, setUser] = useState<ShowcaseUser | null>(null);
+  useEffect(() => {
+    void fetchShowcaseUser().then(setUser);
+  }, []);
+  if (!user) return null;
+  return (
+    <div className="hidden lg:flex items-center gap-2 text-[13px] text-gray-500 dark:text-muted">
+      <span className="max-w-[12rem] truncate" title={user.email}>
+        {user.user === user.email ? user.email : `${user.user}`}
+      </span>
+      <a href={showcaseSignOutUrl()} className="rounded-lg border border-gray-200 dark:border-edge px-2.5 py-1.5 hover:border-accent">
+        Sign out
+      </a>
+    </div>
+  );
+}
+
 function Header({ theme, onTheme, onMenu, onPlay }: { theme: string; onTheme: () => void; onMenu: () => void; onPlay: (v: Video) => void }) {
   return (
     <header className="shrink-0 border-b border-gray-200 dark:border-edge bg-white/90 dark:bg-carbon-950/90 backdrop-blur">
@@ -125,6 +144,7 @@ function Header({ theme, onTheme, onMenu, onPlay }: { theme: string; onTheme: ()
           <button type="button" onClick={() => onPlay(COMBINED)} className="hidden md:inline-flex items-center rounded-lg bg-accent px-3.5 py-2 text-[15px] font-medium text-white hover:bg-accent/90">
             Watch the full tour
           </button>
+          <SignedIn />
           <button type="button" onClick={onTheme} className="rounded-lg border border-gray-200 dark:border-edge px-2.5 py-2" aria-label="Toggle theme">
             {theme === "dark" ? "☀" : "☾"}
           </button>

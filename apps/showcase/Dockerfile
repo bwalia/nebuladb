@@ -88,6 +88,14 @@ FROM nginx:1.27-alpine AS runtime
 RUN apk add --no-cache gettext wget openssl
 COPY --from=build /src/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/templates/default.conf.template
+# Login with OpsAPI (njs): the handlers, the njs module, and the env vars
+# they read (nginx drops environment variables from workers unless the main
+# config declares them with `env`).
+COPY njs/opsapi-auth.js /etc/nginx/njs/opsapi-auth.js
+RUN { printf '%s\n' 'load_module modules/ngx_http_js_module.so;' \
+        'env OPSAPI_IDENTITY_URL;' 'env OPSAPI_API_URL;' \
+        'env SHOWCASE_SESSION_SECRET;' 'env SHOWCASE_OPSAPI_ACCESS;'; \
+      cat /etc/nginx/nginx.conf; } > /tmp/nginx.conf && mv /tmp/nginx.conf /etc/nginx/nginx.conf
 # Sourced by the nginx entrypoint before envsubst; must be executable.
 COPY --chmod=755 docker-entrypoint.d/15-showcase-auth.envsh /docker-entrypoint.d/
 COPY --chmod=755 docker-entrypoint.d/16-examples-host.envsh /docker-entrypoint.d/
@@ -123,6 +131,12 @@ ENV NEBULA_EXAMPLES_HOST=nebuladb-examples
 # SHOWCASE_GOOGLE_AUTH=true switches to oauth2-proxy (sidecar) instead.
 ENV SHOWCASE_AUTH_DISABLED=false
 ENV SHOWCASE_GOOGLE_AUTH=false
+# Login with OpsAPI (see docker-entrypoint.d/15-showcase-auth.envsh).
+ENV SHOWCASE_OPSAPI_AUTH=false
+ENV OPSAPI_IDENTITY_URL=""
+ENV OPSAPI_API_URL=""
+ENV SHOWCASE_OPSAPI_ACCESS=""
+ENV SHOWCASE_SESSION_SECRET=""
 EXPOSE 80
 # /livez is exempt from auth; `/` answers 401 when auth is on.
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \

@@ -149,6 +149,12 @@ showcase:
     enabled: false
     vault:
       enabled: true
+  # Login with OpsAPI. Staged: flip to true once the OpsAPI workspaces
+  # below exist with members (until then nobody would be let in).
+  opsapiAuth:
+    enabled: false
+    identityUrl: "https://identity.demo.opsapi.org"
+    access: "sourcesupplies.nebuladb.net=ns:source-supplies,ns:nebuladb-team;*=ns:nebuladb-team"
   googleAuth:
     enabled: true
     redirectUrl: "https://showcase.nebuladb.net"

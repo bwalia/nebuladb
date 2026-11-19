@@ -86,6 +86,25 @@ spec:
               value: {{ $google | quote }}
             - name: SHOWCASE_SESSION_LOGIN
               value: {{ .Values.showcase.sessionLogin.enabled | quote }}
+            {{- if .Values.showcase.opsapiAuth.enabled }}
+            # Login with OpsAPI (apps/showcase/njs/opsapi-auth.js): one
+            # sign-in for every host on this ingress, access by OpsAPI
+            # workspace per host. Takes precedence over Google/password; the
+            # entrypoint refuses to start if any of these is missing.
+            - name: SHOWCASE_OPSAPI_AUTH
+              value: "true"
+            - name: OPSAPI_IDENTITY_URL
+              value: {{ required "showcase.opsapiAuth.identityUrl" .Values.showcase.opsapiAuth.identityUrl | quote }}
+            - name: OPSAPI_API_URL
+              value: {{ .Values.showcase.opsapiAuth.apiUrl | default .Values.showcase.opsapiAuth.identityUrl | quote }}
+            - name: SHOWCASE_OPSAPI_ACCESS
+              value: {{ required "showcase.opsapiAuth.access" .Values.showcase.opsapiAuth.access | quote }}
+            - name: SHOWCASE_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "nebuladb.showcase.authSecretName" . }}
+                  key: {{ .Values.showcase.opsapiAuth.sessionSecretKey }}
+            {{- end }}
             {{- if or .Values.showcase.auth.enabled $oauth }}
             # optional: password form works when these keys exist in Vault
             # even if basic auth is disabled (Google + email/password).

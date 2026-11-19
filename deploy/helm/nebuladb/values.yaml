@@ -275,6 +275,20 @@ showcase:
   #   optional SHOWCASE_AUTH_USERNAME / SHOWCASE_AUTH_PASSWORD
   # Google Cloud Console redirect URI:
   #   https://<host>/oauth2/callback
+  # "Login with OpsAPI": one hosted sign-in (Google, password + emailed code,
+  # SSO) for every host on the showcase ingress; access per host by OpsAPI
+  # workspace. Takes precedence over googleAuth/sessionLogin when enabled.
+  # OpsAPI must list each host's https origin in its trusted frontends.
+  opsapiAuth:
+    enabled: false
+    # Browser-facing OpsAPI (hosted /auth/signin, /auth/signout).
+    identityUrl: ""
+    # Server-side base for GET /auth/me (default: identityUrl).
+    apiUrl: ""
+    # Per-host policy: "host=ns:<workspace>,email:<addr>,domain:<d>;*=ns:<ws>".
+    access: ""
+    # Key in the showcase auth Secret used to sign session cookies (>= 32 chars).
+    sessionSecretKey: OAUTH2_PROXY_COOKIE_SECRET
   googleAuth:
     enabled: false
     # Public origin for --redirect-url (no trailing slash). Required

@@ -12,6 +12,11 @@
 #   When Google is on, nginx basic auth is forced off; password sign-in
 #   goes through oauth2-proxy --htpasswd-file (shared volume).
 #
+# Login with OpsAPI (njs, no sidecar) — takes precedence over the modes below:
+#   SHOWCASE_OPSAPI_AUTH=true     needs OPSAPI_IDENTITY_URL, SHOWCASE_SESSION_SECRET
+#                                 (>= 32 chars) and SHOWCASE_OPSAPI_ACCESS
+#                                 (per-host workspace policy, see njs/opsapi-auth.js)
+#
 # Password-only session (oauth2-proxy sidecar, no Google):
 #   SHOWCASE_SESSION_LOGIN=true   same gate as Google, but /login shows
 #                                 only the password form. The sidecar's
@@ -60,12 +65,33 @@ write_htpasswd() {
   return 1
 }
 
+opsapi_on=false
+case "$(printf '%s' "${SHOWCASE_OPSAPI_AUTH:-false}" | tr '[:upper:]' '[:lower:]')" in
+  true|1|yes|on) opsapi_on=true ;;
+esac
+
 password_on=false
 if write_htpasswd; then
   password_on=true
   echo "showcase-auth: htpasswd ready for user '$SHOWCASE_AUTH_USERNAME'" >&2
 fi
-if [ "$google_on" = true ] || [ "$session_on" = true ]; then
+if [ "$opsapi_on" = true ]; then
+  # Login with OpsAPI (njs/opsapi-auth.js): one sign-in for every site,
+  # access by OpsAPI workspace per host. Fail closed: a half-configured gate
+  # must stop the pod, so the rollout keeps the previous pod serving.
+  [ -n "${OPSAPI_IDENTITY_URL:-}" ] || { echo "showcase-auth: SHOWCASE_OPSAPI_AUTH=true needs OPSAPI_IDENTITY_URL" >&2; exit 1; }
+  [ "${#SHOWCASE_SESSION_SECRET}" -ge 32 ] 2>/dev/null || { echo "showcase-auth: SHOWCASE_SESSION_SECRET must be at least 32 chars" >&2; exit 1; }
+  [ -n "${SHOWCASE_OPSAPI_ACCESS:-}" ] || { echo "showcase-auth: SHOWCASE_OPSAPI_ACCESS (per-host access policy) is required" >&2; exit 1; }
+  cat >"$oauth_gate" <<'GATE'
+    auth_request /auth/verify;
+    error_page 401 = @showcase_oauth_start;
+    set $auth_email $opsapi_email;
+    set $auth_user $opsapi_email;
+GATE
+  export SHOWCASE_AUTH_BASIC=off
+  printf '{"google":false,"password":false,"mode":"opsapi"}\n' >"$login_config"
+  echo "showcase-auth: Login with OpsAPI on (${OPSAPI_IDENTITY_URL}); access: ${SHOWCASE_OPSAPI_ACCESS}" >&2
+elif [ "$google_on" = true ] || [ "$session_on" = true ]; then
   # 401 → branded /login (not straight to Google). /login is auth-exempt.
   cat >"$oauth_gate" <<'EOF'
     auth_request /oauth2/auth;
@@ -103,5 +129,8 @@ else
   esac
 fi
 
-unset showcase_htpasswd oauth_gate login_config google_on session_on mode password_on
+# Outside OpsAPI mode the njs /login handler must fall back to login.html.
+[ "$opsapi_on" = true ] || export OPSAPI_IDENTITY_URL=""
+
+unset showcase_htpasswd oauth_gate login_config google_on session_on mode password_on opsapi_on
 unset -f write_htpasswd
