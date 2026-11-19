@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en-GB" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Recreating a NebulaDB follower PVC on a larger node — NebulaDB</title>
+  <meta name="description" content="How a completed ~20 GB follower bootstrap still CrashLoop'd with exit 137, why local-path PVC node pins matter, and the exact steps to recreate the volume on a node with enough RAM." />
+  <link rel="canonical" href="https://nebuladb.net/blog/follower-pvc-recreate.html" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://nebuladb.net/blog/follower-pvc-recreate.html" />
+  <meta property="og:title" content="Recreating a NebulaDB follower PVC on a larger node — NebulaDB" />
+  <meta property="og:description" content="How a completed ~20 GB follower bootstrap still CrashLoop'd with exit 137, why local-path PVC node pins matter, and the exact steps to recreate the volume on a node with enough RAM." />
+  <meta property="og:image" content="https://nebuladb.net/assets/og.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("nebula-theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Unbounded:wght@500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" aria-label="NebulaDB home">
+        <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+          <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+          <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+          <circle class="cell-on" cx="29" cy="3" r="3"/>
+        </svg>
+        NebulaDB
+      </a>
+      <nav class="nav" id="site-nav" aria-label="Primary">
+        <a href="/features.html">Features</a>
+        <a href="/#why-rust">Why Rust</a>
+        <a href="/#demos">Demos</a>
+        <a href="/architecture.html">Architecture</a>
+        <a href="/blog/" aria-current="page">Blog</a>
+        <a href="https://github.com/bwalia/nebuladb">GitHub</a>
+      </nav>
+      <div class="header-actions">
+        <button class="icon-btn" type="button" data-theme-toggle aria-label="Switch colour theme">
+          <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <a class="btn btn-primary btn-sm" href="https://showcase.nebuladb.net">Live showcase</a>
+        <button class="icon-btn menu-btn" type="button" data-menu aria-controls="site-nav" aria-expanded="false" aria-label="Menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" style="padding-bottom:1.5rem">
+      <div class="wrap">
+        <p class="eyebrow">Engineering blog · 19 November 2026</p>
+        <h1>Recreating a NebulaDB follower PVC on a larger node</h1>
+        <p class="lead">We copied a ~20&nbsp;GB leader snapshot onto the within-region follower. The transfer finished. The pod still died with exit&nbsp;137. The fix was not another bootstrap — it was deleting a local-path PVC pinned to a 32&nbsp;Gi node.</p>
+      </div>
+    </section>
+
+    <section class="section" style="padding-top:0">
+      <div class="wrap">
+        <div class="stats" aria-label="Incident facts">
+          <div class="stat"><b>~20&nbsp;GB</b><span>snapshot copied in 32&nbsp;MiB chunks</span></div>
+          <div class="stat"><b>Exit 137</b><span>OOM-kill during snapshot recovery</span></div>
+          <div class="stat"><b>32&nbsp;Gi</b><span>follower limit on debian002</span></div>
+          <div class="stat"><b>96&nbsp;Gi</b><span>leader limit (same corpus)</span></div>
+          <div class="stat"><b>local-path</b><span>PVC pinned to one node</span></div>
+          <div class="stat"><b>0 replicas</b><span>follower parked until PVC moves</span></div>
+        </div>
+        <p class="stats-note">Prod cluster, 18–19 November 2026. Full ops procedure: <a href="https://github.com/bwalia/nebuladb/blob/main/docs/technotes/follower-pvc-recreate.md"><code>docs/technotes/follower-pvc-recreate.md</code></a>.</p>
+      </div>
+    </section>
+
+    <article class="section post">
+      <div class="wrap">
+
+        <h2>The misleading success</h2>
+        <p>NebulaDB’s within-region follower is a warm standby for the leader. Compaction means it cannot catch up from WAL alone after a long gap, so we bootstrap it from a leader <code>.nsnap</code> with <code>scripts/bootstrap_region_mirror.sh</code>.</p>
+        <p>On 18 November that script did its job: freeze a private copy of the live snapshot on the leader, SHA-256 it, stream every chunk to the follower PVC, seed the resume cursor, scale the Deployment to 1. Then verification failed with <code>container not found ("server")</code> — because the server container was already in CrashLoopBackOff.</p>
+        <p>Logs showed the familiar boot line: listening on <code>:8080</code>, serving 503 until recovery completes. Minutes later, exit&nbsp;137. That is the kernel OOM-killer, not a corrupt snapshot.</p>
+
+        <h2>Why 32&nbsp;Gi was never enough</h2>
+        <p>NebulaDB keeps the working index in RAM. A follower that holds the full corpus needs roughly the <strong>same working set as the leader</strong>, plus headroom for snapshot load peaks. Our prod leader is capped at <strong>96&nbsp;Gi</strong>. The follower Deployment still said <strong>32&nbsp;Gi</strong>.</p>
+        <div class="table-wrap"><table class="compare">
+          <thead><tr><th>Role</th><th>Memory limit</th><th>Node</th><th>Allocatable RAM (approx.)</th></tr></thead>
+          <tbody>
+            <tr><td>Leader</td><td>96&nbsp;Gi</td><td><code>debworker00</code></td><td>~128&nbsp;Gi</td></tr>
+            <tr><td>Follower</td><td>32&nbsp;Gi</td><td><code>debian002</code></td><td>~32&nbsp;Gi</td></tr>
+            <tr><td>region-b</td><td>56&nbsp;Gi</td><td><code>debian004</code></td><td>~64&nbsp;Gi</td></tr>
+          </tbody>
+        </table></div>
+        <p>Raising the follower limit alone would not have helped. The data volume uses Kubernetes <strong>local-path</strong> storage. Once bound, the PVC is annotated with the selected node. Ours was pinned to <code>debian002</code> — a machine that simply does not have 64&nbsp;Gi free.</p>
+
+        <h2>The rule: recreate the PVC</h2>
+        <p>local-path volumes do not migrate. To put the follower on a larger node you must:</p>
+        <ol>
+          <li>Scale the follower to <strong>0</strong> (stop the crash loop).</li>
+          <li><strong>Delete</strong> <code>nebuladb-follower-data</code>.</li>
+          <li>Point the Deployment at a node with enough allocatable RAM (nodeSelector / affinity) and raise the memory limit (64&nbsp;Gi+).</li>
+          <li>Let a <strong>new</strong> empty PVC bind on that node.</li>
+          <li>Run <code>bootstrap_region_mirror.sh</code> again from the leader.</li>
+          <li>Wait for <code>/healthz</code> to leave 503 and for the showcase peer probe (<code>/peer/follower/healthz</code>) to succeed.</li>
+        </ol>
+        <p>Skip deleting the PVC and you get either another OOM on the small node, or a Pending pod fighting volume affinity.</p>
+
+        <h2>What we parked, and what “done” looks like</h2>
+        <p>We left <code>ha.withinRegion.followers: 0</code> behaviour in place operationally — replicas at 0 — so debian002 stopped thrashing and neighbouring workloads stayed stable. The leader kept serving.</p>
+        <p>Bring-back is complete when: the new PVC’s selected-node is the large machine, the follower Pod is Ready, healthz returns 200 (not endless 503), and RSS sits comfortably under the new limit after recovery.</p>
+
+        <h2>Lessons</h2>
+        <ul>
+          <li><strong>Bootstrap success ≠ follower health.</strong> Chunk SHA checks prove the bytes landed; recovery still needs RAM to load them.</li>
+          <li><strong>Match peer RAM to the leader’s limit</strong>, not to last week’s RSS. Snapshot peaks are higher.</li>
+          <li><strong>Treat local-path node pins as part of capacity planning.</strong> Chart comments already warned about debian002; the incident made the recreate steps explicit.</li>
+          <li>Disk-backed document bodies (design 0014) will shrink heap per doc, but they will not remove the need for a large HNSW working set on every full replica.</li>
+        </ul>
+
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/bwalia/nebuladb/blob/main/docs/technotes/follower-pvc-recreate.md">Ops technote (commands)</a>
+          <a class="btn btn-secondary" href="/blog/memory-footprint.html">Memory per document</a>
+          <a class="btn btn-secondary" href="https://github.com/bwalia/nebuladb/blob/main/scripts/bootstrap_region_mirror.sh">bootstrap_region_mirror.sh</a>
+        </div>
+      </div>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-grid">
+        <div>
+          <a class="brand" href="/" aria-label="NebulaDB home">
+            <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+              <rect class="cell-off" x="0" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="10" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="10" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="18" width="6" height="6" rx="1"/><rect class="cell-on" x="8" y="18" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="18" width="6" height="6" rx="1"/>
+              <rect class="cell-off" x="0" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="8" y="26" width="6" height="6" rx="1"/><rect class="cell-off" x="16" y="26" width="6" height="6" rx="1"/>
+              <circle class="cell-on" cx="29" cy="3" r="3"/>
+            </svg>
+            NebulaDB
+          </a>
+          <p style="margin-top:12px;max-width:40ch">The enterprise AI database, written in Rust. SQL, documents, vectors, RAG and agents in one binary.</p>
+        </div>
+        <div>
+          <h4>Product</h4>
+          <ul>
+            <li><a href="/features.html">Features</a></li>
+            <li><a href="/architecture.html">Architecture</a></li>
+            <li><a href="/#demos">Demos</a></li>
+            <li><a href="https://showcase.nebuladb.net">Live showcase</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Developers</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb">GitHub</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/openapi.yaml">OpenAPI spec</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/tree/main/docs/design">Design docs</a></li>
+            <li><a href="https://hub.docker.com/r/bwalia/nebula-server">Docker images</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Read</h4>
+          <ul>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/PROBLEMS_SOLVED.md">Problems solved</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/USE_CASES.md">Use cases</a></li>
+            <li><a href="/blog/">Engineering blog</a></li>
+            <li><a href="https://github.com/bwalia/nebuladb/blob/main/docs/technotes/active-active-xdcr.md">Multi-region XDCR</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-base">
+        <span>© <span id="year">2026</span> NebulaDB · nebuladb.net</span>
+        <span>Built in Rust · hosted on GitHub Pages</span>
+        <span>Sponsored by <a href="https://www.workstation.co.uk/en" target="_blank" rel="noopener">Workstation</a></span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

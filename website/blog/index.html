@@ -76,6 +76,12 @@
       <div class="wrap">
         <div class="grid grid-3">
           <article class="card reveal">
+            <div class="card-top"><span class="card-index">19 NOV 2026 · OPS</span></div>
+            <h3><a href="/blog/follower-pvc-recreate.html">Recreating a NebulaDB follower PVC on a larger node</a></h3>
+            <p>A ~20&nbsp;GB snapshot bootstrap finished, then the follower CrashLoop'd with exit&nbsp;137. local-path had pinned the volume to a 32&nbsp;Gi node — delete the PVC, bind on a larger machine, raise the limit, bootstrap again.</p>
+            <a class="arrow-link" href="/blog/follower-pvc-recreate.html">Read the post</a>
+          </article>
+          <article class="card reveal">
             <div class="card-top"><span class="card-index">31 OCT 2026 · PERFORMANCE</span></div>
             <h3><a href="/blog/memory-footprint.html">How we cut NebulaDB's memory per document by a third</a></h3>
             <p>Measuring where 4.3 KB per document went, three fixes (compact documents, one key index, trimming growth slack) and a memory-profile flag. Region-b fell from 25 to 21 GiB in prod while holding more data.</p>
