@@ -47,12 +47,12 @@ jobs:
 
       - name: PIN enforced on each edge (no credentials -> 401, /livez open)
         run: |
-          set -uo pipefail
+          set -u
           for pop in lon1:195.20.255.201 lon2:85.190.106.189; do
             n=${pop%%:*}; ip=${pop#*:}
             for h in showcase.nebuladb.net sourcesupplies.nebuladb.net; do
-              a=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --resolve "$h:443:$ip" "https://$h/")
-              b=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --resolve "$h:443:$ip" "https://$h/livez")
+              a=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --resolve "$h:443:$ip" "https://$h/" || echo "curl-exit-$?")
+              b=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --resolve "$h:443:$ip" "https://$h/livez" || echo "curl-exit-$?")
               echo "$n $h: no-PIN=$a livez=$b"
               [ "$a" = 401 ] && [ "$b" = 200 ] || echo "::warning::$n $h not as expected (no-PIN=$a livez=$b)"
             done

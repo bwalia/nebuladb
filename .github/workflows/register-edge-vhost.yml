@@ -17,8 +17,9 @@ name: Register edge vhost (Cloudflare + wslproxy)
 #   1. Cloudflare CNAME  -> lon1.pop0.uk (DNS-only; the edge terminates TLS)
 #   2. wslproxy server + rule import into the control plane (cp.pop0.uk)
 #   3. Install the same records on lon1 for servers tagged pop_ids: [lon1]
-#      (CP does not push to POPs; lon2/pop0 mirrors lon1 every 5 min via
-#      wslproxy-edge-sync.timer). Same mechanics as wslproxy's add-domain skill.
+#      (fallback only: cp syncs servers/rules down to the POPs, lon1 and
+#      lon2, so step 2 is the source of truth). Same mechanics as wslproxy's
+#      add-domain skill.
 #   4. Verify the host actually answers through the edge
 #
 # Server records per target:
@@ -250,6 +251,29 @@ jobs:
           done
           import servers "$SERVERS_ARR"
           echo "registered $(echo "$SERVERS_ARR" | jq 'length') vhost(s)"
+
+          # The bulk import does not overwrite an existing server record, so a
+          # changed field (e.g. `rules`, moving a host onto the PIN rule) never
+          # reached cp — and cp syncs to lon1/lon2. Upsert each server through
+          # the admin API (PUT, or POST when it does not exist yet), then read
+          # it back and fail if cp disagrees with git.
+          for f in $FILES; do
+            body=$(jq -c 'del(._ring) | .id = (.id // ("host:" + .server_name))' "$f")
+            id=$(echo "$body" | jq -r .id); want=$(echo "$body" | jq -r .rules)
+            url="${WSL_API%/}/api/servers/$(jq -rn --arg s "$id" '$s|@uri')?envprofile=prod"
+            hdr=(-A "$UA" -H "Authorization: Bearer $TOKEN" -H "x-platform: openresty-admin-next" -H "Content-Type: application/json")
+            code=$(curl -sS --max-time 60 -o /tmp/put.out -w '%{http_code}' -X PUT "${hdr[@]}" "$url" --data-raw "$body")
+            if [ "$code" != 200 ] && [ "$code" != 201 ]; then
+              code=$(curl -sS --max-time 60 -o /tmp/put.out -w '%{http_code}' -X POST "${hdr[@]}" "${WSL_API%/}/api/servers?envprofile=prod" --data-raw "$body")
+              echo "  ${id}: PUT failed, POST -> HTTP $code"
+            else
+              echo "  ${id}: PUT -> HTTP $code"
+            fi
+            got=$(curl -sS --max-time 30 -A "$UA" -H "Authorization: Bearer $TOKEN" -H "x-platform: openresty-admin-next" \
+                    "$url" | jq -r '(.data // .) | .rules // empty')
+            [ "$got" = "$want" ] || { head -c 400 /tmp/put.out; echo; echo "::error::cp server ${id} has rules='${got}', git says '${want}'"; exit 1; }
+            echo "  ${id}: cp rules = ${got} (matches git)"
+          done
 
       - name: Install records on lon1 (lon2 mirrors)
         env:
