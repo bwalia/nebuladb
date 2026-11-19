@@ -46,13 +46,13 @@ Use `KUBECONFIG` for the prod cluster. Prefer a maintenance window: the leader s
 
 ### 4.1 Pick a target node
 
-Need **≥ ~64 Gi free allocatable** after other workloads (snapshot peaks can spike above steady RSS). Candidates historically:
+Need **≥ ~64 Gi free allocatable** after other workloads (snapshot peaks can spike above steady RSS). Measured Nov 2026:
 
 | Node | Approx. allocatable | Notes |
 |---|---|---|
-| `debian003` / `debian004` | ~64 Gi | region-b already on debian004 |
-| `debworker00` | ~128 Gi | holds the **leader** — avoid co-locating follower snapshot peaks here |
-| `cloud003` / `vps005` | ~192 Gi | confirm CNI reachability to LAN peers before use |
+| `debworker00` | ~128 Gi | **chosen** — only reachable node with headroom; co-locates with leader (keep follower limit at 64 Gi) |
+| `debian003` / `debian004` | ~64 Gi | too small once other tenants / region-b are counted |
+| `cloud003` / `vps005` | ~192 Gi | edge taint + **no CNI path** to `nebuladb.prod.svc` (wget times out) |
 
 Confirm free capacity:
 
@@ -121,8 +121,11 @@ If the PVC bound on the wrong node, delete it again and fix the selector before 
 ```bash
 KUBECONFIG=~/.kube/k3s1.yaml \
   NS=prod SOURCE=nebuladb TARGET=nebuladb-follower \
+  TARGET_NODE=debworker00 \
   ./scripts/bootstrap_region_mirror.sh
 ```
+
+`TARGET_NODE` pins the mirror helper (and therefore the WaitForFirstConsumer local-path PVC) onto the same host as the follower `nodeSelector`.
 
 Expect ~hours for a ~20 GB transfer (32 MiB chunks). The script freezes a private copy on the leader, hashes it, copies to the helper/target PVC, seeds the resume cursor, and scales the target to 1.
 

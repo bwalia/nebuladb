@@ -30,6 +30,10 @@ NS="${NS:-prod}"
 SOURCE="${SOURCE:-nebuladb}"
 TARGET="${TARGET:-nebuladb-region-b}"
 DATA_DIR="${DATA_DIR:-/var/lib/nebuladb}"
+# Optional: pin the PVC-binding helper to a node (required when the PVC is
+# still Pending under WaitForFirstConsumer, or when recreating a local-path
+# volume onto a specific host). Example: TARGET_NODE=debworker00
+TARGET_NODE="${TARGET_NODE:-}"
 # 32 MiB: `kubectl exec` streams of 128 MiB came back short on ~1 in 4
 # chunks and one chunk failed 8/8 tries (1 Nov 2026); short reads scale
 # with chunk size.
@@ -116,7 +120,14 @@ if [ -n "$existing" ]; then
   HELPER=$existing
   echo "✓ reusing helper $HELPER"
 else
-  cat <<EOF | kubectl -n "$NS" apply -f -
+  if [ -n "$TARGET_NODE" ]; then
+    echo "✓ helper nodeSelector kubernetes.io/hostname=$TARGET_NODE"
+  fi
+  # Build the helper manifest with optional nodeSelector. Keep this as a
+  # single well-formed YAML document (string concat into heredocs broke
+  # kubectl's YAML parser when TARGET_NODE was set).
+  {
+    cat <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -125,6 +136,14 @@ metadata:
     app: nebula-mirror-helper
 spec:
   restartPolicy: Never
+EOF
+    if [ -n "$TARGET_NODE" ]; then
+      cat <<EOF
+  nodeSelector:
+    kubernetes.io/hostname: ${TARGET_NODE}
+EOF
+    fi
+    cat <<EOF
   containers:
     - name: helper
       image: alpine:3.20
@@ -137,6 +156,7 @@ spec:
       persistentVolumeClaim:
         claimName: ${PVC}
 EOF
+  } | kubectl -n "$NS" apply -f -
   kubectl -n "$NS" wait --for=condition=Ready "pod/${HELPER}" --timeout=300s
 fi
 # Wipe ALL local state, including the replica WAL (records mirrored from
