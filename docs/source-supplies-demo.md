@@ -31,8 +31,17 @@ back).
 - Narrated tours for all 11 demos, recorded inside this shell, with posters:
   `public/tours/source-supplies/*.mp4` + `posters/*.jpg`; the catalogue is
   `src/source/site/catalog.ts`. Re-record: `apps/showcase/tours/record-source-top3.mjs`.
-- Sign-in is the same as the showcase (Google + email/password); `login.html` brands itself per
-  host. Prod sets `showcase.googleAuth.hostRedirect: true`, so oauth2-proxy uses the request host
+- **Sign-in: Login with OpsAPI** (`apps/showcase/njs/opsapi-auth.js`, nginx njs, no sidecar).
+  `/login` goes straight to OpsAPI's hosted page (Google, email + password + emailed code, single
+  sign-on), which returns `?token=` to `/auth/callback`; nginx checks the state cookie, calls OpsAPI
+  `GET /auth/me` (the JWT is never verified locally) and admits the user only if one of their OpsAPI
+  workspaces matches this host's policy (`showcase.opsapiAuth.access`, e.g.
+  `sourcesupplies.nebuladb.net=ns:source-supplies,ns:nebuladb-team;*=ns:nebuladb-team`). The open
+  sign-up `demo` workspace never grants access. Session: signed HttpOnly cookie, 12 h, per host;
+  `/auth/session` feeds "Signed in as", `/auth/logout` also ends the OpsAPI session. Misconfigured
+  OpsAPI mode refuses to start (the previous pod keeps serving). OpsAPI must trust each origin
+  (`passwordResetAllowedOrigins` in opsapi `values-opsapi-demo.yaml`). Until `opsapiAuth.enabled`,
+  sign-in is the Google / email + password page as before. Prod sets `showcase.googleAuth.hostRedirect: true`, so oauth2-proxy uses the request host
   for its callback. **The Google OAuth client must list
   `https://sourcesupplies.nebuladb.net/oauth2/callback`** (email/password works without it).
 

@@ -1,5 +1,5 @@
 /**
- * Showcase Google identity (oauth2-proxy) + visit logging.
+ * Showcase identity (Login with OpsAPI, or Google via oauth2-proxy) + visit logging.
  *
  * When SHOWCASE_GOOGLE_AUTH is on, nginx gates every page with
  * auth_request → oauth2-proxy. After login the browser can read
@@ -21,8 +21,25 @@ type UserinfoJson = {
   preferredUsername?: string;
 };
 
-/** null when Google auth is off or the session is anonymous. */
+/** Which sign-in served this session; decides where "Sign out" goes. */
+let provider: "opsapi" | "oauth2" = "oauth2";
+
+/** null when sign-in is off or the session is anonymous. */
 export async function fetchShowcaseUser(): Promise<ShowcaseUser | null> {
+  // Login with OpsAPI (nginx njs): /auth/session answers when that mode is on.
+  try {
+    const resp = await fetch("/auth/session", { credentials: "same-origin" });
+    if (resp.ok && (resp.headers.get("content-type") || "").includes("json")) {
+      const body = (await resp.json()) as { email?: string; name?: string };
+      const email = (body.email || "").trim();
+      if (email) {
+        provider = "opsapi";
+        return { email, user: (body.name || email).trim() };
+      }
+    }
+  } catch {
+    /* not in OpsAPI mode — fall through to oauth2-proxy */
+  }
   try {
     const resp = await fetch("/oauth2/userinfo", { credentials: "same-origin" });
     if (!resp.ok) return null;
@@ -74,6 +91,8 @@ export async function logShowcaseVisit(user: ShowcaseUser): Promise<void> {
 }
 
 export function showcaseSignOutUrl(): string {
+  // OpsAPI: clear our session and end the OpsAPI session too.
+  if (provider === "opsapi") return "/auth/logout";
   // Land on the branded login page (not `/`, which would bounce straight
   // back into Google when the IdP session is still warm).
   const rd = encodeURIComponent(window.location.origin + "/login");

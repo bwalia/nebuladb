@@ -366,11 +366,24 @@ jobs:
           # (subPath mounts never refresh in a running pod) and, when
           # HOST_REDIRECT, a host-relative OAuth callback so each host
           # signs in on its own domain.
+          # The showcase container's env comes from the chart rendered with
+          # this env's values, so settings like showcase.opsapiAuth (Login
+          # with OpsAPI) reach the pod here exactly as a full upgrade would.
+          helm template nebuladb ./deploy/helm/nebuladb \
+            -f ./deploy/helm/nebuladb/values-"${TARGET_ENV}".yaml \
+            -s templates/showcase-deployment.yaml \
+            --set showcase.image.tag="${{ steps.tag.outputs.tag }}" >/tmp/showcase-render.yaml
+          kubectl create --dry-run=client -o json -f /tmp/showcase-render.yaml \
+            | jq -c '(if .kind == "List" then .items[] else . end) | select(.kind == "Deployment")
+                     | .spec.template.spec.containers[] | select(.name == "showcase") | .env' >/tmp/showcase-env.json
+          jq -e 'type == "array" and length > 0' /tmp/showcase-env.json >/dev/null \
+            || { echo "::error::could not render the showcase container env from the chart" >&2; exit 1; }
+          echo "showcase env from chart: $(jq -r 'map(.name) | join(",")' /tmp/showcase-env.json)"
           kubectl -n "$TARGET_ENV" get deploy nebuladb-showcase -o json \
-            | jq --arg img "$IMG" --arg sha "$SHA" --arg hr "$HOST_REDIRECT" '
+            | jq --arg img "$IMG" --arg sha "$SHA" --arg hr "$HOST_REDIRECT" --slurpfile env /tmp/showcase-env.json '
                 .spec.template.metadata.annotations["nebuladb.net/nginx-config"] = $sha
                 | .spec.template.spec.containers |= map(
-                    if .name == "showcase" then .image = $img
+                    if .name == "showcase" then .image = $img | .env = $env[0]
                     elif .name == "oauth2-proxy" and $hr == "true" then
                       .args |= map(if startswith("--redirect-url=") then "--redirect-url=/oauth2/callback" else . end)
                     else . end)

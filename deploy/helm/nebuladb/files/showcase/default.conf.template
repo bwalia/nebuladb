@@ -46,6 +46,15 @@ proxy_cache_path /var/cache/nginx/nebula_admin levels=1 keys_zone=nebula_admin:1
 # the Dockerfile keeps the compose behavior.
 resolver ${NGINX_RESOLVER} valid=30s ipv6=off;
 
+# "Login with OpsAPI" (njs/opsapi-auth.js). Loaded always; it only gates
+# requests when docker-entrypoint.d/15-showcase-auth.envsh writes the opsapi
+# gate (SHOWCASE_OPSAPI_AUTH=true). /login falls back to login.html otherwise.
+js_path /etc/nginx/njs/;
+js_import opsapi from opsapi-auth.js;
+js_set $opsapi_email opsapi.email;
+js_fetch_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+js_fetch_timeout 10s;
+
 # Read pool: leader primary, follower `backup`, both max_fails=0.
 #
 # Requirements:
@@ -169,7 +178,34 @@ server {
     location = /login {
         auth_basic off;
         auth_request off;
-        try_files /login.html =404;
+        # OpsAPI mode: straight to the OpsAPI hosted sign-in. Otherwise the
+        # handler serves login.html (Google / password / basic modes).
+        js_content opsapi.login;
+    }
+    # Login with OpsAPI: callback, session, sign-out, and the gate itself.
+    location = /auth/callback {
+        auth_basic off;
+        auth_request off;
+        js_content opsapi.callback;
+    }
+    location = /auth/logout {
+        auth_basic off;
+        auth_request off;
+        js_content opsapi.logout;
+    }
+    location = /auth/session {
+        auth_basic off;
+        auth_request off;
+        js_content opsapi.session;
+    }
+    location = /auth/verify {
+        internal;
+        auth_basic off;
+        auth_request off;
+        # auth_request only accepts 2xx/401/403: keep the server-level
+        # 401 -> /login redirect out of this subrequest (same as /oauth2/auth).
+        error_page 401 = @oauth2_auth_unauthorized;
+        js_content opsapi.verify;
     }
     location = /login.html {
         auth_basic off;
