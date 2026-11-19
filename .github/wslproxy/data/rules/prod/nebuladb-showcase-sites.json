@@ -1,0 +1,53 @@
+{
+  "_schema_version": 2,
+  "created_at": 1795076997,
+  "id": "nebuladb-showcase-sites",
+  "match": {
+    "response": {
+      "backends": [
+        {
+          "address": "193.237.176.232:8888",
+          "label": "k3s1 ingress entry (Host-header routed); replaces retired AWS ELB 13.42.188.136",
+          "weight": 100
+        }
+      ],
+      "code": 305,
+      "redirect_uri": "193.237.176.232:8888",
+      "routing": {
+        "mode": "least_conn"
+      },
+      "strip_path": false
+    },
+    "rules": {
+      "path": "/",
+      "path_key": "starts_with",
+      "basic_auth": {
+        "enabled": true,
+        "realm": "Jordan AI demos - enter username and PIN",
+        "users": [],
+        "exempt_paths": [
+          "/livez",
+          "/healthz"
+        ]
+      }
+    }
+  },
+  "name": "nebuladb-showcase-sites",
+  "priority": 1,
+  "profile_id": "prod",
+  "rules_tags": [
+    "nebuladb",
+    "prod",
+    "showcase",
+    "pin"
+  ],
+  "servers": [
+    "host:showcase.nebuladb.net",
+    "host:sourcesupplies.nebuladb.net"
+  ],
+  "_basic_auth_from_secrets": {
+    "username": "EDGE_SHOWCASE_PIN_USER",
+    "password_sha256": "EDGE_SHOWCASE_PIN_SHA256"
+  },
+  "_comment": "PIN gate for the showcase + customer demo sites. users[] is filled at import time from the GitHub secrets named in _basic_auth_from_secrets (this repo is public; never commit the hash). Fails closed if empty."
+}
