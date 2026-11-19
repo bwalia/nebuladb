@@ -1,0 +1,59 @@
+# Read-only check of what the wslproxy control plane (cp.pop0.uk) holds for
+# the showcase + customer demo sites, and whether each edge enforces the PIN.
+# cp syncs rules to lon1/lon2, so cp is the source of truth. The PIN hash is
+# masked in output; it is only compared with secret EDGE_SHOWCASE_PIN_SHA256.
+name: edge-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      RULE_ID:
+        description: "wslproxy rule id"
+        default: nebuladb-showcase-sites
+        type: string
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      WSL_API: ${{ secrets.WSLPROXY_API_BASE }}
+      WSL_EMAIL: ${{ secrets.WSLPROXY_ADMIN_EMAIL }}
+      WSL_PASS: ${{ secrets.WSLPROXY_ADMIN_PASSWORD }}
+      PIN_SHA: ${{ secrets.EDGE_SHOWCASE_PIN_SHA256 }}
+      RULE_ID: ${{ inputs.RULE_ID }}
+    steps:
+      - name: Read rule + servers from cp
+        run: |
+          set -euo pipefail
+          UA="nebuladb-edge-register/1.0"
+          TOKEN=$(curl -fsS --max-time 30 -A "$UA" -X POST "${WSL_API%/}/api/user/login" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg e "$WSL_EMAIL" --arg p "$WSL_PASS" '{email:$e,password:$p}')" | jq -r '.data.accessToken // empty')
+          [ -n "$TOKEN" ] || { echo "::error::cp login failed"; exit 1; }
+          get() { curl -sS --max-time 30 -A "$UA" -H "Authorization: Bearer $TOKEN" -H "x-platform: openresty-admin-next" \
+                    -w '\n%{http_code}' "${WSL_API%/}/api/$1?envProfile=prod&envprofile=prod"; }
+          mask='walk(if type == "object" and has("password_sha256") then .password_sha256 |= (.[0:8] + "…") else . end)'
+          r=$(get "rules/${RULE_ID}"); code=$(echo "$r" | tail -n1); body=$(echo "$r" | sed '$d')
+          echo "GET rules/${RULE_ID} -> HTTP $code"
+          echo "$body" | jq "$mask | (.data // .) | {id, name, servers, basic_auth: .match.rules.basic_auth, backend: .match.response.backends}" || echo "$body" | head -c 600
+          cp_sha=$(echo "$body" | jq -r '(.data // .) | .match.rules.basic_auth.users[0].password_sha256 // empty')
+          if [ -n "$cp_sha" ] && [ "${cp_sha,,}" = "${PIN_SHA,,}" ]; then echo "::notice::cp rule PIN hash matches EDGE_SHOWCASE_PIN_SHA256"
+          else echo "::error::cp rule has no PIN user, or its hash differs from EDGE_SHOWCASE_PIN_SHA256"; fail=1; fi
+          for h in showcase.nebuladb.net sourcesupplies.nebuladb.net; do
+            r=$(get "servers/host:${h}"); code=$(echo "$r" | tail -n1)
+            echo "GET servers/host:${h} -> HTTP $code: $(echo "$r" | sed '$d' | jq -c '(.data // .) | {id, server_name, rules}' 2>/dev/null)"
+          done
+          exit ${fail:-0}
+
+      - name: PIN enforced on each edge (no credentials -> 401, /livez open)
+        run: |
+          set -uo pipefail
+          for pop in lon1:195.20.255.201 lon2:85.190.106.189; do
+            n=${pop%%:*}; ip=${pop#*:}
+            for h in showcase.nebuladb.net sourcesupplies.nebuladb.net; do
+              a=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --resolve "$h:443:$ip" "https://$h/")
+              b=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --resolve "$h:443:$ip" "https://$h/livez")
+              echo "$n $h: no-PIN=$a livez=$b"
+              [ "$a" = 401 ] && [ "$b" = 200 ] || echo "::warning::$n $h not as expected (no-PIN=$a livez=$b)"
+            done
+          done
