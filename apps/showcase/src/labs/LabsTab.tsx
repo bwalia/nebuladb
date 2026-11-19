@@ -57,10 +57,14 @@ export function LabsTab({ lockPack }: { lockPack?: string } = {}) {
 
   useEffect(() => {
     const on = () => {
-      if (window.location.hash.startsWith("#/labs")) setState(readState(lockPack));
+      if (!window.location.hash.startsWith("#/labs")) return;
+      const next = readState(lockPack);
+      setState(next);
+      if (lockPack && !window.location.hash.includes(`pack=${lockPack}`)) history.replaceState(null, "", labHash(next));
     };
     window.addEventListener("hashchange", on);
-    if (!window.location.hash.startsWith("#/labs")) history.replaceState(null, "", labHash(state));
+    // A locked site also rewrites a hand-made `?pack=other` link to its own pack.
+    if (lockPack || !window.location.hash.startsWith("#/labs")) history.replaceState(null, "", labHash(state));
     return () => window.removeEventListener("hashchange", on);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

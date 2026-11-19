@@ -11,6 +11,7 @@
  * domain systems are yours; NebulaDB does not pretend to ship them.
  */
 import { useState } from "react";
+import { currentSite } from "../tenant";
 import { SOURCE_BLUEPRINTS } from "../source/blueprints";
 
 export type Owner = "nebula" | "app" | "human";
@@ -531,9 +532,11 @@ export function ArchitecturePanel({ id, defaultOpen = false }: { id: keyof typeo
           <span className={`transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
           <span>Production architecture · {bp.label}</span>
         </button>
+{currentSite() === "showcase" && (
         <a href={GUIDE_HREF} className="px-3 py-2 text-xs font-medium text-accent hover:underline">
           Setup guide →
         </a>
+        )}
       </div>
       {open && (
         <div className="border-t border-gray-200 dark:border-edge p-3 space-y-3 bg-gray-50/60 dark:bg-carbon-950">

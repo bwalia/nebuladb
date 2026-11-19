@@ -259,6 +259,7 @@ export function Banner({ kind, children }: { kind: "warn" | "bad" | "info"; chil
 // ------------------------------------------------------------ pickers
 
 export function PackPicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  if (PACKS.length < 2) return null; // customer site: one business, nothing to pick
   return (
     <label className="inline-flex items-center gap-2 text-xs text-gray-500 dark:text-muted">
       <span className="eyebrow">Business</span>
