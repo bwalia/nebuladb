@@ -177,24 +177,33 @@ environment: prod
 ha:
   withinRegion:
     enabled: true
-    # Oct 29: parked at 0. The mirror needs the leader's full working set
-    # (~41Gi and growing) but its local-path PVC pins it to debian002 (30Gi
-    # RAM): it grew to ~24Gi, the kernel OOM-killed it four times in an hour
-    # and each one starved debian002 enough to fail the Longhorn volumes of
-    # its neighbours (patroni, minio). No node fits it: debworker00 holds
-    # the leader (snapshot peaks would OOM both), and cloud003 can't reach
-    # LAN pods. 0 rather than enabled=false, because enabled flips the
-    # leader's NEBULA_NODE_ROLE/NEBULA_PEERS and restarts it (~45 min cold
-    # recovery). To bring it back, set 1 plus a nodeSelector for a node with
-    # ~64Gi free, and delete the old nebuladb-follower-data PVC first.
-    followers: 0
+    # Nov 19: unpark onto debworker00. History —
+    # Oct 29 / Nov 18–19: parked at 0. Mirror needs the leader's full working
+    # set but local-path PVC was pinned to debian002 (~32Gi allocatable):
+    # CrashLoop exit 137 (OOM) during snapshot recovery, and OOMs starved
+    # neighbouring Longhorn volumes. Edge nodes (cloud003 / vps005, ~192Gi)
+    # have the RAM but cannot reach LAN cluster Services (wget to
+    # nebuladb.prod.svc times out). debian003/004 are only ~64Gi and already
+    # hold other tenants / region-b. debworker00 (~128Gi allocatable, leader
+    # ~51Gi RSS) is the only reachable node with headroom — accept co-location
+    # risk; keep follower limit at 64Gi (not 96Gi) so dual snapshot peaks are
+    # less likely to OOM both. debworker00 is often at max-pods (110): free a
+    # slot (or raise kubelet max-pods) before the mirror helper can schedule.
+    # Bring-up: delete nebuladb-follower-data, helm upgrade,
+    # TARGET_NODE=debworker00 ./scripts/bootstrap_region_mirror.sh.
+    # Keep followers: 0 (not enabled=false) if parking again — enabled=false
+    # rewrites leader NEBULA_NODE_ROLE/NEBULA_PEERS and restarts it.
+    followers: 1
+    nodeSelector:
+      kubernetes.io/hostname: debworker00
     persistence:
       size: 50Gi
-    # Mirror needs the same working set as the leader (~full index).
+    # Mirror needs a large working set; 64Gi leaves ~headroom beside the
+    # leader's 96Gi limit on the same ~128Gi node.
     resources:
       limits:
         cpu: "4"
-        memory: "32Gi"
+        memory: "64Gi"
       requests:
         cpu: "500m"
         memory: "8Gi"
