@@ -22,7 +22,7 @@
   "proxy_server_name": null,
   "rate_limit_enabled": false,
   "root": "/var/www/html",
-  "rules": "04152bcb-b3ae-e831-2a07-9d38cca77688",
+  "rules": "nebuladb-showcase-sites",
   "server_name": "showcase.nebuladb.net",
   "ssl_auto_renew": true,
   "ssl_email": "balinder.walia@gmail.com",

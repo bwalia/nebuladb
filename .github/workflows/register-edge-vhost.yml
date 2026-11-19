@@ -189,6 +189,11 @@ jobs:
           WSL_EMAIL: ${{ secrets.WSLPROXY_ADMIN_EMAIL }}
           WSL_PASS: ${{ secrets.WSLPROXY_ADMIN_PASSWORD }}
           FILES: ${{ steps.files.outputs.files }}
+          # PIN gate for showcase + customer demo sites (rule
+          # nebuladb-showcase-sites). The repo is public, so the hash lives
+          # only in secrets and is injected into users[] at import.
+          EDGE_SHOWCASE_PIN_USER: ${{ secrets.EDGE_SHOWCASE_PIN_USER }}
+          EDGE_SHOWCASE_PIN_SHA256: ${{ secrets.EDGE_SHOWCASE_PIN_SHA256 }}
         run: |
           set -euo pipefail
           if [ -z "${WSL_API:-}" ] || [ -z "${WSL_EMAIL:-}" ] || [ -z "${WSL_PASS:-}" ]; then
@@ -222,7 +227,20 @@ jobs:
           }
 
           # Rules first so each server's `rules` reference resolves on write.
-          RULES_ARR=$(jq -s '.' .github/wslproxy/data/rules/prod/*.json)
+          # Rules with _basic_auth_from_secrets get users[] from the named
+          # env vars; local-only underscore keys are stripped. A PIN rule
+          # without its secrets is a hard error: the edge fails closed and
+          # would lock everyone out.
+          RULES_ARR=$(jq -s '.' .github/wslproxy/data/rules/prod/*.json | jq -c '
+            map(
+              if ._basic_auth_from_secrets then
+                (._basic_auth_from_secrets) as $s
+                | ($ENV[$s.username] // "") as $u | ($ENV[$s.password_sha256] // "") as $h
+                | if ($u == "" or ($h | test("^[0-9a-fA-F]{64}$") | not))
+                  then error("rule \(.id): secrets \($s.username)/\($s.password_sha256) missing or invalid")
+                  else .match.rules.basic_auth.users = [{username: $u, password_sha256: ($h | ascii_downcase)}] end
+              else . end
+              | with_entries(select(.key | startswith("_") | not)))')
           import rules "$RULES_ARR"
 
           # Strip the local-only _ring marker before sending.

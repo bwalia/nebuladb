@@ -8,7 +8,7 @@
   ],
   "dns_record_type": "CNAME",
   "dns_cname_target": "lon1.pop0.uk",
-  "rules": "04152bcb-b3ae-e831-2a07-9d38cca77688",
+  "rules": "nebuladb-showcase-sites",
   "listens": [
     {
       "listen": "80"
