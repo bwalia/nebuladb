@@ -284,6 +284,19 @@ showcase:
   # video. The webhook URL is read from secretName/secretKey (optional: no
   # secret, no alerts). The deploy workflow copies the SLACK_WEBHOOK_URL
   # Actions secret into it.
+  # Engagement pixel for other websites (apps/showcase/px/px.js, served on
+  # px.nebuladb.net by the showcase nginx; no sign-in). `sites` maps each
+  # site's PUBLIC key (not a secret) to its host, Engagement label and the
+  # page origins allowed to send events:
+  #   sites:
+  #     ws_0123456789abcdef: {host: www.example.com, label: Example, origins: ["https://www.example.com"]}
+  # Events land in the bucket web_events. The px host also needs an ingress
+  # rule and a wslproxy server record (deploy/edge/wslproxy-server-px.json).
+  pixel:
+    enabled: false
+    sites: {}
+    # Slack (needs slackAlerts.enabled): identified visits and finished videos.
+    slackAlerts: false
   slackAlerts:
     enabled: false
     secretName: nebuladb-showcase-alerts

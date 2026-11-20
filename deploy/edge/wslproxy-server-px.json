@@ -1,0 +1,45 @@
+{
+  "server_name": "px.nebuladb.net",
+  "proxy_server_name": null,
+  "proxy_pass": null,
+  "profile_id": "prod",
+  "pop_ids": [
+    "pop0"
+  ],
+  "dns_record_type": "CNAME",
+  "dns_cname_target": "lon1.pop0.uk",
+  "rules": "nebuladb-showcase-sites",
+  "listens": [
+    {
+      "listen": "80"
+    }
+  ],
+  "match_cases": {},
+  "root": "/var/www/html",
+  "index": "index.html",
+  "access_log": "logs/access.log",
+  "error_log": "logs/error.log",
+  "cache_enabled": false,
+  "config_status": true,
+  "ssl_enabled": true,
+  "ssl_force_https": true,
+  "ssl_auto_renew": true,
+  "ssl_staging": false,
+  "_ring": "px",
+  "api_gw": {
+    "modules": [
+      "hooks"
+    ],
+    "enabled": true,
+    "hooks": {
+      "enabled": true,
+      "lua": [
+        {
+          "name": "wsl_client_headers",
+          "phase": "access_before",
+          "source": "-- Stamp the visitor's address and country for the origin. Always overwritten,\n-- so a client can't supply its own values through the edge.\nreturn function(cfg, ctx, policy)\n    ngx.req.set_header(\"X-WSL-Client-IP\", tostring(ctx.client_ip or ngx.var.remote_addr or \"\"))\n    local cc = ngx.var.geo_country\n    cc = type(cc) == \"string\" and cc:upper():gsub(\"%s+\", \"\") or \"\"\n    if cc == \"UK\" then cc = \"GB\" end\n    ngx.req.set_header(\"X-WSL-Geo-Country\", cc:match(\"^%u%u$\") and cc or nil)\n    return nil\nend\n"
+        }
+      ]
+    }
+  }
+}

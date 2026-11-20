@@ -120,6 +120,12 @@ server:
         paths:
           - path: /
             pathType: Prefix
+      # Public engagement pixel (showcase.pixel): its own nginx server on the
+      # same pods. Keep in sync with deploy-k3s.yml and wslproxy-server-px.json.
+      - host: px.nebuladb.net
+        paths:
+          - path: /
+            pathType: Prefix
     tls:
       - hosts:
           - showcase.nebuladb.net
@@ -154,6 +160,18 @@ showcase:
   slackAlerts:
     enabled: true
     engagementUrl: "https://showcase.nebuladb.net/#/tab/engagement"
+  # Engagement pixel on px.nebuladb.net. The key is public by design (it is
+  # in each site's HTML); origins decide who may send events.
+  pixel:
+    enabled: true
+    slackAlerts: true
+    sites:
+      ws_b9c8a7d4923d0cd7:
+        host: www.workstation.co.uk
+        label: Workstation
+        origins:
+          - https://www.workstation.co.uk
+          - https://workstation.co.uk
   opsapiAuth:
     enabled: false
     identityUrl: "https://identity.demo.opsapi.org"

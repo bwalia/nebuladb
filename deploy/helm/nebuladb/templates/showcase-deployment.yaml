@@ -117,6 +117,12 @@ spec:
             - name: SHOWCASE_ENGAGEMENT_URL
               value: {{ .Values.showcase.slackAlerts.engagementUrl | quote }}
             {{- end }}
+            {{- if .Values.showcase.pixel.enabled }}
+            - name: SHOWCASE_PIXEL_SITES
+              value: {{ .Values.showcase.pixel.sites | toJson | quote }}
+            - name: SHOWCASE_PIXEL_ALERTS
+              value: {{ .Values.showcase.pixel.slackAlerts | ternary "1" "" | quote }}
+            {{- end }}
             {{- if or .Values.showcase.auth.enabled $oauth }}
             # optional: password form works when these keys exist in Vault
             # even if basic auth is disabled (Google + email/password).

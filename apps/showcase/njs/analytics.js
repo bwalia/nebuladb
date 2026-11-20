@@ -16,6 +16,16 @@
  *            browser's guess from its timezone / language.
  *
  * Browser-supplied strings are whitelisted and length-capped.
+ *
+ * Pixel (px.nebuladb.net, public, no sign-in): other websites embed
+ * /px.js, which reports the same event types through GET /px.gif (an
+ * <img>, also used by <noscript>) or POST /px (sendBeacon, text/plain).
+ * Each site has a public key in SHOWCASE_PIXEL_SITES, e.g.
+ *   {"ws_…":{"host":"www.example.com","label":"Example","origins":["https://www.example.com"]}}
+ * An unknown key or an Origin/Referer not on the site's list is dropped
+ * silently (the GIF is still returned). The stored host is the site's
+ * configured host, never the request's Host header. Events go to the
+ * bucket `web_events` through /_px/write; the API key stays in nginx.
  */
 
 const TYPES = {
@@ -56,6 +66,7 @@ function hex(n) {
 
 /** Exported for tests: build the stored document from a request's parts. */
 function buildDoc(e, ctx) {
+  // ctx.site (pixel: the configured label) wins over the browser's claim.
   const type = str(e.type, 32);
   if (!TYPES[type]) return null;
   const edgeCountry = cc(ctx.edgeCountry);
@@ -63,7 +74,8 @@ function buildDoc(e, ctx) {
   const now = ctx.now;
   const m = {
     type,
-    site: str(e.site, 32),
+    site: str(ctx.site || e.site, 32),
+    source: str(ctx.source, 16),
     host: str(ctx.host, 128),
     user: str(ctx.user, 200) || "anonymous",
     ip: str(ctx.ip, 64),
@@ -143,9 +155,14 @@ function ignoredUser(user, list) {
  * Alerts only for customer sites: a visit (first page of a browser
  * session) and a finished video.
  */
-function alertText(doc, first, link) {
+function alertText(doc, first, link, pixelAlerts) {
   const m = doc.metadata;
-  if (m.site !== "sourcesupplies") return "";
+  // Pixel sites (opt-in, showcase.pixel.slackAlerts): a visit only once the
+  // visitor is identified, and a finished video. Anonymous traffic is silent.
+  if (m.source === "pixel") {
+    if (!pixelAlerts) return "";
+    if (m.type === "page_view" && m.user === "anonymous") return "";
+  } else if (m.site !== "sourcesupplies") return "";
   const who = `*${slackEsc(m.user)}*`;
   const more = link ? `  <${link}|Engagement>` : "";
   if (m.type === "page_view" && first) {
@@ -213,4 +230,170 @@ async function event(r) {
   r.return(204);
 }
 
-export default { event, buildDoc, alertText, ignoredUser };
+/* --------------------------------- pixel ---------------------------------- */
+
+const GIF = "R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="; // 1x1 transparent, 43 bytes
+const MAX_QUERY_PAYLOAD = 4096;
+
+/** Exported for tests: the configured sites, keyed by their public key. */
+function pixelSites(json) {
+  let raw;
+  try {
+    raw = JSON.parse(json || "{}");
+  } catch (err) {
+    return {};
+  }
+  const out = {};
+  Object.keys(raw || {}).forEach((k) => {
+    const v = raw[k] || {};
+    const host = str(v.host, 128).toLowerCase();
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(k) || !host) return;
+    const origins = (Array.isArray(v.origins) ? v.origins : []).map((o) => str(o, 200).toLowerCase().replace(/\/+$/, "")).filter(Boolean);
+    out[k] = { host, label: str(v.label, 32) || host, origins: origins.length ? origins : [`https://${host}`] };
+  });
+  return out;
+}
+
+function originOf(url) {
+  const m = /^(https?:\/\/[^/?#]+)/i.exec(String(url || ""));
+  return m ? m[1].toLowerCase() : "";
+}
+
+/**
+ * Exported for tests: the site for this key, or null when the key is
+ * unknown or the request doesn't come from one of its pages. Origin is
+ * checked when the browser sends it (beacon, fetch); otherwise the
+ * Referer's origin (<img>, <noscript>). Neither: rejected.
+ */
+function pixelSite(sites, key, origin, referer) {
+  const site = Object.prototype.hasOwnProperty.call(sites, key) ? sites[key] : null;
+  if (!site) return null;
+  const from = originOf(origin) || originOf(referer);
+  return from && site.origins.indexOf(from) !== -1 ? site : null;
+}
+
+/** Exported for tests: decode the GIF's `d` (base64url JSON, <= 4 KB); {} when absent or bad. */
+function decodePayload(d) {
+  if (!d) return {};
+  if (d.length > MAX_QUERY_PAYLOAD) return null;
+  try {
+    const b64 = d.replace(/-/g, "+").replace(/_/g, "/");
+    const json = Buffer.from(b64 + "===".slice((b64.length + 3) % 4), "base64").toString("utf8");
+    const v = JSON.parse(json);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** Exported for tests: the stored document for a pixel event (host and label from config). */
+function pixelDoc(e, site, ctx) {
+  const ev = {};
+  Object.keys(e || {}).forEach((k) => {
+    if (k !== "user" && k !== "site" && k !== "host") ev[k] = e[k];
+  });
+  return buildDoc(ev, {
+    site: site.label,
+    source: "pixel",
+    host: site.host,
+    user: str(e && e.uid, 200) || "anonymous",
+    ip: ctx.ip,
+    edgeCountry: ctx.edgeCountry,
+    ua: ctx.ua,
+    now: ctx.now,
+    rand: ctx.rand,
+  });
+}
+
+function pixelCors(r, site) {
+  const origin = originOf(r.headersIn.Origin);
+  if (site && origin) {
+    r.headersOut["Access-Control-Allow-Origin"] = origin;
+    r.headersOut["Access-Control-Allow-Credentials"] = "true";
+  }
+  r.headersOut.Vary = "Origin";
+}
+
+async function pixelRecord(r, e) {
+  const sites = pixelSites(envOf("SHOWCASE_PIXEL_SITES"));
+  const site = e ? pixelSite(sites, str(e.k, 64), r.headersIn.Origin, r.headersIn.Referer) : null;
+  pixelCors(r, site);
+  if (!site) return;
+  const doc = pixelDoc(e, site, {
+    ip: clientIp(r),
+    edgeCountry: r.headersIn["X-WSL-Geo-Country"],
+    ua: r.headersIn["User-Agent"],
+    now: Date.now(),
+    rand: hex(6),
+  });
+  if (!doc) return;
+  const write = r
+    .subrequest("/_px/write", { method: "POST", body: JSON.stringify(doc) })
+    .then((res) => {
+      if (res.status >= 300) r.warn(`pixel: write ${res.status}`);
+    })
+    .catch((err) => r.warn(`pixel: write failed: ${err}`));
+  const on = /^(1|true|yes|on)$/i.test(envOf("SHOWCASE_PIXEL_ALERTS"));
+  const text = !on || ignoredUser(doc.metadata.user, envOf("SHOWCASE_ALERT_IGNORE")) ? "" : alertText(doc, e.first === true || e.first === 1 || e.first === "1", envOf("SHOWCASE_ENGAGEMENT_URL"), on);
+  await Promise.all([write, slack(r, text)]);
+}
+
+/** Exported for tests: the event from a GIF query (k, e, d), or null to drop it. */
+function gifEvent(args, referer) {
+  const payload = decodePayload(args.d || "");
+  if (!payload) return null;
+  const e = Object.assign({}, payload, { k: args.k, type: args.e || payload.type || "page_view" });
+  // <noscript>: no payload, so the page comes from the Referer.
+  if (!e.path) {
+    const m = /^https?:\/\/[^/?#]+([^#]*)/i.exec(String(referer || ""));
+    if (m) e.path = m[1] || "/";
+  }
+  return e;
+}
+
+/** GET /px.gif?k=&e=&d= : always the GIF, 200, no-store. */
+async function pxGif(r) {
+  try {
+    await pixelRecord(r, gifEvent(r.args || {}, r.headersIn.Referer));
+  } catch (err) {
+    r.warn(`pixel: ${err}`);
+  }
+  r.headersOut["Content-Type"] = "image/gif";
+  r.headersOut["Cache-Control"] = "no-store, max-age=0";
+  r.return(200, Buffer.from(GIF, "base64"));
+}
+
+/** POST /px (text/plain JSON from sendBeacon) -> 204; OPTIONS -> preflight. */
+async function pxPost(r) {
+  r.headersOut["Cache-Control"] = "no-store";
+  if (r.method === "OPTIONS") {
+    const sites = pixelSites(envOf("SHOWCASE_PIXEL_SITES"));
+    const origin = originOf(r.headersIn.Origin);
+    const ok = Object.keys(sites).some((k) => sites[k].origins.indexOf(origin) !== -1);
+    pixelCors(r, ok ? {} : null);
+    r.headersOut["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS";
+    r.headersOut["Access-Control-Allow-Headers"] = "Content-Type";
+    r.headersOut["Access-Control-Max-Age"] = "86400";
+    r.return(204);
+    return;
+  }
+  if (r.method !== "POST") {
+    r.return(405);
+    return;
+  }
+  let e = null;
+  try {
+    e = JSON.parse(r.requestText || "");
+    if (!e || typeof e !== "object" || Array.isArray(e)) e = null;
+  } catch (err) {
+    e = null;
+  }
+  try {
+    await pixelRecord(r, e);
+  } catch (err) {
+    r.warn(`pixel: ${err}`);
+  }
+  r.return(204);
+}
+
+export default { event, buildDoc, alertText, ignoredUser, pxGif, pxPost, pixelSites, pixelSite, decodePayload, pixelDoc, gifEvent };

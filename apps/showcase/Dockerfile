@@ -95,8 +95,13 @@ COPY njs/opsapi-auth.js njs/analytics.js /etc/nginx/njs/
 RUN { printf '%s\n' 'load_module modules/ngx_http_js_module.so;' \
         'env OPSAPI_IDENTITY_URL;' 'env OPSAPI_API_URL;' \
         'env SHOWCASE_SESSION_SECRET;' 'env SHOWCASE_OPSAPI_ACCESS;' \
-        'env SHOWCASE_SLACK_WEBHOOK;' 'env SHOWCASE_ALERT_IGNORE;' 'env SHOWCASE_ENGAGEMENT_URL;'; \
+        'env SHOWCASE_SLACK_WEBHOOK;' 'env SHOWCASE_ALERT_IGNORE;' 'env SHOWCASE_ENGAGEMENT_URL;' \
+        'env SHOWCASE_PIXEL_SITES;' 'env SHOWCASE_PIXEL_ALERTS;'; \
       cat /etc/nginx/nginx.conf; } > /tmp/nginx.conf && mv /tmp/nginx.conf /etc/nginx/nginx.conf
+# Pixel host (px.nebuladb.net): the embeddable snippet and the blank GIF
+# returned when a request is rate limited.
+COPY px/px.js /usr/share/nginx/px/px.js
+RUN printf 'R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==' | base64 -d > /usr/share/nginx/px/blank.gif
 # Sourced by the nginx entrypoint before envsubst; must be executable.
 COPY --chmod=755 docker-entrypoint.d/15-showcase-auth.envsh /docker-entrypoint.d/
 COPY --chmod=755 docker-entrypoint.d/16-examples-host.envsh /docker-entrypoint.d/
@@ -138,6 +143,9 @@ ENV OPSAPI_IDENTITY_URL=""
 ENV OPSAPI_API_URL=""
 ENV SHOWCASE_OPSAPI_ACCESS=""
 ENV SHOWCASE_SESSION_SECRET=""
+# Pixel sites (JSON, see njs/analytics.js); empty = the pixel records nothing.
+ENV SHOWCASE_PIXEL_SITES=""
+ENV SHOWCASE_PIXEL_ALERTS=""
 EXPOSE 80
 # /livez is exempt from auth; `/` answers 401 when auth is on.
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \

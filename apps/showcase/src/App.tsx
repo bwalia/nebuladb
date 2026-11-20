@@ -190,7 +190,7 @@ const NAV: NavItem[] = [
   { id: "rebalance", label: "Rebalance", hint: "Zero-downtime node swap", icon: "⇄", group: "cluster" },
   { id: "cockpit", label: "Cockpit", hint: "Mission Control — live cluster, XDCR, integrity and ops controls", icon: "🛰", group: "ops" },
   { id: "metrics", label: "Metrics", hint: "Embedded Grafana", icon: "▟", group: "ops" },
-  { id: "engagement", label: "Engagement", hint: "Who visited the customer demo sites: country, IP, videos watched, what they tried", icon: "◉", group: "ops" },
+  { id: "engagement", label: "Engagement", hint: "Who visited the demo sites and pixel websites: country, IP, pages, videos, what they tried", icon: "◉", group: "ops" },
   { id: "admin", label: "Admin", hint: "Buckets, EXPLAIN, audit, slow queries", icon: "⚙", group: "ops" },
 ];
 

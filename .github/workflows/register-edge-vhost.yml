@@ -10,6 +10,7 @@ name: Register edge vhost (Cloudflare + wslproxy)
 #   acc  -> acc-showcase.nebuladb.net
 #   prod -> showcase.nebuladb.net
 #   sourcesupplies -> sourcesupplies.nebuladb.net (customer demo site, prod pods)
+#   px      -> px.nebuladb.net (public engagement pixel, prod showcase pods)
 #   website -> nebuladb.net + www.nebuladb.net (GitHub Pages site, see pages.yml)
 #   api     -> api.nebuladb.net (public REST, bearer keys; see apiIngress in the chart)
 #
@@ -61,7 +62,7 @@ on:
         required: true
         default: int
         type: choice
-        options: [int, test, acc, prod, sourcesupplies, website, api]
+        options: [int, test, acc, prod, sourcesupplies, px, website, api]
       DEPLOY_BRANCH:
         description: "Unused — accepted for Ring Promoter dispatch parity"
         required: false
@@ -103,12 +104,12 @@ jobs:
           set -euo pipefail
           # A scheduled run carries no inputs: re-assert every ring.
           if [ -z "${RING:-}" ]; then
-            echo "rings=int test acc prod sourcesupplies website api" >>"$GITHUB_OUTPUT"
+            echo "rings=int test acc prod sourcesupplies px website api" >>"$GITHUB_OUTPUT"
             echo "Scheduled drift run — asserting all rings."
             exit 0
           fi
           case "$RING" in
-            int|test|acc|prod|sourcesupplies|website|api) echo "rings=$RING" >>"$GITHUB_OUTPUT" ;;
+            int|test|acc|prod|sourcesupplies|px|website|api) echo "rings=$RING" >>"$GITHUB_OUTPUT" ;;
             *) echo "::error::unknown ring '$RING'"; exit 1 ;;
           esac
 
