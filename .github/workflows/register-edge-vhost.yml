@@ -245,10 +245,16 @@ jobs:
               | with_entries(select(.key | startswith("_") | not)))')
           import rules "$RULES_ARR"
 
+          # cp requires an SSL contact email. The repo is public, so newer
+          # records leave it out and take it from the live showcase record on cp.
+          SSL_EMAIL=$(curl -sS --max-time 30 -A "$UA" -H "Authorization: Bearer $TOKEN" -H "x-platform: openresty-admin-next" \
+            "${WSL_API%/}/api/servers/host%3Ashowcase.nebuladb.net?envprofile=prod" | jq -r '(.data // .).ssl_email // empty')
+          echo "::add-mask::${SSL_EMAIL:-none}"
+
           # Strip the local-only _ring marker before sending.
           SERVERS_ARR='[]'
           for f in $FILES; do
-            SERVERS_ARR=$(jq -c --argjson acc "$SERVERS_ARR" 'del(._ring) | $acc + [.]' "$f")
+            SERVERS_ARR=$(jq -c --argjson acc "$SERVERS_ARR" --arg e "$SSL_EMAIL" 'del(._ring) | (if (.ssl_email // "") == "" and $e != "" then .ssl_email = $e else . end) | $acc + [.]' "$f")
           done
           import servers "$SERVERS_ARR"
           echo "registered $(echo "$SERVERS_ARR" | jq 'length') vhost(s)"
@@ -259,7 +265,7 @@ jobs:
           # the admin API (PUT, or POST when it does not exist yet), then read
           # it back and fail if cp disagrees with git.
           for f in $FILES; do
-            body=$(jq -c 'del(._ring) | .id = (.id // ("host:" + .server_name))' "$f")
+            body=$(jq -c --arg e "$SSL_EMAIL" 'del(._ring) | .id = (.id // ("host:" + .server_name)) | (if (.ssl_email // "") == "" and $e != "" then .ssl_email = $e else . end)' "$f")
             id=$(echo "$body" | jq -r .id); want=$(echo "$body" | jq -r .rules)
             url="${WSL_API%/}/api/servers/$(jq -rn --arg s "$id" '$s|@uri')?envprofile=prod"
             hdr=(-A "$UA" -H "Authorization: Bearer $TOKEN" -H "x-platform: openresty-admin-next" -H "Content-Type: application/json")
