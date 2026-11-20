@@ -36,7 +36,8 @@
   ],
   "servers": [
     "host:showcase.nebuladb.net",
-    "host:sourcesupplies.nebuladb.net"
+    "host:sourcesupplies.nebuladb.net",
+    "host:px.nebuladb.net"
   ],
-  "_comment": "Showcase + customer demo sites. Edge basic_auth is OFF: sign-in is handled by the app (one login page). Kept as its own rule so per-site edge settings can be added later."
+  "_comment": "Showcase + customer demo sites + the public engagement pixel (px.nebuladb.net). Edge basic_auth is OFF: sign-in is handled by the app (one login page), and the pixel host has none. Kept as its own rule so per-site edge settings can be added later."
 }

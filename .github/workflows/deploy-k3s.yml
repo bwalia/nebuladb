@@ -364,7 +364,7 @@ jobs:
           # values-<env>.yaml and deploy/edge/wslproxy-server-*.json.
           # HOST_REDIRECT mirrors showcase.googleAuth.hostRedirect.
           case "$TARGET_ENV" in
-            prod) CUSTOMER_HOSTS="sourcesupplies.nebuladb.net"; HOST_REDIRECT=true ;;
+            prod) CUSTOMER_HOSTS="sourcesupplies.nebuladb.net px.nebuladb.net"; HOST_REDIRECT=true ;;
             *)    CUSTOMER_HOSTS=""; HOST_REDIRECT=false ;;
           esac
           # Ingress: add any missing customer host as a copy of the showcase
@@ -502,7 +502,7 @@ jobs:
           fi
 
           # Customer demo sites share the env's pods (see the showcase-only step).
-          case "$TARGET_ENV" in prod) HOSTS="$HOST sourcesupplies.nebuladb.net" ;; *) HOSTS="$HOST" ;; esac
+          case "$TARGET_ENV" in prod) HOSTS="$HOST sourcesupplies.nebuladb.net px.nebuladb.net" ;; *) HOSTS="$HOST" ;; esac
           for H in $HOSTS; do
             RESP="$(curl -fsS -X POST "${WSL_API%/}/api/dns/provision" \
               -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

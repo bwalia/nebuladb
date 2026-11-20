@@ -1,14 +1,16 @@
 /**
  * Engagement (internal showcase only): who visited the customer demo
- * sites, from where, which videos they watched and how far, and what they
- * clicked or typed. Reads the `showcase_events` bucket that
- * njs/analytics.js writes (identity, IP and country are stamped server-side).
+ * sites and the websites carrying the pixel, from where, which videos they
+ * watched and how far, and what they clicked or typed. Reads the buckets
+ * njs/analytics.js writes (`showcase_events`, `web_events`; IP and country
+ * are stamped server-side). Sites are listed in ./engagementSites.ts.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorBanner, Panel, Spinner } from "../components";
+import { type SqlRow } from "../api";
 import { field, lit, runSql } from "../rag/sql";
+import { BUCKETS, SITES } from "./engagementSites";
 
-const BUCKET = "showcase_events";
 const LIMIT = 2500; // filters run over LIMIT × 4 candidates: covers 10k events
 
 interface Ev {
@@ -30,11 +32,16 @@ interface Ev {
   label: string;
   value: string;
   session: string;
+  visitor: string;
+  referrer: string;
   ts: number;
 }
 
 interface Person {
+  /** Grouping key: the identity, or the anonymous visitor id. */
+  key: string;
   user: string;
+  anonymous: boolean;
   events: Ev[];
   first: number;
   last: number;
@@ -68,6 +75,44 @@ function mmss(sec: number): string {
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
 }
 const uniq = (xs: string[]) => [...new Set(xs.filter(Boolean))];
+const refHost = (u: string) => {
+  try {
+    return new URL(u).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+};
+
+function toEv(row: SqlRow): Ev {
+  return {
+    id: row.id,
+    type: s(field(row, "type")),
+    user: s(field(row, "user")) || "anonymous",
+    host: s(field(row, "host")),
+    ip: s(field(row, "ip")),
+    country: s(field(row, "country")),
+    countrySource: s(field(row, "country_source")),
+    lang: s(field(row, "langs")) || s(field(row, "lang")),
+    tz: s(field(row, "tz")),
+    ua: s(field(row, "ua")),
+    title: s(field(row, "title")),
+    path: s(field(row, "path")),
+    video: s(field(row, "video")),
+    pct: n(field(row, "pct")),
+    seconds: n(field(row, "seconds")),
+    label: s(field(row, "label")),
+    value: s(field(row, "value")),
+    session: s(field(row, "session")),
+    visitor: s(field(row, "visitor")),
+    referrer: s(field(row, "referrer")),
+    ts: n(field(row, "ts")) ?? 0,
+  };
+}
+
+/** Top entries of a count map, most first. */
+function top(counts: Map<string, number>, k = 8): [string, number][] {
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, k);
+}
 
 function describe(e: Ev): string {
   switch (e.type) {
@@ -96,7 +141,7 @@ export function EngagementTab() {
   const [events, setEvents] = useState<Ev[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [site, setSite] = useState("sourcesupplies.nebuladb.net");
+  const [site, setSite] = useState(SITES[0].host);
   const [sel, setSel] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -104,37 +149,22 @@ export function EngagementTab() {
     setErr(null);
     try {
       const where = site ? `\n   AND host = ${lit(site)}` : "";
-      const r = await runSql(`SELECT * FROM ${BUCKET}\n WHERE semantic_match(text, ${lit("visitor activity on the demo site")})${where}\n LIMIT ${LIMIT}`);
-      setEvents(
-        r.rows
-          .map((row) => ({
-            id: row.id,
-            type: s(field(row, "type")),
-            user: s(field(row, "user")) || "anonymous",
-            host: s(field(row, "host")),
-            ip: s(field(row, "ip")),
-            country: s(field(row, "country")),
-            countrySource: s(field(row, "country_source")),
-            lang: s(field(row, "langs")) || s(field(row, "lang")),
-            tz: s(field(row, "tz")),
-            ua: s(field(row, "ua")),
-            title: s(field(row, "title")),
-            path: s(field(row, "path")),
-            video: s(field(row, "video")),
-            pct: n(field(row, "pct")),
-            seconds: n(field(row, "seconds")),
-            label: s(field(row, "label")),
-            value: s(field(row, "value")),
-            session: s(field(row, "session")),
-            ts: n(field(row, "ts")) ?? 0,
-          }))
-          .sort((a, b) => b.ts - a.ts)
+      const buckets = site ? [SITES.find((x) => x.host === site)?.bucket ?? "showcase_events"] : BUCKETS;
+      const parts = await Promise.all(
+        buckets.map(async (bucket) => {
+          try {
+            const r = await runSql(`SELECT * FROM ${bucket}\n WHERE semantic_match(text, ${lit("visitor activity on the site")})${where}\n LIMIT ${LIMIT}`);
+            return r.rows.map(toEv);
+          } catch (e) {
+            // No events yet: a bucket is created by its first write.
+            if (/not found|unknown bucket|no such bucket/i.test((e as Error).message)) return [];
+            throw e;
+          }
+        })
       );
+      setEvents(parts.flat().sort((a, b) => b.ts - a.ts));
     } catch (e) {
-      const msg = (e as Error).message;
-      // No events yet: the bucket is created by the first write.
-      if (/not found|unknown bucket|no such bucket/i.test(msg)) setEvents([]);
-      else setErr(msg);
+      setErr((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -145,10 +175,20 @@ export function EngagementTab() {
   }, [load]);
 
   const people = useMemo<Person[]>(() => {
+    // Anonymous pixel visitors are grouped by their browser's visitor id;
+    // once that visitor is identified, their earlier events join the person.
+    const named = new Map<string, string>();
+    for (const e of events ?? []) if (e.user !== "anonymous" && e.visitor && !named.has(e.visitor)) named.set(e.visitor, e.user);
+    const keyOf = (e: Ev) => (e.user !== "anonymous" ? e.user : e.visitor ? (named.get(e.visitor) ?? `visitor:${e.visitor}`) : "anonymous");
     const by = new Map<string, Ev[]>();
-    for (const e of events ?? []) by.set(e.user, [...(by.get(e.user) ?? []), e]);
+    for (const e of events ?? []) {
+      const k = keyOf(e);
+      by.set(k, [...(by.get(k) ?? []), e]);
+    }
     return [...by.entries()]
-      .map(([user, evs]) => {
+      .map(([key, evs]) => {
+        const anonymous = key === "anonymous" || key.startsWith("visitor:");
+        const user = key.startsWith("visitor:") ? `Anonymous visitor ${key.slice(8, 14)}` : key;
         const videos = new Map<string, { pct: number; seconds: number }>();
         for (const e of evs) {
           if (!e.type.startsWith("video") || !e.video) continue;
@@ -156,7 +196,9 @@ export function EngagementTab() {
           videos.set(e.video, { pct: Math.max(v.pct, e.pct ?? 0), seconds: Math.max(v.seconds, e.seconds ?? 0) });
         }
         return {
+          key,
           user,
+          anonymous,
           events: evs,
           first: Math.min(...evs.map((e) => e.ts)),
           last: Math.max(...evs.map((e) => e.ts)),
@@ -174,17 +216,37 @@ export function EngagementTab() {
       .sort((a, b) => b.last - a.last);
   }, [events]);
 
-  const person = people.find((p) => p.user === sel) ?? null;
+  const person = people.find((p) => p.key === sel) ?? null;
+
+  const summary = useMemo(() => {
+    const pages = new Map<string, number>();
+    const refs = new Map<string, number>();
+    const names = new Map<string, string>();
+    for (const e of events ?? []) {
+      if (e.type !== "page_view") continue;
+      const p = e.path || "/";
+      pages.set(p, (pages.get(p) ?? 0) + 1);
+      if (e.title && !names.has(p)) names.set(p, e.title);
+      const h = refHost(e.referrer);
+      if (e.referrer && h !== e.host.replace(/^www\./, "")) refs.set(h || "other", (refs.get(h || "other") ?? 0) + 1);
+    }
+    const anon = people.filter((p) => p.anonymous).length;
+    return { pages: top(pages), names, refs: top(refs), anon, known: people.length - anon };
+  }, [events, people]);
 
   return (
     <div className="space-y-4">
       <Panel
         title="Engagement"
-        subtitle="Who opened the customer demo sites, from where, what they watched and what they tried. Identity, IP and country are recorded by the server."
+        subtitle="Who opened the customer demo sites and the websites carrying the pixel, from where, what they watched and what they tried. IP and country are recorded by the server; pixel visitors stay anonymous until the site identifies them."
         action={
           <div className="flex items-center gap-2">
             <select className="input !w-auto !py-1.5 text-sm" value={site} onChange={(e) => setSite(e.target.value)} aria-label="Site">
-              <option value="sourcesupplies.nebuladb.net">sourcesupplies.nebuladb.net</option>
+              {SITES.map((x) => (
+                <option key={x.host} value={x.host}>
+                  {x.label} · {x.host}
+                </option>
+              ))}
               <option value="">All sites</option>
             </select>
             <button className="btn-secondary !py-1.5" onClick={() => void load()} disabled={busy}>
@@ -211,11 +273,11 @@ export function EngagementTab() {
               <tbody>
                 {people.map((p) => (
                   <tr
-                    key={p.user}
-                    onClick={() => setSel(sel === p.user ? null : p.user)}
-                    className={`cursor-pointer border-b border-gray-100 dark:border-edge align-top hover:bg-gray-50 dark:hover:bg-carbon-900 ${sel === p.user ? "bg-accent/5" : ""}`}
+                    key={p.key}
+                    onClick={() => setSel(sel === p.key ? null : p.key)}
+                    className={`cursor-pointer border-b border-gray-100 dark:border-edge align-top hover:bg-gray-50 dark:hover:bg-carbon-900 ${sel === p.key ? "bg-accent/5" : ""}`}
                   >
-                    <td className="py-2 pr-3 font-medium">{p.user}</td>
+                    <td className={`py-2 pr-3 ${p.anonymous ? "text-gray-500 dark:text-muted" : "font-medium"}`}>{p.user}</td>
                     <td className="py-2 pr-3">
                       {p.countries.map((c) => `${flag(c)} ${c}`).join(", ") || "—"}
                       <div className="text-[11px] text-gray-500 dark:text-muted">{p.ips.slice(0, 2).join(", ")}</div>
@@ -241,6 +303,46 @@ export function EngagementTab() {
           </div>
         )}
       </Panel>
+
+      {events && events.length > 0 && (
+        <Panel title="Top pages and referrers" subtitle={`${summary.known} identified · ${summary.anon} anonymous visitors in the loaded events`}>
+          <div className="grid gap-6 sm:grid-cols-2">
+            <div>
+              <h4 className="eyebrow mb-1">Top pages</h4>
+              {summary.pages.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-muted">No page views.</p>
+              ) : (
+                <ol className="space-y-1 text-sm">
+                  {summary.pages.map(([p, c]) => (
+                    <li key={p} className="flex justify-between gap-3">
+                      <span className="truncate" title={p}>
+                        {summary.names.get(p) || p}
+                        {summary.names.get(p) && <span className="ml-1 text-xs text-gray-500 dark:text-muted">{p}</span>}
+                      </span>
+                      <span className="tabular-nums">{c}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+            <div>
+              <h4 className="eyebrow mb-1">Referrers</h4>
+              {summary.refs.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-muted">Direct visits only.</p>
+              ) : (
+                <ol className="space-y-1 text-sm">
+                  {summary.refs.map(([h, c]) => (
+                    <li key={h} className="flex justify-between gap-3">
+                      <span className="truncate">{h}</span>
+                      <span className="tabular-nums">{c}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          </div>
+        </Panel>
+      )}
 
       {person && (
         <Panel title={person.user} subtitle={`First seen ${when(person.first)} · last seen ${when(person.last)} · ${person.events.length} events`}>
