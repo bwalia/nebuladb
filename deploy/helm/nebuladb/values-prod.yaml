@@ -182,6 +182,30 @@ showcase:
         label: Workstation Shop BE
         origins:
           - https://shop.workstation.be
+      ws_4af22afe025a7265:
+        host: www.workstationai.de
+        label: Workstation AI DE
+        origins:
+          - https://www.workstationai.de
+          - https://workstationai.de
+      ws_b7e0372bab18561a:
+        host: www.workstationai.nl
+        label: Workstation AI NL
+        origins:
+          - https://www.workstationai.nl
+          - https://workstationai.nl
+      ws_59e6527ba8d9b718:
+        host: www.workstationai.pt
+        label: Workstation AI PT
+        origins:
+          - https://www.workstationai.pt
+          - https://workstationai.pt
+      ws_de3cffd179ebfedb:
+        host: www.workstationai.ee
+        label: Workstation AI EE
+        origins:
+          - https://www.workstationai.ee
+          - https://workstationai.ee
   opsapiAuth:
     enabled: false
     identityUrl: "https://identity.demo.opsapi.org"
