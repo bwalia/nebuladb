@@ -172,6 +172,16 @@ showcase:
         origins:
           - https://www.workstation.co.uk
           - https://workstation.co.uk
+      ws_344115f43e16cf3a:
+        host: shop.workstation.co.uk
+        label: Workstation Shop
+        origins:
+          - https://shop.workstation.co.uk
+      ws_b92967bb22484b7f:
+        host: shop.workstation.be
+        label: Workstation Shop BE
+        origins:
+          - https://shop.workstation.be
   opsapiAuth:
     enabled: false
     identityUrl: "https://identity.demo.opsapi.org"

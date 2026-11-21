@@ -13,6 +13,8 @@ export interface EngagementSite {
 export const SITES: EngagementSite[] = [
   { host: "sourcesupplies.nebuladb.net", label: "Source Supplies", bucket: "showcase_events" },
   { host: "www.workstation.co.uk", label: "Workstation", bucket: "web_events" },
+  { host: "shop.workstation.co.uk", label: "Workstation Shop", bucket: "web_events" },
+  { host: "shop.workstation.be", label: "Workstation Shop BE", bucket: "web_events" },
 ];
 
 export const BUCKETS = [...new Set(SITES.map((s) => s.bucket))];
