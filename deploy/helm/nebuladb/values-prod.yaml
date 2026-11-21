@@ -206,6 +206,17 @@ showcase:
         origins:
           - https://www.workstationai.ee
           - https://workstationai.ee
+      ws_302b11d65f30ce9a:
+        host: www.workstationai.us
+        label: Workstation AI US
+        origins:
+          - https://www.workstationai.us
+          - https://workstationai.us
+      ws_a0a2ac7817c65dd0:
+        host: shop.workstationai.us
+        label: Workstation Shop US
+        origins:
+          - https://shop.workstationai.us
   opsapiAuth:
     enabled: false
     identityUrl: "https://identity.demo.opsapi.org"
