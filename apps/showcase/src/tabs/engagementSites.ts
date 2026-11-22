@@ -23,6 +23,8 @@ export const SITES: EngagementSite[] = [
   { host: "shop.workstationai.us", label: "Workstation Shop US", bucket: "web_events" },
   { host: "www.workstation.lu", label: "Workstation LU", bucket: "web_events" },
   { host: "shop.workstation.lu", label: "Workstation Shop LU", bucket: "web_events" },
+  { host: "shop.workstationai.de", label: "Workstation Shop DE", bucket: "web_events" },
+  { host: "shop.workstationai.nl", label: "Workstation Shop NL", bucket: "web_events" },
 ];
 
 export const BUCKETS = [...new Set(SITES.map((s) => s.bucket))];
