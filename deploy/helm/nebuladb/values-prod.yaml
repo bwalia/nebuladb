@@ -228,6 +228,16 @@ showcase:
         label: Workstation Shop LU
         origins:
           - https://shop.workstation.lu
+      ws_6833a3a6450bc7da:
+        host: shop.workstationai.de
+        label: Workstation Shop DE
+        origins:
+          - https://shop.workstationai.de
+      ws_84b7d505f834de47:
+        host: shop.workstationai.nl
+        label: Workstation Shop NL
+        origins:
+          - https://shop.workstationai.nl
   opsapiAuth:
     enabled: false
     identityUrl: "https://identity.demo.opsapi.org"
