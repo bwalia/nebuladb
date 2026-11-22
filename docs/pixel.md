@@ -36,7 +36,8 @@ Recorded automatically: page views (including single-page-app navigation), video
 1. Make a key: `echo ws_$(openssl rand -hex 8)`. It is public (it sits in the site's HTML); the origin list is what stops other sites using it.
 2. Add it to `showcase.pixel.sites` in `deploy/helm/nebuladb/values-prod.yaml` with `host`, `label` and `origins`.
 3. Add the host to `SITES` in `apps/showcase/src/tabs/engagementSites.ts` with bucket `web_events`.
-4. Deploy with `deploy-k3s.yml` (`DEPLOYMENT_TYPE=showcase-only`), then paste the snippet into the site.
+4. To be told in Slack when a video starts (not only when one is finished), set `videoStarts: true` on the site.
+5. Deploy with `deploy-k3s.yml` (`DEPLOYMENT_TYPE=showcase-only`), then paste the snippet into the site.
 
 An unknown key, or a request whose Origin (or Referer, for the GIF) is not on the site's list, gets the normal response and nothing is stored.
 

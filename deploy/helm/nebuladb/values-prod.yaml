@@ -238,6 +238,14 @@ showcase:
         label: Workstation Shop NL
         origins:
           - https://shop.workstationai.nl
+      ws_3f4017043fbb01be:
+        host: daybook.co.uk
+        label: Daybook
+        # Slack when a video starts as well as when it is finished.
+        videoStarts: true
+        origins:
+          - https://daybook.co.uk
+          - https://www.daybook.co.uk
   opsapiAuth:
     enabled: false
     identityUrl: "https://identity.demo.opsapi.org"

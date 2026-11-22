@@ -155,7 +155,7 @@ function ignoredUser(user, list) {
  * Alerts only for customer sites: a visit (first page of a browser
  * session) and a finished video.
  */
-function alertText(doc, first, link, pixelAlerts) {
+function alertText(doc, first, link, pixelAlerts, videoStarts) {
   const m = doc.metadata;
   // Pixel sites (opt-in, showcase.pixel.slackAlerts): a visit only once the
   // visitor is identified, and a finished video. Anonymous traffic is silent.
@@ -177,8 +177,16 @@ function alertText(doc, first, link, pixelAlerts) {
       .join(" · ");
     return `:wave: ${who} opened ${slackEsc(m.host)}${from ? `\n${from}` : ""}${more}`;
   }
+  // Pixel visitors are mostly anonymous, so say where they are and which site.
+  const pixel = m.source === "pixel";
+  const whoAt = pixel && m.country ? `${who} (${flagOf(m.country)} ${slackEsc(m.country)})` : who;
+  const onSite = pixel ? ` on ${slackEsc(m.host)}` : "";
+  const title = `*${slackEsc(m.video || "a video")}*`;
   if (m.type === "video_complete") {
-    return `:clapper: ${who} finished *${slackEsc(m.video || "a video")}* (${mmss(m.seconds)} watched)${more}`;
+    return `:clapper: ${whoAt} finished ${title} (${mmss(m.seconds)} watched)${onSite}${more}`;
+  }
+  if (m.type === "video_play" && pixel && videoStarts) {
+    return `:arrow_forward: ${whoAt} started ${title}${onSite}${more}`;
   }
   return "";
 }
@@ -249,7 +257,13 @@ function pixelSites(json) {
     const host = str(v.host, 128).toLowerCase();
     if (!/^[A-Za-z0-9_-]{4,64}$/.test(k) || !host) return;
     const origins = (Array.isArray(v.origins) ? v.origins : []).map((o) => str(o, 200).toLowerCase().replace(/\/+$/, "")).filter(Boolean);
-    out[k] = { host, label: str(v.label, 32) || host, origins: origins.length ? origins : [`https://${host}`] };
+    out[k] = {
+      host,
+      label: str(v.label, 32) || host,
+      origins: origins.length ? origins : [`https://${host}`],
+      // Slack also when a video starts (not only when it is finished).
+      videoStarts: v.videoStarts === true,
+    };
   });
   return out;
 }
@@ -334,7 +348,7 @@ async function pixelRecord(r, e) {
     })
     .catch((err) => r.warn(`pixel: write failed: ${err}`));
   const on = /^(1|true|yes|on)$/i.test(envOf("SHOWCASE_PIXEL_ALERTS"));
-  const text = !on || ignoredUser(doc.metadata.user, envOf("SHOWCASE_ALERT_IGNORE")) ? "" : alertText(doc, e.first === true || e.first === 1 || e.first === "1", envOf("SHOWCASE_ENGAGEMENT_URL"), on);
+  const text = !on || ignoredUser(doc.metadata.user, envOf("SHOWCASE_ALERT_IGNORE")) ? "" : alertText(doc, e.first === true || e.first === 1 || e.first === "1", envOf("SHOWCASE_ENGAGEMENT_URL"), on, site.videoStarts);
   await Promise.all([write, slack(r, text)]);
 }
 
