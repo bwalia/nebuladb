@@ -142,6 +142,17 @@ test("pixel Slack: off unless enabled; identified visits and finished videos onl
   assert.equal(analytics.alertText(anonVisit, true, "", true), "", "anonymous visit");
   assert.match(analytics.alertText(knownVisit, true, "", true), /^:wave: \*cust-42\* opened www\.example\.co\.uk/);
   assert.match(analytics.alertText(video, false, "", true), /finished \*Demo\* \(1:01 watched\)/);
+  assert.match(analytics.alertText(video, false, "", true), /^:clapper: \*anonymous\* \(.+ GB\) finished .* on www\.example\.co\.uk$/);
+  const started = analytics.pixelDoc({ type: "video_play", video: "Demo" }, site, c);
+  assert.equal(analytics.alertText(started, false, "", true), "", "video starts only when the site asks");
+  assert.equal(analytics.alertText(started, false, "", true, true), ":arrow_forward: *anonymous* (\u{1F1EC}\u{1F1E7} GB) started *Demo* on www.example.co.uk");
+  assert.equal(analytics.alertText(started, false, "", false, true), "", "pixel alerts off");
+});
+
+test("pixel: videoStarts is opt-in per site", () => {
+  assert.equal(SITES.ws_test1234.videoStarts, false);
+  assert.equal(analytics.pixelSites(JSON.stringify({ k_abcdef: { host: "a.test", videoStarts: true } })).k_abcdef.videoStarts, true);
+  assert.equal(analytics.pixelSites(JSON.stringify({ k_abcdef: { host: "a.test", videoStarts: "yes" } })).k_abcdef.videoStarts, false);
 });
 
 /* ------------------------------ px.js snippet ------------------------------ */
