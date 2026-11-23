@@ -65,12 +65,50 @@ function hex(n) {
 }
 
 /** Exported for tests: build the stored document from a request's parts. */
+/*
+ * Country from the device's time zone (IANA name, e.g. "Asia/Calcutta" -> IN).
+ * From zone.tab plus the legacy names browsers still report; zones shared by
+ * several countries or not tied to one (UTC, Etc/*) give "".
+ */
+const TZ_TABLE = "AD:Europe/Andorra AE:Asia/Dubai AF:Asia/Kabul AG:America/Antigua AI:America/Anguilla AL:Europe/Tirane AM:Asia/Yerevan AO:Africa/Luanda AQ:Antarctica/Casey,Antarctica/Davis,Antarctica/DumontDUrville,Antarctica/Mawson,Antarctica/McMurdo,Antarctica/Palmer,Antarctica/Rothera,Antarctica/Syowa,Antarctica/Troll,Antarctica/Vostok AR:America/Argentina/Buenos_Aires,America/Argentina/Catamarca,America/Argentina/Cordoba,America/Argentina/Jujuy,America/Argentina/La_Rioja,America/Argentina/Mendoza,America/Argentina/Rio_Gallegos,America/Argentina/Salta,America/Argentina/San_Juan,America/Argentina/San_Luis,America/Argentina/Tucuman,America/Argentina/Ushuaia,America/Buenos_Aires,America/Catamarca,America/Cordoba,America/Jujuy,America/Mendoza AS:Pacific/Pago_Pago,Pacific/Samoa,US/Samoa AT:Europe/Vienna AU:Antarctica/Macquarie,Australia/ACT,Australia/Adelaide,Australia/Brisbane,Australia/Broken_Hill,Australia/Canberra,Australia/Darwin,Australia/Eucla,Australia/Hobart,Australia/LHI,Australia/Lindeman,Australia/Lord_Howe,Australia/Melbourne,Australia/NSW,Australia/North,Australia/Perth,Australia/Queensland,Australia/South,Australia/Sydney,Australia/Tasmania,Australia/Victoria,Australia/West,Australia/Yancowinna AW:America/Aruba AX:Europe/Mariehamn AZ:Asia/Baku BA:Europe/Sarajevo BB:America/Barbados BD:Asia/Dacca,Asia/Dhaka BE:Europe/Brussels BF:Africa/Ouagadougou BG:Europe/Sofia BH:Asia/Bahrain BI:Africa/Bujumbura BJ:Africa/Porto-Novo BL:America/St_Barthelemy BM:Atlantic/Bermuda BN:Asia/Brunei BO:America/La_Paz BQ:America/Kralendijk BR:America/Araguaina,America/Bahia,America/Belem,America/Boa_Vista,America/Campo_Grande,America/Cuiaba,America/Eirunepe,America/Fortaleza,America/Maceio,America/Manaus,America/Noronha,America/Porto_Acre,America/Porto_Velho,America/Recife,America/Rio_Branco,America/Santarem,America/Sao_Paulo,Brazil/Acre,Brazil/DeNoronha,Brazil/East,Brazil/West BS:America/Nassau BT:Asia/Thimbu,Asia/Thimphu BW:Africa/Gaborone BY:Europe/Minsk BZ:America/Belize CA:America/Atikokan,America/Blanc-Sablon,America/Cambridge_Bay,America/Creston,America/Dawson,America/Dawson_Creek,America/Edmonton,America/Fort_Nelson,America/Glace_Bay,America/Goose_Bay,America/Halifax,America/Inuvik,America/Iqaluit,America/Moncton,America/Montreal,America/Rankin_Inlet,America/Regina,America/Resolute,America/St_Johns,America/Swift_Current,America/Toronto,America/Vancouver,America/Whitehorse,America/Winnipeg,Canada/Atlantic,Canada/Central,Canada/Eastern,Canada/Mountain,Canada/Newfoundland,Canada/Pacific,Canada/Saskatchewan,Canada/Yukon CC:Indian/Cocos CD:Africa/Kinshasa,Africa/Lubumbashi CF:Africa/Bangui CG:Africa/Brazzaville CH:Europe/Zurich CI:Africa/Abidjan CK:Pacific/Rarotonga CL:America/Coyhaique,America/Punta_Arenas,America/Santiago,Chile/Continental,Chile/EasterIsland,Pacific/Easter CM:Africa/Douala CN:Asia/Chongqing,Asia/Chungking,Asia/Harbin,Asia/Shanghai,Asia/Urumqi,PRC CO:America/Bogota CR:America/Costa_Rica CU:America/Havana,Cuba CV:Atlantic/Cape_Verde CW:America/Curacao CX:Indian/Christmas CY:Asia/Famagusta,Asia/Nicosia,Europe/Nicosia CZ:Europe/Prague DE:Europe/Berlin,Europe/Busingen DJ:Africa/Djibouti DK:Europe/Copenhagen DM:America/Dominica DO:America/Santo_Domingo DZ:Africa/Algiers EC:America/Guayaquil,Pacific/Galapagos EE:Europe/Tallinn EG:Africa/Cairo,Egypt EH:Africa/El_Aaiun ER:Africa/Asmara,Africa/Asmera ES:Africa/Ceuta,Atlantic/Canary,Europe/Madrid ET:Africa/Addis_Ababa FI:Europe/Helsinki FJ:Pacific/Fiji FK:Atlantic/Stanley FM:Pacific/Chuuk,Pacific/Kosrae,Pacific/Pohnpei,Pacific/Ponape,Pacific/Truk,Pacific/Yap FO:Atlantic/Faeroe,Atlantic/Faroe FR:Europe/Paris GA:Africa/Libreville GB:Europe/Belfast,Europe/London,GB,GB-Eire GD:America/Grenada GE:Asia/Tbilisi GF:America/Cayenne GG:Europe/Guernsey GH:Africa/Accra GI:Europe/Gibraltar GL:America/Danmarkshavn,America/Godthab,America/Nuuk,America/Scoresbysund,America/Thule GM:Africa/Banjul GN:Africa/Conakry GP:America/Guadeloupe GQ:Africa/Malabo GR:Europe/Athens GS:Atlantic/South_Georgia GT:America/Guatemala GU:Pacific/Guam GW:Africa/Bissau GY:America/Guyana HK:Asia/Hong_Kong,Hongkong HN:America/Tegucigalpa HR:Europe/Zagreb HT:America/Port-au-Prince HU:Europe/Budapest ID:Asia/Jakarta,Asia/Jayapura,Asia/Makassar,Asia/Pontianak,Asia/Ujung_Pandang IE:Eire,Europe/Dublin IL:Asia/Jerusalem,Asia/Tel_Aviv,Israel IM:Europe/Isle_of_Man IN:Asia/Calcutta,Asia/Kolkata IO:Indian/Chagos IQ:Asia/Baghdad IR:Asia/Tehran,Iran IS:Atlantic/Reykjavik,Iceland IT:Europe/Rome JE:Europe/Jersey JM:America/Jamaica,Jamaica JO:Asia/Amman JP:Asia/Tokyo,Japan KE:Africa/Nairobi KG:Asia/Bishkek KH:Asia/Phnom_Penh KI:Pacific/Enderbury,Pacific/Kanton,Pacific/Kiritimati,Pacific/Tarawa KM:Indian/Comoro KN:America/St_Kitts KP:Asia/Pyongyang KR:Asia/Seoul,ROK KW:Asia/Kuwait KY:America/Cayman KZ:Asia/Almaty,Asia/Aqtau,Asia/Aqtobe,Asia/Atyrau,Asia/Oral,Asia/Qostanay,Asia/Qyzylorda LA:Asia/Vientiane LB:Asia/Beirut LC:America/St_Lucia LI:Europe/Vaduz LK:Asia/Colombo LR:Africa/Monrovia LS:Africa/Maseru LT:Europe/Vilnius LU:Europe/Luxembourg LV:Europe/Riga LY:Africa/Tripoli,Libya MA:Africa/Casablanca MC:Europe/Monaco MD:Europe/Chisinau,Europe/Tiraspol ME:Europe/Podgorica MF:America/Marigot MG:Indian/Antananarivo MH:Kwajalein,Pacific/Kwajalein,Pacific/Majuro MK:Europe/Skopje ML:Africa/Bamako,Africa/Timbuktu MM:Asia/Rangoon,Asia/Yangon MN:Asia/Hovd,Asia/Ulaanbaatar,Asia/Ulan_Bator MO:Asia/Macao,Asia/Macau MP:Pacific/Saipan MQ:America/Martinique MR:Africa/Nouakchott MS:America/Montserrat MT:Europe/Malta MU:Indian/Mauritius MV:Indian/Maldives MW:Africa/Blantyre MX:America/Bahia_Banderas,America/Cancun,America/Chihuahua,America/Ciudad_Juarez,America/Ensenada,America/Hermosillo,America/Matamoros,America/Mazatlan,America/Merida,America/Mexico_City,America/Monterrey,America/Ojinaga,America/Tijuana,Mexico/BajaNorte,Mexico/BajaSur,Mexico/General MY:Asia/Kuala_Lumpur,Asia/Kuching MZ:Africa/Maputo NA:Africa/Windhoek NC:Pacific/Noumea NE:Africa/Niamey NF:Pacific/Norfolk NG:Africa/Lagos NI:America/Managua NL:Europe/Amsterdam NO:Europe/Oslo NP:Asia/Kathmandu,Asia/Katmandu NR:Pacific/Nauru NU:Pacific/Niue NZ:NZ,NZ-CHAT,Pacific/Auckland,Pacific/Chatham OM:Asia/Muscat PA:America/Panama PE:America/Lima PF:Pacific/Gambier,Pacific/Marquesas,Pacific/Tahiti PG:Pacific/Bougainville,Pacific/Port_Moresby PH:Asia/Manila PK:Asia/Karachi PL:Europe/Warsaw,Poland PM:America/Miquelon PN:Pacific/Pitcairn PR:America/Puerto_Rico PS:Asia/Gaza,Asia/Hebron PT:Atlantic/Azores,Atlantic/Madeira,Europe/Lisbon,Portugal PW:Pacific/Palau PY:America/Asuncion QA:Asia/Qatar RE:Indian/Reunion RO:Europe/Bucharest RS:Europe/Belgrade RU:Asia/Anadyr,Asia/Barnaul,Asia/Chita,Asia/Irkutsk,Asia/Kamchatka,Asia/Khandyga,Asia/Krasnoyarsk,Asia/Magadan,Asia/Novokuznetsk,Asia/Novosibirsk,Asia/Omsk,Asia/Sakhalin,Asia/Srednekolymsk,Asia/Tomsk,Asia/Ust-Nera,Asia/Vladivostok,Asia/Yakutsk,Asia/Yekaterinburg,Europe/Astrakhan,Europe/Kaliningrad,Europe/Kirov,Europe/Moscow,Europe/Samara,Europe/Saratov,Europe/Ulyanovsk,Europe/Volgograd RW:Africa/Kigali SA:Asia/Riyadh SB:Pacific/Guadalcanal SC:Indian/Mahe SD:Africa/Khartoum SE:Europe/Stockholm SG:Asia/Singapore,Singapore SH:Atlantic/St_Helena SI:Europe/Ljubljana SJ:Arctic/Longyearbyen,Atlantic/Jan_Mayen SK:Europe/Bratislava SL:Africa/Freetown SM:Europe/San_Marino SN:Africa/Dakar SO:Africa/Mogadishu SR:America/Paramaribo SS:Africa/Juba ST:Africa/Sao_Tome SV:America/El_Salvador SX:America/Lower_Princes SY:Asia/Damascus SZ:Africa/Mbabane TC:America/Grand_Turk TD:Africa/Ndjamena TF:Indian/Kerguelen TG:Africa/Lome TH:Asia/Bangkok TJ:Asia/Dushanbe TK:Pacific/Fakaofo TL:Asia/Dili TM:Asia/Ashgabat,Asia/Ashkhabad TN:Africa/Tunis TO:Pacific/Tongatapu TR:Asia/Istanbul,Europe/Istanbul,Turkey TT:America/Port_of_Spain TV:Pacific/Funafuti TW:Asia/Taipei,ROC TZ:Africa/Dar_es_Salaam UA:Europe/Kiev,Europe/Kyiv,Europe/Simferopol,Europe/Uzhgorod,Europe/Zaporozhye UG:Africa/Kampala UM:Pacific/Midway,Pacific/Wake US:America/Adak,America/Anchorage,America/Boise,America/Chicago,America/Denver,America/Detroit,America/Fort_Wayne,America/Indiana/Indianapolis,America/Indiana/Knox,America/Indiana/Marengo,America/Indiana/Petersburg,America/Indiana/Tell_City,America/Indiana/Vevay,America/Indiana/Vincennes,America/Indiana/Winamac,America/Indianapolis,America/Juneau,America/Kentucky/Louisville,America/Kentucky/Monticello,America/Knox_IN,America/Los_Angeles,America/Louisville,America/Menominee,America/Metlakatla,America/New_York,America/Nome,America/North_Dakota/Beulah,America/North_Dakota/Center,America/North_Dakota/New_Salem,America/Phoenix,America/Shiprock,America/Sitka,America/Yakutat,Navajo,Pacific/Honolulu,US/Alaska,US/Aleutian,US/Arizona,US/Central,US/East-Indiana,US/Eastern,US/Hawaii,US/Indiana-Starke,US/Michigan,US/Mountain,US/Pacific UY:America/Montevideo UZ:Asia/Samarkand,Asia/Tashkent VA:Europe/Vatican VC:America/St_Vincent VE:America/Caracas VG:America/Tortola VI:America/St_Thomas,America/Virgin VN:Asia/Ho_Chi_Minh,Asia/Saigon VU:Pacific/Efate WF:Pacific/Wallis WS:Pacific/Apia YE:Asia/Aden YT:Indian/Mayotte ZA:Africa/Johannesburg ZM:Africa/Lusaka ZW:Africa/Harare";
+let tzIndex = null;
+function tzCountry(tz) {
+  if (!tzIndex) {
+    tzIndex = {};
+    TZ_TABLE.split(" ").forEach((group) => {
+      const i = group.indexOf(":");
+      group.slice(i + 1).split(",").forEach((z) => {
+        tzIndex[z] = group.slice(0, i);
+      });
+    });
+  }
+  const z = str(tz, 64);
+  return Object.prototype.hasOwnProperty.call(tzIndex, z) ? tzIndex[z] : "";
+}
+
+/**
+ * Exported for tests: where the visitor is. The edge's IP lookup is used
+ * unless the device's time zone names a different country: IP databases
+ * often place leased or carrier ranges in the registrant's country (an
+ * Indian visitor on a Cogent 38.x address shows as US), and VPNs move the
+ * IP, while the time zone follows the person. The IP's answer is kept in
+ * country_ip either way.
+ */
+function countryOf(ipCountry, tzCc, langCc) {
+  if (ipCountry && tzCc && tzCc !== ipCountry) return { country: tzCc, source: "timezone" };
+  if (ipCountry) return { country: ipCountry, source: "ip" };
+  if (tzCc) return { country: tzCc, source: "timezone" };
+  if (langCc) return { country: langCc, source: "browser" };
+  return { country: "", source: "" };
+}
+
 function buildDoc(e, ctx) {
   // ctx.site (pixel: the configured label) wins over the browser's claim.
   const type = str(e.type, 32);
   if (!TYPES[type]) return null;
   const edgeCountry = cc(ctx.edgeCountry);
   const guess = cc(e.country_guess);
+  const where = countryOf(edgeCountry, tzCountry(e.tz), guess);
   const now = ctx.now;
   const m = {
     type,
@@ -79,8 +117,9 @@ function buildDoc(e, ctx) {
     host: str(ctx.host, 128),
     user: str(ctx.user, 200) || "anonymous",
     ip: str(ctx.ip, 64),
-    country: edgeCountry || guess,
-    country_source: edgeCountry ? "ip" : guess ? "browser" : "",
+    country: where.country,
+    country_source: where.source,
+    country_ip: edgeCountry,
     country_browser: guess,
     lang: str(e.lang, 35),
     langs: str(e.langs, 200),
@@ -155,6 +194,12 @@ function ignoredUser(user, list) {
  * Alerts only for customer sites: a visit (first page of a browser
  * session) and a finished video.
  */
+function sourceNote(m) {
+  if (m.country_source === "browser") return " (browser settings)";
+  if (m.country_source === "timezone") return m.country_ip ? ` (time zone; IP says ${m.country_ip})` : " (time zone)";
+  return "";
+}
+
 function alertText(doc, first, link, pixelAlerts, videoStarts) {
   const m = doc.metadata;
   // Pixel sites (opt-in, showcase.pixel.slackAlerts): a visit only once the
@@ -167,7 +212,7 @@ function alertText(doc, first, link, pixelAlerts, videoStarts) {
   const more = link ? `  <${link}|Engagement>` : "";
   if (m.type === "page_view" && first) {
     const from = [
-      m.country ? `${flagOf(m.country)} ${m.country}${m.country_source === "browser" ? " (browser settings)" : ""}` : "",
+      m.country ? `${flagOf(m.country)} ${m.country}${sourceNote(m)}` : "",
       m.ip ? `IP ${m.ip}` : "",
       deviceOf(m.ua),
       m.lang || "",
@@ -410,4 +455,4 @@ async function pxPost(r) {
   r.return(204);
 }
 
-export default { event, buildDoc, alertText, ignoredUser, pxGif, pxPost, pixelSites, pixelSite, decodePayload, pixelDoc, gifEvent };
+export default { event, buildDoc, tzCountry, countryOf, alertText, ignoredUser, pxGif, pxPost, pixelSites, pixelSite, decodePayload, pixelDoc, gifEvent };

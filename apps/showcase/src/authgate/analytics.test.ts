@@ -202,3 +202,42 @@ test("px.js: GPC and DNT mean nothing is sent; payload encoding round-trips", ()
   assert.doesNotMatch(enc, /[+/=]/);
   assert.equal(analytics.decodePayload(enc).title, "Café — £5");
 });
+
+/* ------------------------- country: IP vs time zone ------------------------- */
+
+test("country: time zone names the country, incl. legacy names browsers report", () => {
+  assert.equal(analytics.tzCountry("Asia/Calcutta"), "IN");
+  assert.equal(analytics.tzCountry("Asia/Kolkata"), "IN");
+  assert.equal(analytics.tzCountry("Europe/London"), "GB");
+  assert.equal(analytics.tzCountry("Europe/Kiev"), "UA");
+  assert.equal(analytics.tzCountry("US/Eastern"), "US");
+  assert.equal(analytics.tzCountry("America/Sao_Paulo"), "BR");
+  assert.equal(analytics.tzCountry("UTC"), "");
+  assert.equal(analytics.tzCountry("Etc/GMT+5"), "");
+  assert.equal(analytics.tzCountry("__proto__"), "");
+  assert.equal(analytics.tzCountry(undefined), "");
+});
+
+test("country: the time zone wins when the IP lookup disagrees; the IP's answer is kept", () => {
+  // Reported case: 38.137.35.98 (Cogent range) geolocates to US; the visitor is in India.
+  const d = analytics.pixelDoc({ type: "page_view", tz: "Asia/Calcutta", country_guess: "GB" }, SITES.ws_test1234, {
+    ip: "38.137.35.98", edgeCountry: "US", ua: "", now: 0, rand: "r",
+  });
+  assert.equal(d.metadata.country, "IN");
+  assert.equal(d.metadata.country_source, "timezone");
+  assert.equal(d.metadata.country_ip, "US");
+  assert.match(d.text, /from IN$/);
+  assert.deepEqual(analytics.countryOf("GB", "GB", ""), { country: "GB", source: "ip" }, "agree: IP");
+  assert.deepEqual(analytics.countryOf("US", "", "GB"), { country: "US", source: "ip" }, "UTC/unknown zone: IP");
+  assert.deepEqual(analytics.countryOf("", "IN", "GB"), { country: "IN", source: "timezone" }, "no IP country: time zone");
+  assert.deepEqual(analytics.countryOf("", "", "GB"), { country: "GB", source: "browser" }, "then language");
+  assert.deepEqual(analytics.countryOf("", "", ""), { country: "", source: "" });
+});
+
+test("country: Slack says when the time zone overrode the IP", () => {
+  const c = { ip: "38.137.35.98", edgeCountry: "US", ua: "", now: 0, rand: "r" };
+  const visit = analytics.pixelDoc({ type: "page_view", uid: "cust-9", tz: "Asia/Kolkata" }, SITES.ws_test1234, c);
+  assert.match(analytics.alertText(visit, true, "", true), /IN \(time zone; IP says US\)/);
+  const video = analytics.pixelDoc({ type: "video_play", video: "Demo", tz: "Asia/Kolkata" }, SITES.ws_test1234, c);
+  assert.match(analytics.alertText(video, false, "", true, true), /^:arrow_forward: \*anonymous\* \(.+ IN\) started/);
+});
