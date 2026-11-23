@@ -238,6 +238,11 @@ showcase:
         label: Workstation Shop NL
         origins:
           - https://shop.workstationai.nl
+      ws_85f91574465608e6:
+        host: shop.workstationai.ee
+        label: Workstation Shop EE
+        origins:
+          - https://shop.workstationai.ee
       ws_3f4017043fbb01be:
         host: daybook.co.uk
         label: Daybook

@@ -25,6 +25,7 @@ export const SITES: EngagementSite[] = [
   { host: "shop.workstation.lu", label: "Workstation Shop LU", bucket: "web_events" },
   { host: "shop.workstationai.de", label: "Workstation Shop DE", bucket: "web_events" },
   { host: "shop.workstationai.nl", label: "Workstation Shop NL", bucket: "web_events" },
+  { host: "shop.workstationai.ee", label: "Workstation Shop EE", bucket: "web_events" },
   { host: "daybook.co.uk", label: "Daybook", bucket: "web_events" },
 ];
 
