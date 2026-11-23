@@ -21,6 +21,7 @@ interface Ev {
   ip: string;
   country: string;
   countrySource: string;
+  countryIp: string;
   lang: string;
   tz: string;
   ua: string;
@@ -92,6 +93,7 @@ function toEv(row: SqlRow): Ev {
     ip: s(field(row, "ip")),
     country: s(field(row, "country")),
     countrySource: s(field(row, "country_source")),
+    countryIp: s(field(row, "country_ip")),
     lang: s(field(row, "langs")) || s(field(row, "lang")),
     tz: s(field(row, "tz")),
     ua: s(field(row, "ua")),
@@ -135,6 +137,13 @@ function describe(e: Ev): string {
     default:
       return e.type;
   }
+}
+
+/** How the visitor's country was worked out (njs/analytics.js countryOf). */
+function countrySourceLabel(e: { countrySource: string; countryIp: string }): string {
+  if (e.countrySource === "ip") return "from IP";
+  if (e.countrySource === "timezone") return e.countryIp ? `from device time zone; IP says ${e.countryIp}` : "from device time zone";
+  return "from browser settings";
 }
 
 export function EngagementTab() {
@@ -352,7 +361,7 @@ export function EngagementTab() {
               <dd>
                 {person.countries.map((c) => `${flag(c)} ${c}`).join(", ") || "unknown"}
                 {person.events[0]?.countrySource && (
-                  <span className="text-xs text-gray-500 dark:text-muted"> ({person.events[0].countrySource === "ip" ? "from IP" : "from browser settings"})</span>
+                  <span className="text-xs text-gray-500 dark:text-muted"> ({countrySourceLabel(person.events[0])})</span>
                 )}
               </dd>
             </div>
