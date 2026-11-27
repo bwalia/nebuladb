@@ -61,6 +61,14 @@ on:
         description: Image tag to deploy (blank => commit short SHA)
         required: false
         default: ""
+      REVOKE_KEY_PREFIX:
+        description: >-
+          prod only. Drop API keys starting with this prefix from
+          NEBULA_API_KEYS during the staged rollout (key rotation). The
+          showcase is held until the old leader is gone, then switches
+          to the first remaining key.
+        required: false
+        default: ""
       ALLOW_DOWNTIME:
         description: >-
           prod only. Deploy even when the follower is not Ready + caught
@@ -314,9 +322,32 @@ jobs:
         env:
           NS: ${{ env.TARGET_ENV }}
           ALLOW_DOWNTIME: ${{ github.event.inputs.ALLOW_DOWNTIME || 'false' }}
+          REVOKE_KEY_PREFIX: ${{ github.event.inputs.REVOKE_KEY_PREFIX || '' }}
+          # The showcase reads the API key it injects from the same
+          # secret; hold it so it can't switch keys before the leader does.
+          HOLD: nebuladb-showcase
         run: |
           set -euo pipefail
           ./scripts/k8s_staged_rollout.sh preflight
+          if [ -n "$REVOKE_KEY_PREFIX" ]; then
+            # Rewrites NEBULA_API_KEYS without the revoked keys. Pods keep
+            # their loaded list until they restart below; nothing is printed.
+            kubectl -n "$NS" get secret nebuladb-secrets -o json | python3 -c '
+          import base64, json, os, sys
+          s = json.load(sys.stdin)
+          pre = os.environ["REVOKE_KEY_PREFIX"]
+          keys = [k for k in base64.b64decode(s["data"]["NEBULA_API_KEYS"]).decode().split(",") if k]
+          keep = [k for k in keys if not k.startswith(pre)]
+          if len(keep) == len(keys):
+              sys.exit("no key starts with the revoke prefix: nothing to revoke")
+          if not keep or not keep[0].startswith("nk_int_"):
+              sys.exit("revoking would leave no internal (nk_int_) key first in the list: refusing")
+          print(json.dumps({"data": {"NEBULA_API_KEYS": base64.b64encode(",".join(keep).encode()).decode()}}))
+          print(f"revoking {len(keys) - len(keep)} key(s); {len(keep)} remain", file=sys.stderr)
+          ' > /tmp/revoke-patch.json
+            kubectl -n "$NS" patch secret nebuladb-secrets --type merge --patch-file /tmp/revoke-patch.json
+            rm -f /tmp/revoke-patch.json
+          fi
           ./scripts/k8s_staged_rollout.sh pause
 
       - name: Helm upgrade --install
@@ -448,7 +479,7 @@ jobs:
           set -euo pipefail
           # Waits follower/region-b → caught up → resumes the leader when
           # the preflight step paused it; a plain leader wait otherwise.
-          NS="$TARGET_ENV" ./scripts/k8s_staged_rollout.sh finish
+          NS="$TARGET_ENV" HOLD=nebuladb-showcase ./scripts/k8s_staged_rollout.sh finish
           kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb-showcase --timeout=5m
           kubectl -n "$TARGET_ENV" get ingress,svc,pods -o wide
 
