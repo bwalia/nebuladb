@@ -15,7 +15,7 @@ name: Register edge vhost (Cloudflare + wslproxy)
 #   api     -> api.nebuladb.net (public REST, bearer keys; see apiIngress in the chart)
 #
 # Steps:
-#   1. Cloudflare CNAME  -> lon1.pop0.uk (DNS-only; the edge terminates TLS)
+#   1. Cloudflare CNAME  -> edge.pop0.uk (DNS-only; the edge terminates TLS)
 #   2. wslproxy server + rule import into the control plane (cp.pop0.uk)
 #   3. Install the same records on lon1 for servers tagged pop_ids: [lon1]
 #      (fallback only: cp syncs servers/rules down to the POPs, lon1 and
@@ -139,7 +139,8 @@ jobs:
           WSL_PASS: ${{ secrets.WSLPROXY_ADMIN_PASSWORD }}
           FILES: ${{ steps.files.outputs.files }}
           ZONE: nebuladb.net
-          CNAME_TARGET: lon1.pop0.uk
+          # edge.pop0.uk is the lon1<->lon2 failover switch; see diy-tax-return-infra docs/runbooks/edge-failover.md
+          CNAME_TARGET: edge.pop0.uk
         run: |
           set -euo pipefail
           for f in $FILES; do

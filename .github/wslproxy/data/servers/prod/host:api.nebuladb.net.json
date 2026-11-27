@@ -6,7 +6,7 @@
   "config_status": true,
   "created_at": 1793059200,
   "custom_headers": {},
-  "dns_cname_target": "lon1.pop0.uk",
+  "dns_cname_target": "edge.pop0.uk",
   "dns_record_type": "CNAME",
   "error_log": "logs/api.nebuladb.net.error.log",
   "id": "host:api.nebuladb.net",

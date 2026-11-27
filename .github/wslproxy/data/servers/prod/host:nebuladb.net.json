@@ -8,7 +8,7 @@
     "pop0"
   ],
   "dns_record_type": "CNAME",
-  "dns_cname_target": "lon1.pop0.uk",
+  "dns_cname_target": "edge.pop0.uk",
   "proxy_pass": "http://localhost",
   "proxy_server_name": "bwalia.github.io",
   "listens": [
