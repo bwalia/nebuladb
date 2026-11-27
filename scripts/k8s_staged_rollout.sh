@@ -27,7 +27,12 @@
 #
 # Usage: NS=prod scripts/k8s_staged_rollout.sh preflight|pause|finish
 # Env:   NS (namespace), RELEASE (default nebuladb), ALLOW_DOWNTIME,
-#        CATCHUP_TIMEOUT_SECS (default 900), DRY_RUN=1 (print only).
+#        CATCHUP_TIMEOUT_SECS (default 2700: a 21 GB snapshot takes
+#        ~23 min to load), LEADER_RECOVERY_TIMEOUT_SECS (default 3600),
+#        HOLD (space-separated Deployments paused with the leader and
+#        released the moment it goes down, e.g. the showcase when it is
+#        switching API keys the old leader would reject),
+#        DRY_RUN=1 (print only).
 set -euo pipefail
 
 NS="${NS:?NS (namespace) is required}"
@@ -36,7 +41,9 @@ LEADER="$RELEASE"
 FOLLOWER="$RELEASE-follower"
 REGION_B="$RELEASE-region-b"
 ALLOW_DOWNTIME="${ALLOW_DOWNTIME:-false}"
-CATCHUP_TIMEOUT_SECS="${CATCHUP_TIMEOUT_SECS:-900}"
+CATCHUP_TIMEOUT_SECS="${CATCHUP_TIMEOUT_SECS:-2700}"
+LEADER_RECOVERY_TIMEOUT_SECS="${LEADER_RECOVERY_TIMEOUT_SECS:-3600}"
+HOLD="${HOLD:-}"
 
 log() { printf '[staged-rollout] %s\n' "$*" >&2; }
 run() { if [ "${DRY_RUN:-}" = 1 ]; then log "DRY_RUN: $*"; else "$@"; fi; }
@@ -75,7 +82,18 @@ pause() {
   if ! exists "$LEADER"; then log "no leader Deployment yet (first install): nothing to pause"; return 0; fi
   if ! has_follower; then log "no follower: leader not paused (ALLOW_DOWNTIME path)"; return 0; fi
   run k rollout pause "deploy/$LEADER"
-  log "leader paused; helm upgrade will update its spec without restarting it"
+  local d
+  for d in $HOLD; do
+    exists "$d" && run k rollout pause "deploy/$d"
+  done
+  log "leader${HOLD:+ and $HOLD} paused; helm upgrade will update their specs without restarting them"
+}
+
+# 0 once the leader answers /healthz with 200 (the boot listener serves
+# 503 until recovery completes, while the pod already reports Ready).
+leader_serving() {
+  kubectl get --raw "/api/v1/namespaces/$NS/services/$LEADER:rest/proxy/healthz" 2>/dev/null \
+    | grep -q '"status":"\(ok\|degraded\)"'
 }
 
 wait_rollout() {
@@ -108,7 +126,33 @@ finish() {
   fi
   log "follower caught up on the new version; releasing the leader"
   run k rollout resume "deploy/$LEADER"
+  if [ -n "$HOLD" ] && [ "${DRY_RUN:-}" != 1 ]; then
+    # Release the held Deployments once the old leader pod is gone, so
+    # they never talk to it with config it doesn't know.
+    k wait --for=delete pod -l "app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=server" \
+      --timeout=10m 2>/dev/null || true
+  fi
+  local d
+  for d in $HOLD; do
+    exists "$d" && run k rollout resume "deploy/$d"
+  done
   run k rollout status "deploy/$LEADER" --timeout=15m
+  if [ "${DRY_RUN:-}" != 1 ]; then
+    local t0 deadline
+    t0=$(date +%s); deadline=$(( t0 + LEADER_RECOVERY_TIMEOUT_SECS ))
+    log "leader pod up; waiting for it to finish recovery (writes 503 until then)"
+    until leader_serving; do
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        log "FAILED: leader still recovering after ${LEADER_RECOVERY_TIMEOUT_SECS}s (reads are on the follower)"
+        return 1
+      fi
+      sleep 15
+    done
+    log "leader serving again after $(( $(date +%s) - t0 ))s of recovery"
+  fi
+  for d in $HOLD; do
+    exists "$d" && run k rollout status "deploy/$d" --timeout=10m
+  done
   log "leader rolled; staged rollout complete"
 }
 
