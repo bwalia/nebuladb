@@ -61,6 +61,12 @@ on:
         description: Image tag to deploy (blank => commit short SHA)
         required: false
         default: ""
+      ALLOW_DOWNTIME:
+        description: >-
+          prod only. Deploy even when the follower is not Ready + caught
+          up, accepting 503s while the leader restarts. Leave off.
+        type: boolean
+        default: false
 
 # One deploy per environment at a time. A second push while a build is
 # mid-flight waits rather than racing `helm upgrade` on the same release.
@@ -297,6 +303,21 @@ jobs:
           adopt secret nebuladb-showcase-auth
           adopt externalsecret nebuladb-config
 
+      # Staged rollout (scripts/k8s_staged_rollout.sh): in prod, refuse
+      # unless the follower can serve while the leader restarts; pause
+      # the leader so helm restarts follower + region-b first, then
+      # release it once the follower is caught up. No window with zero
+      # serving nodes, so no 503s.
+      - name: Staged rollout — preflight + pause leader
+        if: ${{ github.event.inputs.DEPLOYMENT_TYPE != 'showcase-only' && github.event.inputs.TARGET_ENV == 'prod' }}
+        env:
+          NS: ${{ env.TARGET_ENV }}
+          ALLOW_DOWNTIME: ${{ github.event.inputs.ALLOW_DOWNTIME || 'false' }}
+        run: |
+          set -euo pipefail
+          ./scripts/k8s_staged_rollout.sh preflight
+          ./scripts/k8s_staged_rollout.sh pause
+
       - name: Helm upgrade --install
         if: ${{ github.event.inputs.DEPLOYMENT_TYPE != 'showcase-only' }}
         env:
@@ -414,7 +435,9 @@ jobs:
         if: ${{ github.event.inputs.DEPLOYMENT_TYPE != 'showcase-only' }}
         run: |
           set -euo pipefail
-          kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb --timeout=10m
+          # Waits follower/region-b → caught up → resumes the leader when
+          # the preflight step paused it; a plain leader wait otherwise.
+          NS="$TARGET_ENV" ./scripts/k8s_staged_rollout.sh finish
           kubectl -n "$TARGET_ENV" rollout status deploy/nebuladb-showcase --timeout=5m
           kubectl -n "$TARGET_ENV" get ingress,svc,pods -o wide
 
