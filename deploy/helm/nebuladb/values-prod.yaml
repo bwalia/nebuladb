@@ -82,6 +82,11 @@ server:
   extraEnv:
     - name: NEBULA_OPENAI_BASE_URL
       value: "http://nebuladb-ollama-lan:11434/v1"
+    # Health-tracked failover across the two LAN instances, one Service
+    # each (templates/ollama-lan-service.yaml). A dead instance sits out
+    # a cooldown instead of failing every connection balanced onto it.
+    - name: NEBULA_OPENAI_BASE_URLS
+      value: "http://nebuladb-ollama-lan-0:11434/v1,http://nebuladb-ollama-lan-1:11434/v1"
     - name: NEBULA_OPENAI_MODEL
       value: "nomic-embed-text"
     - name: NEBULA_OPENAI_AUTH

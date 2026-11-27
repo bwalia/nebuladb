@@ -293,7 +293,12 @@ pub fn build_router(state: AppState) -> Router {
 
 #[derive(Serialize)]
 struct Health {
+    /// `ok`, or `degraded` when some embedding endpoints are failing
+    /// (requests still succeed through the rest).
     status: &'static str,
+    /// Embedding endpoint health, when failover is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embed: Option<Vec<nebula_embed::EndpointStatus>>,
     docs: usize,
     dim: usize,
     model: String,
@@ -323,8 +328,13 @@ struct Health {
 }
 
 async fn healthz(State(s): State<AppState>) -> Json<Health> {
+    let embed = s.embed_failover.as_ref().map(|f| f.status());
+    let degraded = embed
+        .as_ref()
+        .is_some_and(|eps| eps.iter().any(|e| !e.fallback && !e.healthy));
     Json(Health {
-        status: "ok",
+        status: if degraded { "degraded" } else { "ok" },
+        embed,
         // len_relaxed: never block health behind a bulk writer.
         docs: s.index.len_relaxed(),
         dim: s.index.dim(),

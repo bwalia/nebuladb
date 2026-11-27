@@ -35,4 +35,43 @@ endpoints:
     conditions:
       ready: true
 {{- end }}
+{{- /*
+One Service per instance as well, so the server can health-track each
+one (NEBULA_OPENAI_BASE_URLS) instead of trusting the shared Service
+above, whose hand-written endpoints stay "ready" even when an instance
+is dead — kube-proxy then keeps balancing connections onto it.
+*/}}
+{{- range $i, $ep := .Values.ollamaLan.endpoints }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-%d" $name $i }}
+  labels:
+    {{- include "nebuladb.labels" $ | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ $.Values.ollamaLan.port }}
+      protocol: TCP
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: {{ printf "%s-%d-direct" $name $i }}
+  labels:
+    kubernetes.io/service-name: {{ printf "%s-%d" $name $i }}
+    endpointslice.kubernetes.io/managed-by: helm
+    {{- include "nebuladb.labels" $ | nindent 4 }}
+addressType: IPv4
+ports:
+  - name: http
+    port: {{ $ep.port }}
+    protocol: TCP
+endpoints:
+  - addresses: [{{ $ep.ip | quote }}]
+    conditions:
+      ready: true
+{{- end }}
 {{- end }}

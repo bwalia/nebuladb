@@ -76,6 +76,49 @@ pub struct RateLimitConfig {
     pub refill_per_sec: f64,
     /// Peers we'll honor `X-Forwarded-For` / `X-Real-IP` from.
     pub trusted_proxies: TrustedProxies,
+    /// Separate, larger limits for internal bearer tokens (`nk_int_…`).
+    /// One internal key fronts many users — the showcase nginx injects
+    /// it for every browser, and the pixel sites write through it — so
+    /// the per-user default starves them all at once.
+    pub internal: Option<InternalTier>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalTier {
+    /// Bearer-token prefix that selects this tier.
+    pub prefix: String,
+    pub capacity: f64,
+    pub refill_per_sec: f64,
+}
+
+impl RateLimitConfig {
+    /// `(capacity, refill_per_sec)` for a principal from [`principal`].
+    fn limits_for(&self, key: &str) -> (f64, f64) {
+        if let Some(t) = &self.internal {
+            if key
+                .strip_prefix("bearer:")
+                .is_some_and(|tok| !t.prefix.is_empty() && tok.starts_with(&t.prefix))
+            {
+                return (t.capacity, t.refill_per_sec);
+            }
+        }
+        (self.capacity, self.refill_per_sec)
+    }
+}
+
+/// A principal safe to echo back or log: bearer tokens and API keys
+/// keep only their first 16 characters (`nk_int_363cb1555`, the same
+/// form the audit log shows). The full key used to go back in the 429
+/// body — handing the showcase's internal token to every browser.
+fn redact(key: &str) -> String {
+    for p in ["bearer:", "apikey:"] {
+        if let Some(tok) = key.strip_prefix(p) {
+            let short: String = tok.chars().take(16).collect();
+            let ell = if tok.chars().count() > 16 { "…" } else { "" };
+            return format!("{p}{short}{ell}");
+        }
+    }
+    key.to_string()
 }
 
 impl Default for RateLimitConfig {
@@ -86,6 +129,11 @@ impl Default for RateLimitConfig {
             capacity: 120.0,
             refill_per_sec: 20.0,
             trusted_proxies: TrustedProxies::None,
+            internal: Some(InternalTier {
+                prefix: "nk_int_".into(),
+                capacity: 2000.0,
+                refill_per_sec: 200.0,
+            }),
         }
     }
 }
@@ -109,11 +157,11 @@ impl Bucket {
     /// Returns `true` if the request is allowed. Computes refill
     /// lazily — we only advance time when a request arrives, so idle
     /// keys consume no CPU.
-    fn try_take(&mut self, cfg: &RateLimitConfig) -> bool {
+    fn try_take(&mut self, (capacity, refill_per_sec): (f64, f64)) -> bool {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
         self.last_refill = now;
-        self.tokens = (self.tokens + elapsed * cfg.refill_per_sec).min(cfg.capacity);
+        self.tokens = (self.tokens + elapsed * refill_per_sec).min(capacity);
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
             true
@@ -124,12 +172,12 @@ impl Bucket {
 
     /// Seconds until the next token is available. Used to populate
     /// `Retry-After` on a 429 — a polite client will obey it.
-    fn retry_after_secs(&self, cfg: &RateLimitConfig) -> u64 {
+    fn retry_after_secs(&self, (_, refill_per_sec): (f64, f64)) -> u64 {
         let needed = 1.0 - self.tokens;
-        if needed <= 0.0 || cfg.refill_per_sec <= 0.0 {
+        if needed <= 0.0 || refill_per_sec <= 0.0 {
             return 0;
         }
-        (needed / cfg.refill_per_sec).ceil() as u64
+        (needed / refill_per_sec).ceil() as u64
     }
 }
 
@@ -244,13 +292,14 @@ pub async fn rate_limit(
     // at the end of the inner block, before any `.await`, so no
     // DashMap-level lock is alive across an async suspension point.
     let (allowed, retry_secs) = {
+        let limits = cfg.limits_for(&key);
         let entry = limiter
             .buckets
             .entry(key.clone())
-            .or_insert_with(|| Mutex::new(Bucket::new(cfg.capacity)));
+            .or_insert_with(|| Mutex::new(Bucket::new(limits.0)));
         let mut bucket = entry.lock();
-        let allowed = bucket.try_take(cfg);
-        let retry = if allowed { 0 } else { bucket.retry_after_secs(cfg) };
+        let allowed = bucket.try_take(limits);
+        let retry = if allowed { 0 } else { bucket.retry_after_secs(limits) };
         (allowed, retry)
         // `entry` drops here → shard write lock released.
     };
@@ -260,7 +309,8 @@ pub async fn rate_limit(
     } else {
         state.metrics.inc_rate_limited();
         let body = format!(
-            r#"{{"error":{{"code":"rate_limited","message":"too many requests for key {key}"}}}}"#
+            r#"{{"error":{{"code":"rate_limited","message":"too many requests for key {}"}}}}"#,
+            redact(&key)
         );
         (
             StatusCode::TOO_MANY_REQUESTS,
@@ -288,10 +338,10 @@ mod tests {
             ..Default::default()
         };
         let mut b = Bucket::new(cfg.capacity);
-        assert!(b.try_take(&cfg));
-        assert!(b.try_take(&cfg));
-        assert!(b.try_take(&cfg));
-        assert!(!b.try_take(&cfg)); // now empty
+        assert!(b.try_take(cfg.limits_for("ip:1.2.3.4")));
+        assert!(b.try_take(cfg.limits_for("ip:1.2.3.4")));
+        assert!(b.try_take(cfg.limits_for("ip:1.2.3.4")));
+        assert!(!b.try_take(cfg.limits_for("ip:1.2.3.4"))); // now empty
     }
 
     #[test]
@@ -302,10 +352,10 @@ mod tests {
             ..Default::default()
         };
         let mut b = Bucket::new(cfg.capacity);
-        assert!(b.try_take(&cfg));
-        assert!(!b.try_take(&cfg));
+        assert!(b.try_take(cfg.limits_for("ip:1.2.3.4")));
+        assert!(!b.try_take(cfg.limits_for("ip:1.2.3.4")));
         sleep(Duration::from_millis(30)); // ≥ 1 token worth
-        assert!(b.try_take(&cfg));
+        assert!(b.try_take(cfg.limits_for("ip:1.2.3.4")));
     }
 
     #[test]
@@ -319,9 +369,9 @@ mod tests {
         // Sleep long enough that uncapped refill would accumulate well
         // past capacity; the cap must hold.
         sleep(Duration::from_millis(50));
-        assert!(b.try_take(&cfg));
-        assert!(b.try_take(&cfg));
-        assert!(!b.try_take(&cfg));
+        assert!(b.try_take(cfg.limits_for("ip:1.2.3.4")));
+        assert!(b.try_take(cfg.limits_for("ip:1.2.3.4")));
+        assert!(!b.try_take(cfg.limits_for("ip:1.2.3.4")));
     }
 
     #[test]
@@ -379,8 +429,28 @@ mod tests {
             ..Default::default()
         };
         let mut b = Bucket::new(cfg.capacity);
-        assert!(b.try_take(&cfg));
-        let r = b.retry_after_secs(&cfg);
+        assert!(b.try_take(cfg.limits_for("ip:1.2.3.4")));
+        let r = b.retry_after_secs(cfg.limits_for("ip:1.2.3.4"));
         assert!(r >= 1, "retry_after should advise at least 1s, got {r}");
+    }
+
+    #[test]
+    fn internal_keys_get_their_own_larger_limits() {
+        let cfg = RateLimitConfig::default();
+        assert_eq!(cfg.limits_for("bearer:nk_int_abc"), (2000.0, 200.0));
+        assert_eq!(cfg.limits_for("bearer:nk_live_abc"), (120.0, 20.0));
+        assert_eq!(cfg.limits_for("ip:10.0.0.1"), (120.0, 20.0));
+        // The prefix must be on a bearer token, not smuggled elsewhere.
+        assert_eq!(cfg.limits_for("apikey:nk_int_abc"), (120.0, 20.0));
+        let off = RateLimitConfig { internal: None, ..Default::default() };
+        assert_eq!(off.limits_for("bearer:nk_int_abc"), (120.0, 20.0));
+    }
+
+    #[test]
+    fn rejection_message_never_echoes_the_full_token() {
+        let tok = "nk_int_363cb1555a4e3a2150a19c7199d839b6277e72787d536dc4";
+        assert_eq!(redact(&format!("bearer:{tok}")), "bearer:nk_int_363cb1555…");
+        assert_eq!(redact("apikey:short"), "apikey:short");
+        assert_eq!(redact("ip:10.0.0.1"), "ip:10.0.0.1");
     }
 }

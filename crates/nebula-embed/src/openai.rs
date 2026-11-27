@@ -195,13 +195,33 @@ impl Embedder for OpenAiEmbedder {
             model: &self.config.model,
             input: inputs,
         };
-        let mut req = self.http.post(&url).json(&body);
-        if self.config.auth_style == OpenAiAuthStyle::XApiKey {
-            if let Some(token) = self.auth_x_api_key()? {
-                req = req.header("x-api-key", token);
+        let token = match self.config.auth_style {
+            OpenAiAuthStyle::XApiKey => self.auth_x_api_key()?,
+            _ => None,
+        };
+        // Retry connection failures only: the request never left, so a
+        // retry can't double-apply anything. Behind a selector-less
+        // Service with several endpoints (prod's two LAN Ollama
+        // instances), each new connection is balanced afresh, so one
+        // dead instance otherwise fails ~1 in N embeds outright.
+        const CONNECT_ATTEMPTS: u32 = 4;
+        let mut attempt = 1;
+        let resp = loop {
+            let mut req = self.http.post(&url).json(&body);
+            if let Some(t) = &token {
+                req = req.header("x-api-key", t.clone());
             }
-        }
-        let resp = req.send().await?;
+            match req.send().await {
+                Ok(r) => break r,
+                Err(e) if e.is_connect() && attempt < CONNECT_ATTEMPTS => {
+                    tracing::warn!(attempt, error = %e, "embed: connect failed, retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)))
+                        .await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();

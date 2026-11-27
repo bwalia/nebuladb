@@ -16,6 +16,7 @@ tokio = { workspace = true }
 reqwest.workspace = true
 tracing.workspace = true
 ahash.workspace = true
+parking_lot.workspace = true
 jsonwebtoken.workspace = true
 base64 = "0.22"
 

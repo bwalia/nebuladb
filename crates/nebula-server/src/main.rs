@@ -205,6 +205,7 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                 None
             }
         });
+    let mut embed_failover: Option<Arc<nebula_embed::FailoverEmbedder>> = None;
     let raw_embedder: Arc<dyn Embedder> = match openai_key {
         Some(key) => {
             let base_url = std::env::var("NEBULA_OPENAI_BASE_URL")
@@ -235,7 +236,13 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                 timeout: Duration::from_secs(30),
                 auth_style,
             };
-            Arc::new(OpenAiEmbedder::new(cfg)?)
+            match failover_embedder(&cfg)? {
+                Some(f) => {
+                    embed_failover = Some(Arc::clone(&f));
+                    f
+                }
+                None => Arc::new(OpenAiEmbedder::new(cfg)?),
+            }
         }
         None => {
             let dim: usize = std::env::var("NEBULA_EMBED_DIM")
@@ -747,6 +754,7 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
                 capacity,
                 refill_per_sec: refill,
                 trusted_proxies,
+                internal: internal_rate_tier(),
             },
             Some(RateLimiter::new()),
         )
@@ -830,6 +838,9 @@ async fn async_main(workers: usize) -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(stats) = cache_stats {
         state = state.with_cache_stats(stats);
+    }
+    if let Some(f) = embed_failover {
+        state = state.with_embed_failover(f);
     }
     if let Some(rl) = rate_limiter {
         state = state.with_rate_limiter(rl);
@@ -1382,4 +1393,90 @@ fn dump_forensics_to_stderr() {
         }
     }
     eprintln!("[WATCHDOG-DUMP] ===================== end =====================");
+}
+
+/// Internal-key rate tier: bearer tokens starting with
+/// `NEBULA_RATE_LIMIT_INTERNAL_PREFIX` (default `nk_int_`; empty turns
+/// the tier off) get `NEBULA_RATE_LIMIT_INTERNAL_BURST` /
+/// `NEBULA_RATE_LIMIT_INTERNAL_RPS` (default 2000 / 200) instead of the
+/// per-user limits. One such key fronts every showcase visitor and
+/// every pixel site.
+fn internal_rate_tier() -> Option<nebula_server::ratelimit::InternalTier> {
+    let defaults = RateLimitConfig::default().internal?;
+    let prefix = std::env::var("NEBULA_RATE_LIMIT_INTERNAL_PREFIX").unwrap_or(defaults.prefix);
+    if prefix.is_empty() {
+        return None;
+    }
+    let num = |var: &str, dflt: f64| {
+        std::env::var(var).ok().and_then(|s| s.parse().ok()).unwrap_or(dflt)
+    };
+    Some(nebula_server::ratelimit::InternalTier {
+        prefix,
+        capacity: num("NEBULA_RATE_LIMIT_INTERNAL_BURST", defaults.capacity),
+        refill_per_sec: num("NEBULA_RATE_LIMIT_INTERNAL_RPS", defaults.refill_per_sec),
+    })
+}
+
+/// Health-tracked embedding failover, when configured.
+///
+/// `NEBULA_OPENAI_BASE_URLS` — comma-separated base URLs serving the
+/// same model as `NEBULA_OPENAI_BASE_URL` (which it replaces). Each gets
+/// its own health: a failing one sits out a cooldown and requests move
+/// to the next, instead of a load balancer that keeps a dead instance
+/// in rotation.
+///
+/// `NEBULA_EMBED_FALLBACK_BASE_URL` — tried only after every primary
+/// failed a request (e.g. the public gateway). Its auth comes from
+/// `NEBULA_EMBED_FALLBACK_AUTH` (`bearer` | `x-api-key`) and
+/// `NEBULA_EMBED_FALLBACK_API_KEY`, else `NEBULA_LLM_OLLAMA_TOKEN`. It
+/// must serve the same model and dimension.
+fn failover_embedder(
+    base: &OpenAiEmbedderConfig,
+) -> nebula_embed::Result<Option<Arc<nebula_embed::FailoverEmbedder>>> {
+    let list = |var: &str| -> Vec<String> {
+        std::env::var(var)
+            .unwrap_or_default()
+            .split(',')
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty())
+            .collect()
+    };
+    let primaries = list("NEBULA_OPENAI_BASE_URLS");
+    let fallbacks = list("NEBULA_EMBED_FALLBACK_BASE_URL");
+    if primaries.is_empty() && fallbacks.is_empty() {
+        return Ok(None);
+    }
+    let primaries = if primaries.is_empty() { vec![base.base_url.clone()] } else { primaries };
+    let build = |url: &str, cfg: OpenAiEmbedderConfig| -> nebula_embed::Result<(String, Arc<dyn Embedder>)> {
+        let e: Arc<dyn Embedder> = Arc::new(OpenAiEmbedder::new(OpenAiEmbedderConfig { base_url: url.to_string(), ..cfg })?);
+        Ok((url.to_string(), e))
+    };
+    // Shorter timeout per endpoint: a hung instance should hand the
+    // request on, not eat the caller's whole budget.
+    let per_endpoint = OpenAiEmbedderConfig { timeout: Duration::from_secs(10), ..base.clone() };
+    let p = primaries
+        .iter()
+        .map(|u| build(u, per_endpoint.clone()))
+        .collect::<nebula_embed::Result<Vec<_>>>()?;
+    let fb_auth = match std::env::var("NEBULA_EMBED_FALLBACK_AUTH")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "x-api-key" | "x_api_key" | "gateway" => nebula_embed::OpenAiAuthStyle::XApiKey,
+        "bearer" => nebula_embed::OpenAiAuthStyle::Bearer,
+        _ => base.auth_style,
+    };
+    let fb_key = std::env::var("NEBULA_EMBED_FALLBACK_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("NEBULA_LLM_OLLAMA_TOKEN").ok().filter(|s| !s.is_empty()))
+        .or_else(|| base.api_key.clone());
+    let fb_cfg = OpenAiEmbedderConfig { api_key: fb_key, auth_style: fb_auth, ..base.clone() };
+    let f = fallbacks
+        .iter()
+        .map(|u| build(u, fb_cfg.clone()))
+        .collect::<nebula_embed::Result<Vec<_>>>()?;
+    tracing::info!(primaries = ?primaries, fallbacks = ?fallbacks, "embed failover enabled");
+    Ok(Some(Arc::new(nebula_embed::FailoverEmbedder::new(p, f)?)))
 }
