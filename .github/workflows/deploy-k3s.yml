@@ -405,10 +405,20 @@ jobs:
           # The showcase container's env comes from the chart rendered with
           # this env's values, so settings like showcase.opsapiAuth (Login
           # with OpsAPI) reach the pod here exactly as a full upgrade would.
+          # --namespace matters: the peer hosts are rendered fully
+          # qualified from .Release.Namespace, which defaults to
+          # `default` and points nginx at Services that don't exist
+          # (27 Nov 2026: new pod crash-looped, rollout was undone).
           helm template nebuladb ./deploy/helm/nebuladb \
+            --namespace "$TARGET_ENV" \
             -f ./deploy/helm/nebuladb/values-"${TARGET_ENV}".yaml \
             -s templates/showcase-deployment.yaml \
             --set showcase.image.tag="${{ steps.tag.outputs.tag }}" >/tmp/showcase-render.yaml
+          if grep -E 'value: "?[a-z0-9-]+\.[a-z0-9-]+\.svc\.cluster\.local' /tmp/showcase-render.yaml \
+              | grep -v -F ".${TARGET_ENV}.svc.cluster.local"; then
+            echo "rendered a Service host outside namespace ${TARGET_ENV}: refusing to deploy" >&2
+            exit 1
+          fi
           kubectl create --dry-run=client -o json -f /tmp/showcase-render.yaml \
             | jq -c '(if .kind == "List" then .items[] else . end) | select(.kind == "Deployment")
                      | .spec.template.spec.containers[] | select(.name == "showcase") | .env' >/tmp/showcase-env.json
