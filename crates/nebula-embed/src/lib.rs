@@ -12,11 +12,13 @@
 //! to a vendor SDK, and swapping providers is a one-line change at
 //! construction time.
 
+mod failover;
 mod mock;
 mod openai;
 
 use async_trait::async_trait;
 
+pub use failover::{EndpointStatus, FailoverEmbedder};
 pub use mock::MockEmbedder;
 pub use openai::{OpenAiAuthStyle, OpenAiEmbedder, OpenAiEmbedderConfig};
 

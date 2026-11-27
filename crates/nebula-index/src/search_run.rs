@@ -17,7 +17,7 @@ use nebula_vector::HnswSearchStats;
 use crate::explain::{
     Bm25Part, HitExplain, Note, ScoreKind, SearchTrace, Stage, TermPart, VectorPart,
 };
-use crate::{min_max_normalize, Hit, IndexError, Result, TextIndex};
+use crate::{min_max_normalize, Hit, IndexError, MetaFilter, Result, TextIndex};
 
 /// Share of the HNSW beam taken by deleted nodes above which EXPLAIN
 /// warns that recall is suffering.
@@ -45,6 +45,10 @@ pub(crate) struct VectorRun {
     /// True when results came from scoring every doc in the bucket
     /// instead of HNSW + post-filter.
     exact_bucket: bool,
+    /// A metadata predicate (SQL `WHERE`) ran inside the scan.
+    filtered: bool,
+    /// Candidates the metadata predicate rejected.
+    filtered_out: usize,
 }
 
 pub(crate) struct Bm25Run {
@@ -130,23 +134,32 @@ fn prefer_exact_bucket(bucket_docs: usize, corpus: usize, k: usize) -> bool {
 }
 
 impl TextIndex {
+    /// `filter`, when set, is a metadata predicate (a pushed-down SQL
+    /// `WHERE`): rejected docs are skipped before they are scored (exact
+    /// scan) or materialized (HNSW), and `k` counts docs that pass it.
     pub(crate) fn run_vector(
         &self,
         vector: &[f32],
         bucket: Option<&str>,
         k: usize,
         ef: Option<usize>,
+        filter: Option<&MetaFilter>,
     ) -> Result<VectorRun> {
         let g = self.inner.read();
         let corpus = g.docs.len();
         if let Some(b) = bucket {
             let bucket_docs = g.by_bucket.get(b).map(|s| s.len()).unwrap_or(0);
             if prefer_exact_bucket(bucket_docs, corpus, k) {
-                return self.run_vector_exact_bucket(&g, vector, b, k, bucket_docs);
+                return self.run_vector_exact_bucket(&g, vector, b, k, bucket_docs, filter);
             }
         }
 
-        let fetch = bucket_fetch(bucket, k);
+        // A predicate drops candidates after HNSW, like the bucket
+        // filter does, so it needs the same over-fetch again.
+        let fetch = match filter {
+            Some(_) => bucket_fetch(Some("_"), bucket_fetch(bucket, k)),
+            None => bucket_fetch(bucket, k),
+        };
 
         // Lock order discipline: `inner` before `hnsw`, everywhere.
         // Writers take `inner.write()` then drive `hnsw` under it;
@@ -159,7 +172,7 @@ impl TextIndex {
 
         let started = Instant::now();
         let mut hits = Vec::with_capacity(raw.len().min(k));
-        let (mut examined, mut missing, mut other_bucket) = (0, 0, 0);
+        let (mut examined, mut missing, mut other_bucket, mut filtered_out) = (0, 0, 0, 0);
         for r in &raw {
             if hits.len() >= k {
                 break;
@@ -175,7 +188,17 @@ impl TextIndex {
                     continue;
                 }
             }
-            hits.push(doc.hit(r.distance));
+            match filter {
+                Some(f) => {
+                    let meta = doc.metadata();
+                    if !f(&meta) {
+                        filtered_out += 1;
+                        continue;
+                    }
+                    hits.push(doc.hit_with(r.distance, meta));
+                }
+                None => hits.push(doc.hit(r.distance)),
+            }
         }
         Ok(VectorRun {
             hits,
@@ -189,6 +212,8 @@ impl TextIndex {
             hnsw_took,
             assemble_took: started.elapsed(),
             exact_bucket: false,
+            filtered: filter.is_some(),
+            filtered_out,
         })
     }
 
@@ -202,39 +227,60 @@ impl TextIndex {
         bucket: &str,
         k: usize,
         bucket_docs: usize,
+        filter: Option<&MetaFilter>,
     ) -> Result<VectorRun> {
         let started = Instant::now();
         let metric = self.hnsw.metric();
-        let ids: Vec<nebula_core::Id> = g
-            .by_bucket
-            .get(bucket)
-            .map(|keys| keys.values().copied().collect())
-            .unwrap_or_default();
-        let mut scored: Vec<(nebula_core::Id, f32, &crate::StoredDoc)> =
-            Vec::with_capacity(ids.len());
-        let mut missing = 0;
-        for id in &ids {
-            let Some(doc) = g.docs.get(id) else {
-                missing += 1;
-                continue;
-            };
-            let Some(vec) = self.hnsw.get_vector(*id) else {
-                missing += 1;
-                continue;
-            };
-            scored.push((*id, metric.distance(query, &vec), doc.as_ref()));
+        let mut scored: Vec<(f32, &crate::StoredDoc, Option<serde_json::Value>)> =
+            Vec::with_capacity(if filter.is_some() { 64 } else { bucket_docs });
+        let (mut missing, mut filtered_out) = (0, 0);
+        if let Some(keys) = g.by_bucket.get(bucket) {
+            for id in keys.values() {
+                let Some(doc) = g.docs.get(id) else {
+                    missing += 1;
+                    continue;
+                };
+                // Check the predicate first: parsing a few hundred bytes
+                // of metadata is cheaper than fetching and scoring a
+                // vector, and a selective WHERE skips most of the bucket.
+                let meta = match filter {
+                    Some(f) => {
+                        let meta = doc.metadata();
+                        if !f(&meta) {
+                            filtered_out += 1;
+                            continue;
+                        }
+                        Some(meta)
+                    }
+                    None => None,
+                };
+                let Some(vec) = self.hnsw.get_vector(*id) else {
+                    missing += 1;
+                    continue;
+                };
+                scored.push((metric.distance(query, &vec), doc.as_ref(), meta));
+            }
         }
         let hnsw_took = started.elapsed();
         let raw = scored.len();
-        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        if scored.len() > k {
+        let by_distance =
+            |a: &(f32, _, _), b: &(f32, _, _)| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal);
+        // Partial select before sorting: only the top k need ordering.
+        if k == 0 {
+            scored.clear();
+        } else if scored.len() > k {
+            scored.select_nth_unstable_by(k - 1, by_distance);
             scored.truncate(k);
         }
+        scored.sort_by(by_distance);
         let started = Instant::now();
         let examined = scored.len();
         let hits: Vec<Hit> = scored
             .into_iter()
-            .map(|(_, distance, doc)| doc.hit(distance))
+            .map(|(distance, doc, meta)| match meta {
+                Some(meta) => doc.hit_with(distance, meta),
+                None => doc.hit(distance),
+            })
             .collect();
         Ok(VectorRun {
             hits,
@@ -251,6 +297,8 @@ impl TextIndex {
             hnsw_took,
             assemble_took: started.elapsed(),
             exact_bucket: true,
+            filtered: filter.is_some(),
+            filtered_out,
         })
     }
 
@@ -361,7 +409,7 @@ impl TextIndex {
         // Over-fetch each stage so the fusion set is the union of both
         // top-k's, not just their intersection.
         let stage_k = k.saturating_mul(4).max(16);
-        let vector = self.run_vector(query_vector, bucket, stage_k, ef)?;
+        let vector = self.run_vector(query_vector, bucket, stage_k, ef, None)?;
         let bm25 = self.run_bm25(query_text, bucket, stage_k);
 
         let started = Instant::now();
@@ -429,6 +477,21 @@ impl TextIndex {
         ef: Option<usize>,
         hybrid: Option<(f32, f32)>,
     ) -> Result<(Vec<Hit>, SearchTrace)> {
+        self.search_text_explained_where(query, bucket, k, ef, hybrid, None).await
+    }
+
+    /// [`Self::search_text_explained`] with a metadata predicate run
+    /// inside the scan — the EXPLAIN twin of
+    /// [`Self::search_text_where_blocking`]. Ignored for hybrid search.
+    pub async fn search_text_explained_where(
+        self: Arc<Self>,
+        query: String,
+        bucket: Option<String>,
+        k: usize,
+        ef: Option<usize>,
+        hybrid: Option<(f32, f32)>,
+        filter: Option<MetaFilter>,
+    ) -> Result<(Vec<Hit>, SearchTrace)> {
         let started = Instant::now();
         let qv = self.embedder.embed_one(&query).await?;
         let model = self.embedder.model().to_string();
@@ -446,7 +509,7 @@ impl TextIndex {
         .attr("query", query.clone());
 
         let (hits, mut trace) = tokio::task::spawn_blocking(move || {
-            self.explain_retrieval(&qv, Some(&query), bucket.as_deref(), k, ef, hybrid)
+            self.explain_retrieval(&qv, Some(&query), bucket.as_deref(), k, ef, hybrid, filter)
         })
         .await
         .map_err(|e| IndexError::Invalid(format!("explain search task failed: {e}")))??;
@@ -475,13 +538,26 @@ impl TextIndex {
         k: usize,
         ef: Option<usize>,
     ) -> Result<(Vec<Hit>, SearchTrace)> {
+        self.search_vector_explained_where(vector, bucket, k, ef, None).await
+    }
+
+    /// [`Self::search_vector_explained`] with a metadata predicate.
+    pub async fn search_vector_explained_where(
+        self: Arc<Self>,
+        vector: Vec<f32>,
+        bucket: Option<String>,
+        k: usize,
+        ef: Option<usize>,
+        filter: Option<MetaFilter>,
+    ) -> Result<(Vec<Hit>, SearchTrace)> {
         tokio::task::spawn_blocking(move || {
-            self.explain_retrieval(&vector, None, bucket.as_deref(), k, ef, None)
+            self.explain_retrieval(&vector, None, bucket.as_deref(), k, ef, None, filter)
         })
         .await
         .map_err(|e| IndexError::Invalid(format!("explain search task failed: {e}")))?
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn explain_retrieval(
         &self,
         qv: &[f32],
@@ -490,6 +566,7 @@ impl TextIndex {
         k: usize,
         ef: Option<usize>,
         hybrid: Option<(f32, f32)>,
+        filter: Option<MetaFilter>,
     ) -> Result<(Vec<Hit>, SearchTrace)> {
         let mut trace = SearchTrace::default();
         match (hybrid, query_text) {
@@ -539,7 +616,7 @@ impl TextIndex {
                 Ok((run.hits, trace))
             }
             _ => {
-                let run = self.run_vector(qv, bucket, k, ef)?;
+                let run = self.run_vector(qv, bucket, k, ef, filter.as_ref())?;
                 vector_stages(&run, bucket, false, &mut trace);
                 trace.hits = run
                     .hits
@@ -732,19 +809,32 @@ fn vector_stages(run: &VectorRun, bucket: Option<&str>, hybrid: bool, trace: &mu
     let s = &run.stats;
     if run.exact_bucket {
         let b = bucket.unwrap_or("");
-        let detail = format!(
-            "Scored all {raw} live vectors in bucket '{b}' exactly (bucket is a small share of the \
-             {corpus}-doc corpus, so HNSW + post-filter would miss it) and kept the top {kept}.",
-            raw = run.raw,
-            corpus = s.nodes_total,
-            kept = run.hits.len(),
-        );
+        let detail = if run.filtered {
+            format!(
+                "Walked the {fetch} docs in bucket '{b}', skipped the {out} that failed the WHERE \
+                 filter before scoring, scored the remaining {raw} vectors exactly and kept the \
+                 top {kept}.",
+                fetch = run.fetch,
+                out = run.filtered_out,
+                raw = run.raw,
+                kept = run.hits.len(),
+            )
+        } else {
+            format!(
+                "Scored all {raw} live vectors in bucket '{b}' exactly (bucket is a small share of the \
+                 {corpus}-doc corpus, so HNSW + post-filter would miss it) and kept the top {kept}.",
+                raw = run.raw,
+                corpus = s.nodes_total,
+                kept = run.hits.len(),
+            )
+        };
         trace.stages.push(
             Stage::new("bucket_scan", "Exact bucket vector scan", detail)
                 .rows(Some(run.fetch), Some(run.hits.len()))
                 .took(run.hnsw_took + run.assemble_took)
                 .attr("bucket", b)
                 .attr("scored", run.raw)
+                .attr("filtered_out", run.filtered_out)
                 .attr("missing", run.missing),
         );
         return;
@@ -814,6 +904,17 @@ fn vector_stages(run: &VectorRun, bucket: Option<&str>, hybrid: bool, trace: &mu
                 run.raw
             )));
         }
+    }
+    if run.filtered && run.hits.len() < run.k && run.raw >= run.fetch {
+        trace.notes.push(Note::warn(format!(
+            "Only {} of the {} requested rows passed the WHERE filter among the {} nearest \
+             candidates ({} failed it). On a large bucket the filter runs on HNSW candidates, so a \
+             selective filter can starve results; raise LIMIT or ef to look further.",
+            run.hits.len(),
+            run.k,
+            run.raw,
+            run.filtered_out
+        )));
     }
     if s.pool > 0 && s.tombstoned_in_pool * 100 / s.pool >= TOMBSTONE_BEAM_WARN_PCT {
         trace.notes.push(Note::warn(format!(

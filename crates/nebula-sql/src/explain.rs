@@ -63,7 +63,19 @@ impl Recorder {
     /// Residual WHERE filters: per-predicate pass counts, plus the
     /// diagnostics people actually need when a filter starves results —
     /// the field doesn't exist, or its values are spelled differently.
-    pub fn filters(&mut self, plan: &Plan, hits_in: &[Hit], kept: usize, took: Duration, side: &str) {
+    ///
+    /// The filters run inside the index scan, so `hits_in` already
+    /// passes them. `probe`, when given, is an unfiltered sample of the
+    /// same search that the diagnostics read instead.
+    pub fn filters(
+        &mut self,
+        plan: &Plan,
+        hits_in: &[Hit],
+        kept: usize,
+        took: Duration,
+        side: &str,
+        probe: Option<&[Hit]>,
+    ) {
         if plan.filters.is_empty() {
             return;
         }
@@ -86,8 +98,9 @@ impl Recorder {
                 "filter",
                 &label,
                 format!(
-                    "Kept retrieved rows satisfying every residual predicate — {kept} of {} \
-                     passed ({per}). These run after the semantic search, on its candidates only.",
+                    "Kept rows satisfying every WHERE predicate — {kept} of {} passed ({per}). \
+                     The predicates run inside the index scan, so rows that fail them are never \
+                     scored or returned.",
                     hits_in.len()
                 ),
             )
@@ -102,8 +115,13 @@ impl Recorder {
             ),
         );
 
-        for (f, (pred, n)) in plan.filters.iter().zip(&counts) {
-            if *n > 0 || hits_in.is_empty() {
+        // Diagnostics need rows that failed a predicate, which the
+        // pushed-down scan never returns; read the probe for them.
+        let hits_in = probe.unwrap_or(hits_in);
+        for f in &plan.filters {
+            let pred = predicate_sql(f);
+            let n = hits_in.iter().filter(|h| eval_filter(f, &h.metadata)).count();
+            if n > 0 || hits_in.is_empty() {
                 continue;
             }
             let path = filter_path(f);
@@ -146,17 +164,9 @@ impl Recorder {
             }
         }
 
-        if let Some(limit) = plan.limit {
-            if kept < limit && hits_in.len() >= plan.top_k() {
-                self.note(Note::warn(format!(
-                    "Filter starvation: only {kept} of the {} candidates the semantic search \
-                     returned pass the WHERE filters, short of LIMIT {limit}. Filters can only see \
-                     those candidates — raise LIMIT (retrieval fetches 4× LIMIT when filters are \
-                     present) or make the semantic_match text more specific.",
-                    hits_in.len()
-                )));
-            }
-        }
+        // No "filter starvation" note: an exact bucket scan sees every
+        // matching doc, and an HNSW scan that runs out of candidates is
+        // reported by the index trace (`bucket_scan` / `hnsw` stages).
     }
 
     pub fn sort(&mut self, order: Option<&OrderBy>, rows: usize, took: Duration) {
@@ -397,8 +407,10 @@ pub(crate) fn top_k_reason(p: &Plan) -> String {
     if p.filters.is_empty() {
         format!("{} candidates — {base_why}", p.top_k())
     } else {
+        let base_why = if p.limit.is_some() { base_why } else { "40 (no LIMIT, with filters)".to_string() };
         format!(
-            "{} candidates — {base_why} × 4, at least 32, because {} WHERE filter{} run after retrieval",
+            "{} matching rows — {base_why}; the {} WHERE filter{} run inside the scan, so \
+             rows that fail them are never scored",
             p.top_k(),
             p.filters.len(),
             if p.filters.len() == 1 { "" } else { "s" }
@@ -464,7 +476,7 @@ fn scan_plan_stages(p: &Plan, side: &str, ex: &mut Explain) {
             "filter",
             &prefixed(side, "Filter (WHERE)"),
             format!(
-                "Keep rows satisfying {} — evaluated on the retrieved candidates only.",
+                "Keep rows satisfying {} — evaluated inside the index scan, before scoring.",
                 p.filters.iter().map(predicate_sql).collect::<Vec<_>>().join(" AND ")
             ),
         ));

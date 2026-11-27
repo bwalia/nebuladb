@@ -45,6 +45,10 @@ pub enum IndexError {
 
 pub type Result<T> = std::result::Result<T, IndexError>;
 
+/// Metadata predicate evaluated inside a vector scan — a SQL `WHERE`
+/// pushed down so rejected docs are never scored or copied out.
+pub type MetaFilter = Arc<dyn Fn(&serde_json::Value) -> bool + Send + Sync>;
+
 /// A single stored document or chunk. `text` is kept for RAG context
 /// return. The embedding is NOT stored here: the HNSW arena is the
 /// single authority for vectors, and code that needs a vector back
@@ -138,6 +142,17 @@ impl StoredDoc {
             text: self.text.to_string(),
             score,
             metadata: self.metadata(),
+        }
+    }
+
+    /// [`Self::hit`] with metadata the caller already parsed.
+    pub(crate) fn hit_with(&self, score: f32, metadata: serde_json::Value) -> Hit {
+        Hit {
+            bucket: self.bucket.to_string(),
+            id: self.external_id.to_string(),
+            text: self.text.to_string(),
+            score,
+            metadata,
         }
     }
 }
@@ -1897,7 +1912,7 @@ impl TextIndex {
         k: usize,
         ef: Option<usize>,
     ) -> Result<Vec<Hit>> {
-        Ok(self.run_vector(vector, bucket, k, ef)?.hits)
+        Ok(self.run_vector(vector, bucket, k, ef, None)?.hits)
     }
 
     /// Search by text: embed the query, then delegate. The embed call is
@@ -2034,6 +2049,41 @@ impl TextIndex {
     ) -> Result<Vec<Hit>> {
         let qv = self.embedder.embed_one(&query).await?;
         self.search_vector_blocking(qv, bucket, k, ef).await
+    }
+
+    /// [`Self::search_vector_blocking`] with a metadata predicate run
+    /// inside the scan: docs it rejects are skipped before scoring, and
+    /// `k` counts docs that pass. Within an exact bucket scan the result
+    /// is the true top `k` of the matching docs — unlike post-filtering
+    /// an over-fetched top list, which can miss them.
+    pub async fn search_vector_where_blocking(
+        self: std::sync::Arc<Self>,
+        vector: Vec<f32>,
+        bucket: Option<String>,
+        k: usize,
+        ef: Option<usize>,
+        filter: MetaFilter,
+    ) -> Result<Vec<Hit>> {
+        tokio::task::spawn_blocking(move || {
+            Ok(self
+                .run_vector(&vector, bucket.as_deref(), k, ef, Some(&filter))?
+                .hits)
+        })
+        .await
+        .map_err(|e| IndexError::Invalid(format!("blocking search task failed: {e}")))?
+    }
+
+    /// Text-in [`Self::search_vector_where_blocking`].
+    pub async fn search_text_where_blocking(
+        self: std::sync::Arc<Self>,
+        query: String,
+        bucket: Option<String>,
+        k: usize,
+        ef: Option<usize>,
+        filter: MetaFilter,
+    ) -> Result<Vec<Hit>> {
+        let qv = self.embedder.embed_one(&query).await?;
+        self.search_vector_where_blocking(qv, bucket, k, ef, filter).await
     }
 }
 

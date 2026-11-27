@@ -1,0 +1,77 @@
+# Prod watchdog (scripts/prod_watch.sh): health every 15 minutes, config
+# drift nightly. Posts to Slack only when something is actually wrong —
+# the dashboard alone let a dead embedding instance, a never-applied
+# follower and a false region-B alert sit unnoticed for days.
+name: prod-watch
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # health
+    - cron: "23 4 * * *"     # drift (and health)
+  workflow_dispatch:
+    inputs:
+      CHECK:
+        description: Which check
+        type: choice
+        default: both
+        options: [health, drift, both]
+
+concurrency:
+  group: prod-watch
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write kubeconfig
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.KUBE_CONFIG_DATA_K3S }}" | base64 -d > ./kubeconfig
+          chmod 600 ./kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >>"$GITHUB_ENV"
+
+      - name: Run checks
+        id: checks
+        env:
+          NS: prod
+          CHECK: ${{ github.event.inputs.CHECK || (github.event.schedule == '23 4 * * *' && 'both' || 'health') }}
+        run: |
+          set -uo pipefail
+          report=""
+          rc=0
+          for c in health drift; do
+            if [ "$CHECK" = both ] || [ "$CHECK" = "$c" ]; then
+              out=$(./scripts/prod_watch.sh "$c"); r=$?
+              echo "== $c: $out"
+              if [ $r -ne 0 ]; then rc=1; report+="*${c}*"$'\n'"${out}"$'\n'; fi
+            fi
+          done
+          {
+            echo "report<<EOF_REPORT"
+            printf '%s' "$report"
+            echo "EOF_REPORT"
+          } >>"$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Alert Slack
+        if: failure() && steps.checks.outputs.report != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          REPORT: ${{ steps.checks.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -n "${SLACK_WEBHOOK_URL:-}" ] || { echo "SLACK_WEBHOOK_URL not set"; exit 0; }
+          text=$(printf ':rotating_light: *NebulaDB prod*\n%s\n<%s|run>' "$REPORT" "$RUN_URL")
+          jq -n --arg t "$text" '{text: $t}' | curl -fsS -X POST -H 'content-type: application/json' --data @- "$SLACK_WEBHOOK_URL" >/dev/null
+
+      - name: Remove kubeconfig
+        if: always()
+        run: rm -f ./kubeconfig

@@ -161,6 +161,12 @@ server:
     NEBULA_RATE_LIMIT: "on"
     NEBULA_RATE_LIMIT_BURST: "120"
     NEBULA_RATE_LIMIT_RPS: "20"
+    # Internal bearer tokens (nk_int_…) front many users at once — the
+    # showcase injects one for every browser and the pixel sites write
+    # through it — so they get their own, larger bucket.
+    NEBULA_RATE_LIMIT_INTERNAL_PREFIX: "nk_int_"
+    NEBULA_RATE_LIMIT_INTERNAL_BURST: "2000"
+    NEBULA_RATE_LIMIT_INTERNAL_RPS: "200"
 
     RUST_LOG: "info"
 

@@ -15,11 +15,10 @@
 //!
 //! # What we do NOT capture
 //!
-//! No span attributes, no fields other than `message`, no parent
-//! chain. That's deliberate: the consumer is an operator eyeballing
-//! live output, not a structured-logs pipeline. If a richer shape
-//! becomes necessary later, adding it is additive (new optional
-//! fields on [`LogEvent`]).
+//! No span attributes and no parent chain. An event's own fields are
+//! appended to the message as `key=value` — dropping them used to turn
+//! `error!(code, error = %e, "server error")` into a bare
+//! "server error" line, hiding the cause of every 5xx in prod.
 //!
 //! # Performance
 //!
@@ -102,8 +101,8 @@ pub struct LogEvent {
     /// filter to a subsystem (`nebula_grpc`) without grepping
     /// free-text messages.
     pub target: String,
-    /// The rendered `message` field. Other fields are ignored —
-    /// see the module docs.
+    /// The rendered `message` field, followed by the event's other
+    /// fields as ` key=value`.
     pub message: String,
 }
 
@@ -262,9 +261,10 @@ impl Subscriber for CapturingSubscriber {
         }
         let mut visitor = MessageVisitor {
             buf: String::new(),
+            fields: String::new(),
         };
         event.record(&mut visitor);
-        let message = if visitor.buf.is_empty() {
+        let mut message = if visitor.buf.is_empty() {
             // Structured-only events with no `message` field do
             // happen. Better to surface "(no message)" than drop
             // the event entirely — the target still tells the
@@ -273,6 +273,7 @@ impl Subscriber for CapturingSubscriber {
         } else {
             visitor.buf
         };
+        message.push_str(&visitor.fields);
         let ts_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
@@ -305,25 +306,37 @@ impl Subscriber for CapturingSubscriber {
     fn exit(&self, _: &span::Id) {}
 }
 
-/// Visit that pulls out just the `message` field. Other fields
-/// are dropped (see module docs). `message` is the field `info!`,
-/// `warn!` etc. synthesize from their format string.
+/// Visit that renders the `message` field, plus every other field as
+/// ` key=value` (Debug-rendered; strings quoted only when they contain
+/// spaces, so `error="connection refused"` stays one token).
 struct MessageVisitor {
     buf: String,
+    fields: String,
 }
 
 impl Visit for MessageVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+        let rendered = format!("{value:?}");
+        let unquoted = rendered
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(&rendered);
         if field.name() == "message" {
-            // `{:?}` on `&str` adds quotes; `Display` isn't
-            // guaranteed. Strip surrounding quotes if the Debug
-            // output starts/ends with them for the common case.
-            let rendered = format!("{value:?}");
-            let cleaned = rendered
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-                .unwrap_or(&rendered);
-            let _ = self.buf.write_str(cleaned);
+            let _ = self.buf.write_str(unquoted);
+        } else if unquoted.contains(char::is_whitespace) {
+            let _ = write!(self.fields, " {}={unquoted:?}", field.name());
+        } else {
+            let _ = write!(self.fields, " {}={unquoted}", field.name());
+        }
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            let _ = self.buf.write_str(value);
+        } else if value.contains(char::is_whitespace) {
+            let _ = write!(self.fields, " {}={value:?}", field.name());
+        } else {
+            let _ = write!(self.fields, " {}={value}", field.name());
         }
     }
 }
@@ -397,5 +410,20 @@ mod tests {
         assert_eq!(LogLevel::parse("WARN"), Some(LogLevel::Warn));
         assert_eq!(LogLevel::parse("warning"), Some(LogLevel::Warn));
         assert_eq!(LogLevel::parse("nope"), None);
+    }
+
+    #[test]
+    fn event_fields_are_kept_after_the_message() {
+        let bus = Arc::new(LogBus::new(8, LogLevel::Trace));
+        let sub = CapturingSubscriber::new(Arc::clone(&bus));
+        tracing::subscriber::with_default(sub, || {
+            let e = "http error: connection refused";
+            tracing::error!(code = "internal", attempt = 2u32, error = %e, "server error");
+        });
+        let got = bus.snapshot();
+        assert_eq!(
+            got.last().unwrap().message,
+            r#"server error code=internal attempt=2 error="http error: connection refused""#
+        );
     }
 }

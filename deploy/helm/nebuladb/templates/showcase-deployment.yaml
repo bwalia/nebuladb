@@ -55,18 +55,18 @@ spec:
             # leader is down or recovering. Without a within-region
             # follower both point at the leader, which is harmless.
             - name: NEBULA_LEADER_HOST
-              value: {{ include "nebuladb.fullname" . | quote }}
+              value: "{{ include "nebuladb.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local"
             - name: NEBULA_FOLLOWER_HOST
               {{- if .Values.ha.withinRegion.enabled }}
-              value: {{ include "nebuladb.follower.fullname" . | quote }}
+              value: "{{ include "nebuladb.follower.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local"
               {{- else }}
-              value: {{ include "nebuladb.fullname" . | quote }}
+              value: "{{ include "nebuladb.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local"
               {{- end }}
             - name: NEBULA_REGION_B_HOST
               {{- if and .Values.ha.crossRegion.enabled .Values.ha.crossRegion.deployPeerLeader }}
-              value: {{ include "nebuladb.regionB.fullname" . | quote }}
+              value: "{{ include "nebuladb.regionB.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local"
               {{- else }}
-              value: {{ include "nebuladb.fullname" . | quote }}
+              value: "{{ include "nebuladb.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local"
               {{- end }}
             # Cluster DNS for nginx's variable-based proxy_pass (the image
             # default 127.0.0.11 is Docker-only and unreachable in k8s).

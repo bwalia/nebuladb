@@ -149,14 +149,19 @@ impl Plan {
     /// LIMIT — we used to over-fetch automatically, but that hid
     /// pagination bugs. If LIMIT is absent, pick a sensible default.
     pub fn top_k(&self) -> usize {
-        // Overfetch a bit when filters are present so post-filtering
-        // has enough candidates to hit the limit. This is cheap
-        // compared to a second round-trip to the index.
-        let base = self.limit.unwrap_or(10);
-        if self.filters.is_empty() {
-            base
-        } else {
-            base.saturating_mul(4).max(32)
+        // WHERE filters run inside the index scan (see
+        // `TextIndex::search_vector_where_blocking`), so k counts rows
+        // that already match: LIMIT n retrieves exactly n. Over-fetching
+        // 4× LIMIT here used to materialize — clone text, parse
+        // metadata — four rows for every one returned.
+        //
+        // Without a LIMIT (aggregate and join inputs, bare scans) the
+        // budget stays what it was when filters ran afterwards: 10, or
+        // 40 with filters.
+        match self.limit {
+            Some(n) => n,
+            None if self.filters.is_empty() => 10,
+            None => 40,
         }
     }
 }

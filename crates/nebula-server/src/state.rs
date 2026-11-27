@@ -247,6 +247,9 @@ pub struct AppState {
     /// endpoint then omits the cache lines entirely rather than
     /// reporting misleading zeros.
     pub cache_stats: Option<Arc<CacheStats>>,
+    /// Per-endpoint embedding health when failover is configured
+    /// (`NEBULA_OPENAI_BASE_URLS`); surfaced on `/healthz`.
+    pub embed_failover: Option<Arc<nebula_embed::FailoverEmbedder>>,
     /// Optional rate-limit state. `None` disables the middleware;
     /// helpful for tests and tools that hammer the server.
     pub rate_limiter: Option<RateLimiter>,
@@ -421,6 +424,7 @@ impl AppState {
             chunker: Arc::new(FixedSizeChunker::default()),
             metrics: Arc::new(Metrics::default()),
             cache_stats: None,
+            embed_failover: None,
             rate_limiter: None,
             sql,
             audit: AuditLog::new(1024),
@@ -581,6 +585,11 @@ impl AppState {
 
     pub fn with_cache_stats(mut self, stats: Arc<CacheStats>) -> Self {
         self.cache_stats = Some(stats);
+        self
+    }
+
+    pub fn with_embed_failover(mut self, f: Arc<nebula_embed::FailoverEmbedder>) -> Self {
+        self.embed_failover = Some(f);
         self
     }
 
