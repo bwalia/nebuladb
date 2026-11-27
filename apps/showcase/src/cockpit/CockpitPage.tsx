@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   ApiError,
+  apiErrorDetail,
   type AuditEntry,
   type ClusterTopology,
   type DurabilityInfo,
@@ -195,7 +196,7 @@ export function CockpitPage({
           setFollower((p) => ({
             ...p,
             health: null,
-            err: (e as Error).message,
+            err: apiErrorDetail(e),
           }))
         ),
       api
@@ -205,7 +206,7 @@ export function CockpitPage({
           setRegionB((p) => ({
             ...p,
             health: null,
-            err: (e as Error).message,
+            err: apiErrorDetail(e),
           }))
         ),
     ]);
@@ -292,6 +293,28 @@ export function CockpitPage({
         at: now,
       });
     }
+    const eps = health?.embed ?? [];
+    const primaries = eps.filter((e) => !e.fallback);
+    const downPrimaries = primaries.filter((e) => !e.healthy);
+    if (primaries.length > 0 && downPrimaries.length === primaries.length) {
+      out.push({
+        id: "embed",
+        sev: "error",
+        title: "All embedding endpoints down",
+        detail: downPrimaries.map((e) => `${e.name}: ${e.last_error ?? "failing"}`).join(" · "),
+        at: now,
+      });
+    } else if (downPrimaries.length > 0) {
+      out.push({
+        id: "embed",
+        sev: "warn",
+        title: `Embedding endpoint down (${downPrimaries.length}/${primaries.length})`,
+        detail: `${downPrimaries
+          .map((e) => `${e.name}: ${e.last_error ?? "failing"}`)
+          .join(" · ")} — requests are served by the others`,
+        at: now,
+      });
+    }
     if (repl?.behind) {
       out.push({
         id: "lag",
@@ -351,13 +374,22 @@ export function CockpitPage({
   const deltaRegion =
     regionDocs != null ? Math.abs(leaderDocs - regionDocs) : null;
   const maxDelta = Math.max(deltaFollow ?? 0, deltaRegion ?? 0);
+  // Peers trail the leader by whatever was written between the fetches,
+  // so an exact-match test flickers amber under normal traffic. Flag a
+  // gap only when it exceeds max(50 docs, 0.01%) for 3 polls running.
+  const driftPolls = useRef(0);
+  const driftTolerance = Math.max(50, Math.round(leaderDocs * 0.0001));
+  const docsDrifting = useMemo(() => {
+    driftPolls.current = maxDelta > driftTolerance ? driftPolls.current + 1 : 0;
+    return driftPolls.current >= 3;
+  }, [health, follower.health, regionB.health]);
 
   const mission: MissionHealth = useMemo(() => {
     if (!health) return "amber";
     if (alerts.some((a) => a.sev === "error")) return "red";
-    if (alerts.some((a) => a.sev === "warn") || maxDelta > 0) return "amber";
+    if (alerts.some((a) => a.sev === "warn") || docsDrifting) return "amber";
     return "green";
-  }, [health, alerts, maxDelta]);
+  }, [health, alerts, docsDrifting]);
 
   const missionLabel =
     mission === "green" ? "NOMINAL" : mission === "amber" ? "DEGRADED" : "CRITICAL";

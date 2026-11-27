@@ -11,8 +11,23 @@
 
 import { record } from "./demo/tracer";
 
+export interface EmbedEndpoint {
+  name: string;
+  fallback: boolean;
+  healthy: boolean;
+  consecutive_failures: number;
+  retry_in_ms: number;
+  last_error?: string | null;
+  successes: number;
+  failures: number;
+}
+
 export interface Health {
-  status: "ok";
+  /** `degraded` when an embedding endpoint is failing (requests still
+   *  succeed through the others). */
+  status: "ok" | "degraded";
+  /** Per-endpoint embedding health, when failover is configured. */
+  embed?: EmbedEndpoint[];
   docs: number;
   dim: number;
   model: string;
@@ -359,6 +374,20 @@ export interface VersionInfo {
   [k: string]: unknown;
 }
 
+/** One-line reason for a failed call: the server's JSON message when
+ *  there is one, else the start of the body (nginx's "Host not found",
+ *  "no endpoints available"), instead of a bare "503: unknown". */
+export function apiErrorDetail(e: unknown): string {
+  if (!(e instanceof ApiError)) return (e as Error).message;
+  let msg = "";
+  try {
+    msg = (JSON.parse(e.body) as ApiErrorBody).error?.message ?? "";
+  } catch {
+    msg = e.body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+  return `${e.status}${e.code !== "unknown" ? ` ${e.code}` : ""}${msg ? `: ${msg.slice(0, 160)}` : ""}`;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -366,6 +395,23 @@ export class ApiError extends Error {
     public body: string
   ) {
     super(`${status}: ${code}`);
+  }
+}
+
+/**
+ * fetch, retrying a 429 after its `Retry-After` (capped, a few tries).
+ * A 429 is refused before the handler runs, so retrying any method is
+ * safe. Every visitor shares the showcase's internal key, so a burst
+ * elsewhere (pixel traffic, another tab seeding) shouldn't fail a page.
+ */
+async function fetchRetrying429(path: string, init: RequestInit): Promise<Response> {
+  const MAX_TRIES = 4;
+  for (let attempt = 1; ; attempt++) {
+    const resp = await fetch(path, init);
+    if (resp.status !== 429 || attempt >= MAX_TRIES) return resp;
+    const after = Number(resp.headers.get("retry-after"));
+    const waitMs = Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : 500 * attempt, 5000);
+    await new Promise((r) => setTimeout(r, waitMs + Math.random() * 250));
   }
 }
 
@@ -387,7 +433,7 @@ async function request<T>(
   const started = performance.now();
   let resp: Response;
   try {
-    resp = await fetch(path, {
+    resp = await fetchRetrying429(path, {
       ...init,
       headers: {
         "content-type": "application/json",
