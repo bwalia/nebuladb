@@ -149,7 +149,7 @@ async fn plain_explain_executes_nothing() {
     let ex = ex.unwrap();
     assert!(!ex.analyzed);
     assert!(ex.stages.iter().all(|s| s.took_us == 0 && s.rows_out.is_none()));
-    assert!(ex.stages.iter().any(|s| s.detail.contains("32 candidates")), "{:?}", ex.stages);
+    assert!(ex.stages.iter().any(|s| s.detail.contains("5 matching rows")), "{:?}", ex.stages);
     assert!(ex.hits.is_empty());
     assert!(out.rows.iter().all(|r| r.fields.get("QUERY PLAN").is_some()));
     assert!(ex.summary.contains("Nothing was executed"));
@@ -183,7 +183,10 @@ fn every_plan_shape_serializes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn filter_starvation_is_flagged_when_more_candidates_exist() {
+async fn filters_run_inside_the_scan_so_matches_are_not_starved() {
+    // 3 of 60 leads are in London. When filters ran after a top-32
+    // retrieval, the London rows outside it were lost; pushed into the
+    // exact bucket scan, every one is found.
     let emb: Arc<dyn Embedder> = Arc::new(MockEmbedder::new(32));
     let index = Arc::new(TextIndex::new(emb, Metric::Cosine, HnswConfig::default()).unwrap());
     for i in 0..60 {
@@ -198,12 +201,11 @@ async fn filter_starvation_is_flagged_when_more_candidates_exist() {
         .execute("SELECT id FROM leads WHERE semantic_match(text, 'lead') AND city = 'London' LIMIT 5", true)
         .await
         .unwrap();
-    assert!(out.rows.len() < 5);
+    let mut ids: Vec<_> = out.rows.iter().map(|r| r.id.clone()).collect();
+    ids.sort();
+    assert_eq!(ids, ["l0", "l20", "l40"]);
     let ex = ex.unwrap();
-    assert!(
-        ex.notes.iter().any(|n| n.message.starts_with("Filter starvation")),
-        "{:?}",
-        ex.notes
-    );
-    assert!(ex.summary.contains("Most rows were dropped by Filter (WHERE)"), "{}", ex.summary);
+    let scan = ex.stages.iter().find(|s| s.name == "bucket_scan").unwrap();
+    assert_eq!(scan.attrs["filtered_out"], json!(57), "{scan:?}");
+    assert!(!ex.notes.iter().any(|n| n.message.starts_with("Filter starvation")), "{:?}", ex.notes);
 }

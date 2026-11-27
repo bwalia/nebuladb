@@ -203,14 +203,24 @@ impl Executor {
         rec: &mut Option<Recorder>,
         side: &str,
     ) -> Result<Vec<Hit>> {
+        // Filters are pushed into the index scan by `retrieve`, so the
+        // hits already match; nothing left to drop here.
         let hits = self.retrieve(plan, rec, side).await?;
-        let started = Instant::now();
         let Some(r) = rec else {
-            return Ok(apply_filters(hits, &plan.filters));
+            return Ok(hits);
         };
-        let kept = apply_filters(hits.clone(), &plan.filters);
-        r.filters(plan, &hits, kept.len(), started.elapsed(), side);
-        Ok(kept)
+        // EXPLAIN only: when the filtered scan came back short, take an
+        // unfiltered sample (the query embedding is cached) so the
+        // diagnostics can say *why* — missing field, misspelt value.
+        let probe = if !plan.filters.is_empty() && hits.len() < plan.top_k() {
+            let sample = plan.top_k().saturating_mul(4).max(32);
+            let unfiltered = Plan { filters: Vec::new(), limit: Some(sample), ..plan.clone() };
+            Some(self.retrieve(&unfiltered, &mut None, side).await?)
+        } else {
+            None
+        };
+        r.filters(plan, &hits, hits.len(), std::time::Duration::ZERO, side, probe.as_deref());
+        Ok(hits)
     }
 
     async fn retrieve(&self, plan: &Plan, rec: &mut Option<Recorder>, side: &str) -> Result<Vec<Hit>> {
@@ -229,13 +239,26 @@ impl Executor {
                 SemanticClause::Match { query, .. } => {
                     self.index
                         .clone()
-                        .search_text_explained(query.clone(), Some(plan.bucket.clone()), top_k, None, None)
+                        .search_text_explained_where(
+                            query.clone(),
+                            Some(plan.bucket.clone()),
+                            top_k,
+                            None,
+                            None,
+                            meta_filter(&plan.filters),
+                        )
                         .await?
                 }
                 SemanticClause::Distance { vector, .. } => {
                     self.index
                         .clone()
-                        .search_vector_explained(vector.clone(), Some(plan.bucket.clone()), top_k, None)
+                        .search_vector_explained_where(
+                            vector.clone(),
+                            Some(plan.bucket.clone()),
+                            top_k,
+                            None,
+                            meta_filter(&plan.filters),
+                        )
                         .await?
                 }
             };
@@ -249,6 +272,26 @@ impl Executor {
             );
             r.absorb(trace, side);
             return Ok(hits);
+        }
+        if let Some(filter) = meta_filter(&plan.filters) {
+            // WHERE pushed into the scan: non-matching docs are never
+            // scored or copied out, and an exact bucket scan returns the
+            // true top k of the matching docs.
+            let bucket = Some(plan.bucket.clone());
+            return Ok(match &plan.semantic {
+                SemanticClause::Match { query, .. } => {
+                    self.index
+                        .clone()
+                        .search_text_where_blocking(query.clone(), bucket, top_k, None, filter)
+                        .await?
+                }
+                SemanticClause::Distance { vector, .. } => {
+                    self.index
+                        .clone()
+                        .search_vector_where_blocking(vector.clone(), bucket, top_k, None, filter)
+                        .await?
+                }
+            });
         }
         match &plan.semantic {
             SemanticClause::Match { query, .. } => {
@@ -691,10 +734,16 @@ fn sort_join_rows(rows: &mut [Row], ob: &OrderBy) {
     });
 }
 
-fn apply_filters(hits: Vec<Hit>, filters: &[Filter]) -> Vec<Hit> {
-    hits.into_iter()
-        .filter(|h| filters.iter().all(|f| eval_filter(f, &h.metadata)))
-        .collect()
+/// The plan's WHERE filters as an index-side predicate, or `None`
+/// when there are none.
+fn meta_filter(filters: &[Filter]) -> Option<nebula_index::MetaFilter> {
+    if filters.is_empty() {
+        return None;
+    }
+    let filters = filters.to_vec();
+    Some(std::sync::Arc::new(move |meta: &serde_json::Value| {
+        filters.iter().all(|f| eval_filter(f, meta))
+    }))
 }
 
 /// Evaluate a filter against a hit's metadata. Paths are `.`-joined;
