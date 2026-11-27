@@ -307,7 +307,8 @@ jobs:
       # unless the follower can serve while the leader restarts; pause
       # the leader so helm restarts follower + region-b first, then
       # release it once the follower is caught up. No window with zero
-      # serving nodes, so no 503s.
+      # serving nodes, so reads never 503; writes still get a clean
+      # "retry shortly" 503 while the leader recovers (no promotion yet).
       - name: Staged rollout — preflight + pause leader
         if: ${{ github.event.inputs.DEPLOYMENT_TYPE != 'showcase-only' && github.event.inputs.TARGET_ENV == 'prod' }}
         env:

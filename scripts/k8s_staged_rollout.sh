@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# Staged, no-503 server rollout on k8s (design 0009, k8s edition).
+# Staged server rollout on k8s (design 0009, k8s edition).
+#
+# What it guarantees: there is never a moment with zero serving nodes,
+# so READS never 503 — nginx's read pool fails them over to the
+# follower while the leader restarts. WRITES during the leader's
+# recovery (minutes, on a ~21 GB snapshot) still get nginx's clean
+# "retry shortly" 503: the follower is read-only until promoted, and
+# this script does not promote (the compose orchestrator,
+# scripts/rolling_upgrade.sh, does). Promotion-based k8s rollout is the
+# remaining step for write availability.
 #
 # All three server Deployments (leader, follower, region-b) share one
 # ConfigMap checksum and use `Recreate`, so a plain `helm upgrade`
@@ -47,7 +56,7 @@ has_follower() { exists "$FOLLOWER" && [ "$(replicas "$FOLLOWER")" -ge 1 ]; }
 
 preflight() {
   if has_follower && [ "$(ready "$FOLLOWER")" -ge 1 ] && follower_caught_up; then
-    log "follower Ready and caught up: leader restart will fail over, no 503s"
+    log "follower Ready and caught up: reads fail over during the leader restart"
     return 0
   fi
   local why="follower not running"
@@ -56,7 +65,7 @@ preflight() {
     log "WARNING: $why. ALLOW_DOWNTIME=true: proceeding; the leader restart WILL serve 503s."
     return 0
   fi
-  log "REFUSING: $why. A leader restart now would serve 503s."
+  log "REFUSING: $why. A leader restart now would 503 reads and writes."
   log "Fix the follower first (values-prod.yaml ha.withinRegion notes), or re-run"
   log "with ALLOW_DOWNTIME=true to accept a downtime window."
   return 1
