@@ -234,7 +234,10 @@ jobs:
       ${{ always()
       && (github.event.inputs.DEPLOYMENT_TYPE || 'build-and-deploy') != 'build'
       && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
-    timeout-minutes: 30
+    # A staged prod rollout waits for follower catch-up (~25 min on a
+    # ~21 GB snapshot) and then for the leader's own recovery (~25 min).
+    # 30 min cancelled the 28 Nov run mid-way through the leader wait.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
