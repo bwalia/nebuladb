@@ -47,6 +47,22 @@ health() {
       problem "$RELEASE-follower is not caught up with the leader"
     fi
   fi
+  # End to end: the API key the showcase injects must be one the leader
+  # accepts. /healthz needs no key, so it stayed green on 27 Nov while a
+  # showcase restart picked up a key the leader hadn't loaded yet and
+  # every data call 401'd (shown to users as a redirect to /login).
+  local code
+  # shellcheck disable=SC2016  # expands inside the showcase pod
+  code=$(k exec "deploy/$RELEASE-showcase" -c showcase -- sh -c \
+    'wget -S -qO- -T 8 --header "Authorization: Bearer ${NEBULA_API_KEYS%%,*}" \
+       "http://${NEBULA_LEADER_HOST:-nebuladb}:8080/api/v1/admin/stats" 2>&1 >/dev/null \
+     | sed -n "s/^ *HTTP\/[0-9.]* \([0-9]*\).*/\1/p" | head -1' 2>/dev/null)
+  case "$code" in
+    200) ;;
+    401|403) problem "the API key the showcase injects is rejected by the leader ($code): every showcase data call fails" ;;
+    503) ;; # leader recovering: reported via its own checks
+    *) problem "showcase -> leader authenticated call returned '${code:-no answer}'" ;;
+  esac
   local body status
   body=$(curl -fsS -m 10 "$PUBLIC_URL/healthz" 2>&1) || { problem "$PUBLIC_URL/healthz failed: ${body:0:200}"; body=""; }
   if [ -n "$body" ]; then
